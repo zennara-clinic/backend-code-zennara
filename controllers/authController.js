@@ -510,12 +510,25 @@ exports.updateProfile = async (req, res) => {
 // @access  Private
 exports.uploadProfilePicture = async (req, res) => {
   try {
+    console.log('📸 Profile picture upload request received');
+    console.log('🔍 Request file:', req.file ? 'File present' : 'No file');
+    console.log('🔍 Request body:', req.body);
+    console.log('🔍 Content-Type:', req.get('Content-Type'));
+    
     if (!req.file) {
+      console.log('❌ No file in request');
       return res.status(400).json({
         success: false,
         message: 'Please upload an image file'
       });
     }
+
+    console.log('✅ File details:', {
+      fieldname: req.file.fieldname,
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size
+    });
 
     const user = await User.findById(req.user.userId);
 

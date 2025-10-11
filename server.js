@@ -12,17 +12,31 @@ const app = express();
 // Connect to MongoDB
 connectDB();
 
-// Middleware - CORS Configuration
+// Middleware - CORS Configuration (CRITICAL FOR FILE UPLOADS)
 app.use(cors({
   origin: '*', // Allow all origins for development (restrict in production)
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
-  exposedHeaders: ['Content-Length', 'Content-Type'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH', 'HEAD'],
+  allowedHeaders: [
+    'Content-Type', 
+    'Authorization', 
+    'Accept', 
+    'Origin', 
+    'X-Requested-With',
+    'Content-Length',
+    'Accept-Encoding',
+    'X-CSRF-Token',
+    'Accept-Language'
+  ],
+  exposedHeaders: ['Content-Length', 'Content-Type', 'Content-Disposition'],
   credentials: true,
+  preflightContinue: false,
+  optionsSuccessStatus: 204,
   maxAge: 86400 // 24 hours
 }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+
+// Body parsing middleware with larger limits for file uploads
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Handle OPTIONS preflight requests for CORS
 app.options('*', cors());
