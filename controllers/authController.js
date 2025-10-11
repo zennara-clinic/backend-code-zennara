@@ -550,10 +550,11 @@ exports.uploadProfilePicture = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('❌ Profile picture upload failed');
+    console.error('❌ Profile picture upload failed:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to upload profile picture. Please try again.'
+      message: 'Failed to upload profile picture. Please try again.',
+      error: error.message
     });
   }
 };
