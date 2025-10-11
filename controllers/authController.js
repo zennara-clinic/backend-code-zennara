@@ -170,12 +170,12 @@ exports.verifyOTP = async (req, res) => {
     const token = jwt.sign(
       { userId: user._id, email: user.email },
       process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRE || '3d' }
+      { expiresIn: process.env.JWT_EXPIRE || '7d' }
     );
 
-    // Calculate token expiry (3 days from now)
+    // Calculate token expiry (7 days from now)
     const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 3);
+    expiresAt.setDate(expiresAt.getDate() + 7);
 
     // Save token to database
     const tokenDoc = new Token({

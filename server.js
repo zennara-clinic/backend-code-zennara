@@ -16,11 +16,16 @@ connectDB();
 app.use(cors({
   origin: '*', // Allow all origins for development (restrict in production)
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'Origin', 'X-Requested-With'],
+  exposedHeaders: ['Content-Length', 'Content-Type'],
+  credentials: true,
+  maxAge: 86400 // 24 hours
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// Handle OPTIONS preflight requests for CORS
+app.options('*', cors());
 
 // Debug middleware to log all requests
 app.use((req, res, next) => {
