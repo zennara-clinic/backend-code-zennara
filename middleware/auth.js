@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const Token = require('../models/Token');
+const User = require('../models/User');
 
 // Protect routes - verify JWT token
 exports.protect = async (req, res, next) => {
@@ -40,6 +41,29 @@ exports.protect = async (req, res, next) => {
           success: false,
           message: 'Session expired. Please login again.',
           code: 'SESSION_EXPIRED'
+        });
+      }
+
+      // Check if user account still exists and is active
+      const user = await User.findById(decoded.userId).select('isActive');
+      
+      if (!user) {
+        // User account deleted - revoke all tokens
+        await Token.revokeAllUserTokens(decoded.userId);
+        return res.status(401).json({
+          success: false,
+          message: 'Account not found. Please contact support.',
+          code: 'ACCOUNT_DELETED'
+        });
+      }
+
+      if (!user.isActive) {
+        // Account deactivated - revoke all tokens
+        await Token.revokeAllUserTokens(decoded.userId);
+        return res.status(401).json({
+          success: false,
+          message: 'Your account has been deactivated. Please contact support.',
+          code: 'ACCOUNT_DEACTIVATED'
         });
       }
 

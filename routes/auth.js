@@ -10,7 +10,11 @@ const {
   getMe,
   updateProfile,
   uploadProfilePicture,
-  deleteProfilePicture
+  deleteProfilePicture,
+  getActiveSessions,
+  revokeSession,
+  getSecurityLog,
+  getSecurityStatus
 } = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
 const { upload } = require('../middleware/upload');
@@ -61,5 +65,13 @@ router.post('/profile-picture', protect, (req, res, next) => {
 }, uploadProfilePicture);
 
 router.delete('/profile-picture', protect, deleteProfilePicture);
+
+// Session management routes
+router.get('/sessions', protect, getActiveSessions);
+router.delete('/sessions/:tokenId', protect, revokeSession);
+
+// Security routes
+router.get('/security-log', protect, getSecurityLog);
+router.get('/security-status', protect, getSecurityStatus);
 
 module.exports = router;

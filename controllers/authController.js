@@ -1,7 +1,8 @@
 const User = require('../models/User');
 const Token = require('../models/Token');
+const SecurityLog = require('../models/SecurityLog');
 const jwt = require('jsonwebtoken');
-const { sendOTPEmail } = require('../utils/emailService');
+const { sendOTPEmail, sendWelcomeEmail } = require('../utils/emailService');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../middleware/upload');
 
 // @desc    Register new user
@@ -42,6 +43,14 @@ exports.signup = async (req, res) => {
       dateOfBirth,
       gender
     });
+
+    // Send welcome email (non-blocking)
+    sendWelcomeEmail(user.email, user.fullName).catch(err => {
+      console.error('❌ Failed to send welcome email:', err);
+      // Don't fail registration if email fails
+    });
+
+    console.log('✅ User registered successfully');
 
     res.status(201).json({
       success: true,
@@ -86,9 +95,29 @@ exports.login = async (req, res) => {
       });
     }
 
-    // Generate OTP
+    // Check rate limiting
+    const rateLimitCheck = user.canRequestOTP();
+    if (!rateLimitCheck.allowed) {
+      return res.status(429).json({
+        success: false,
+        message: rateLimitCheck.reason
+      });
+    }
+
+    // Generate OTP (now hashed automatically)
     const otp = user.generateOTP();
     await user.save({ validateModifiedOnly: true });
+
+    // Log OTP request
+    await SecurityLog.logEvent(user._id, 'otp_requested', {
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+      deviceInfo: {
+        platform: req.headers['user-agent'] || 'unknown',
+        deviceId: req.headers['device-id'],
+        appVersion: req.headers['app-version']
+      }
+    });
 
     // Send OTP via email
     try {
@@ -147,33 +176,57 @@ exports.verifyOTP = async (req, res) => {
       });
     }
 
-    // Verify OTP
-    const isValidOTP = user.verifyOTP(otp);
+    // Verify OTP (now returns detailed result)
+    const verificationResult = user.verifyOTP(otp);
 
-    if (!isValidOTP) {
-      const now = Date.now();
-      const expired = user.otpExpiry && now > user.otpExpiry;
+    if (!verificationResult.success) {
+      await user.save({ validateModifiedOnly: true }); // Save attempt counts
+      
+      // Log failed verification
+      await SecurityLog.logEvent(user._id, 'otp_failed', {
+        ipAddress: req.ip,
+        userAgent: req.headers['user-agent'],
+        success: false,
+        errorMessage: verificationResult.message,
+        severity: user.otpAttempts >= 2 ? 'high' : 'medium'
+      });
       
       return res.status(400).json({
         success: false,
-        message: expired ? 'OTP has expired. Please request a new one.' : 'Invalid OTP. Please check and try again.'
+        message: verificationResult.message
       });
     }
 
     // Update user
     user.isVerified = true;
+    user.emailVerified = true; // Mark email as verified
     user.lastLogin = Date.now();
     user.clearOTP();
     await user.save({ validateModifiedOnly: true });
 
-    // Generate JWT token
+    // Log successful verification
+    await SecurityLog.logEvent(user._id, 'otp_verified', {
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+      severity: 'low'
+    });
+
+    // Create device info for token
+    const deviceInfo = {
+      platform: req.headers['user-agent'] || 'unknown',
+      deviceId: req.headers['device-id'] || null,
+      deviceName: req.headers['device-name'] || null,
+      appVersion: req.headers['app-version'] || null
+    };
+
+    // Generate token pair (access + refresh) - for future use
+    // For now, keeping 7-day access token for compatibility
     const token = jwt.sign(
       { userId: user._id, email: user.email },
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRE || '7d' }
     );
 
-    // Calculate token expiry (7 days from now)
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 7);
 
@@ -182,17 +235,22 @@ exports.verifyOTP = async (req, res) => {
       userId: user._id,
       token,
       type: 'access',
-      deviceInfo: {
-        platform: req.headers['user-agent'] || 'unknown',
-        deviceId: req.headers['device-id'] || null,
-        appVersion: req.headers['app-version'] || null
-      },
+      deviceInfo,
       ipAddress: req.ip || req.connection.remoteAddress,
       expiresAt,
       isActive: true
     });
 
     await tokenDoc.save();
+
+    // Log successful login
+    await SecurityLog.logEvent(user._id, 'login_success', {
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+      deviceInfo,
+      severity: 'low'
+    });
+
     console.log('✅ User logged in successfully');
 
     res.status(200).json({
@@ -247,7 +305,16 @@ exports.resendOTP = async (req, res) => {
       });
     }
 
-    // Generate new OTP
+    // Check rate limiting
+    const rateLimitCheck = user.canRequestOTP();
+    if (!rateLimitCheck.allowed) {
+      return res.status(429).json({
+        success: false,
+        message: rateLimitCheck.reason
+      });
+    }
+
+    // Generate new OTP (now hashed automatically)
     const otp = user.generateOTP();
     await user.save({ validateModifiedOnly: true });
 
@@ -608,6 +675,134 @@ exports.deleteProfilePicture = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to delete profile picture. Please try again.'
+    });
+  }
+};
+
+// @desc    Get active sessions
+// @route   GET /api/auth/sessions
+// @access  Private
+exports.getActiveSessions = async (req, res) => {
+  try {
+    const sessions = await Token.getActiveSessions(req.user.userId);
+    
+    res.status(200).json({
+      success: true,
+      data: {
+        sessions: sessions.map(session => ({
+          tokenId: session._id,
+          deviceInfo: session.deviceInfo,
+          ipAddress: session.ipAddress,
+          location: session.location,
+          lastUsedAt: session.lastUsedAt,
+          createdAt: session.createdAt,
+          expiresAt: session.expiresAt,
+          isCurrent: session.token === req.headers.authorization?.split(' ')[1]
+        })),
+        count: sessions.length
+      }
+    });
+  } catch (error) {
+    console.error('❌ Get sessions failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch sessions.'
+    });
+  }
+};
+
+// @desc    Revoke specific session
+// @route   DELETE /api/auth/sessions/:tokenId
+// @access  Private
+exports.revokeSession = async (req, res) => {
+  try {
+    const { tokenId } = req.params;
+    
+    const session = await Token.findOne({
+      _id: tokenId,
+      userId: req.user.userId,
+      isActive: true
+    });
+
+    if (!session) {
+      return res.status(404).json({
+        success: false,
+        message: 'Session not found'
+      });
+    }
+
+    await session.revoke();
+    
+    await SecurityLog.logEvent(req.user.userId, 'session_revoked', {
+      ipAddress: req.ip,
+      metadata: { revokedTokenId: tokenId }
+    });
+
+    res.status(200).json({
+      success: true,
+      message: 'Session revoked successfully'
+    });
+  } catch (error) {
+    console.error('❌ Revoke session failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to revoke session.'
+    });
+  }
+};
+
+// @desc    Get security activity log
+// @route   GET /api/auth/security-log
+// @access  Private
+exports.getSecurityLog = async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 20;
+    const activity = await SecurityLog.getUserActivity(req.user.userId, limit);
+    
+    res.status(200).json({
+      success: true,
+      data: {
+        activity,
+        count: activity.length
+      }
+    });
+  } catch (error) {
+    console.error('❌ Get security log failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch security log.'
+    });
+  }
+};
+
+// @desc    Check account security status
+// @route   GET /api/auth/security-status
+// @access  Private
+exports.getSecurityStatus = async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId).select('-otp -otpExpiry');
+    const suspiciousActivity = await SecurityLog.detectSuspiciousActivity(req.user.userId);
+    const activeSessions = await Token.getActiveSessions(req.user.userId);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        emailVerified: user.emailVerified,
+        phoneVerified: user.phoneVerified,
+        accountLocked: user.accountLockedUntil && user.accountLockedUntil > new Date(),
+        lockExpiresAt: user.accountLockedUntil,
+        failedLoginAttempts: user.failedLoginAttempts,
+        suspiciousActivity: suspiciousActivity.isSuspicious,
+        suspiciousDetails: suspiciousActivity,
+        activeSessionsCount: activeSessions.length,
+        lastLogin: user.lastLogin
+      }
+    });
+  } catch (error) {
+    console.error('❌ Get security status failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch security status.'
     });
   }
 };
