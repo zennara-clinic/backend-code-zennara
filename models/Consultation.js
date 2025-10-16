@@ -21,15 +21,7 @@ const consultationSchema = new mongoose.Schema({
   category: {
     type: String,
     required: true,
-    enum: [
-      'Facial & Peels',
-      'Medical Peels',
-      'Skin Boosters',
-      'Injectables',
-      'Body Contouring',
-      'Pigmentation',
-      'Skin Rejuvenation'
-    ],
+    trim: true,
     index: true
   },
   summary: {
@@ -46,10 +38,6 @@ const consultationSchema = new mongoose.Schema({
   ideal_for: [{
     type: String
   }],
-  duration_minutes: {
-    type: Number,
-    required: true
-  },
   price: {
     type: Number,
     required: true,
@@ -77,19 +65,44 @@ const consultationSchema = new mongoose.Schema({
     type: String,
     required: true
   },
+  media: [{
+    type: {
+      type: String,
+      enum: ['image', 'video'],
+      required: true
+    },
+    url: {
+      type: String,
+      required: true
+    },
+    thumbnail: {
+      type: String,
+      default: ''
+    },
+    publicId: {
+      type: String,
+      default: ''
+    }
+  }],
   rating: {
     type: Number,
-    default: 4.5,
+    default: null,
     min: 0,
     max: 5
-  },
-  reviews: {
-    type: Number,
-    default: 0
   },
   isActive: {
     type: Boolean,
     default: true,
+    index: true
+  },
+  showPriceInApp: {
+    type: Boolean,
+    default: false,
+    index: true
+  },
+  isPopular: {
+    type: Boolean,
+    default: false,
     index: true
   }
 }, {

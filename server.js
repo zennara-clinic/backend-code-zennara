@@ -64,6 +64,8 @@ app.use('/api/consultations', require('./routes/consultation'));
 app.use('/api/bookings', require('./routes/booking'));
 app.use('/api/branches', require('./routes/branch'));
 app.use('/api/support', require('./routes/support'));
+app.use('/api/categories', require('./routes/category'));
+app.use('/api/upload', require('./routes/upload'));
 
 // Health check - Beautiful status page
 app.get('/', (req, res) => {

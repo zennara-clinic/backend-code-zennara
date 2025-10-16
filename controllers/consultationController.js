@@ -1,4 +1,273 @@
 const Consultation = require('../models/Consultation');
+const Booking = require('../models/Booking');
+const Category = require('../models/Category');
+const mongoose = require('mongoose');
+
+// @desc    Create new consultation service
+// @route   POST /api/consultations
+// @access  Private (Admin only)
+exports.createConsultation = async (req, res) => {
+  try {
+    const {
+      name,
+      category,
+      summary,
+      about,
+      key_benefits,
+      ideal_for,
+      price,
+      cta_label,
+      tags,
+      faqs,
+      pre_care,
+      post_care,
+      image,
+      rating,
+      showPriceInApp,
+      isPopular
+    } = req.body;
+
+    // Validate required fields
+    if (!name || !category || !summary || !about || !price || !image) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please provide all required fields'
+      });
+    }
+
+    // Generate unique ID and slug
+    const id = `consult-${Date.now()}`;
+    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+
+    const consultation = await Consultation.create({
+      id,
+      slug,
+      name,
+      category,
+      summary,
+      about,
+      key_benefits,
+      ideal_for,
+      price,
+      cta_label,
+      tags,
+      faqs,
+      pre_care,
+      post_care,
+      image,
+      rating,
+      showPriceInApp: showPriceInApp !== undefined ? showPriceInApp : false,
+      isPopular: isPopular !== undefined ? isPopular : false
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Consultation service created successfully',
+      data: consultation
+    });
+  } catch (error) {
+    console.error('❌ Create consultation error:', error);
+    
+    // Handle duplicate key error
+    if (error.code === 11000) {
+      return res.status(400).json({
+        success: false,
+        message: 'A consultation with this name already exists'
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create consultation service'
+    });
+  }
+};
+
+// @desc    Update consultation service
+// @route   PUT /api/consultations/:id
+// @access  Private (Admin only)
+exports.updateConsultation = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const updateData = { ...req.body };
+
+    // Remove fields that are no longer in the schema
+    delete updateData.duration_minutes;
+    delete updateData.reviews;
+
+    // If name is being updated, update slug too
+    if (updateData.name) {
+      updateData.slug = updateData.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    }
+
+    const consultation = await Consultation.findOneAndUpdate(
+      { $or: [{ _id: mongoose.Types.ObjectId.isValid(id) ? id : null }, { id: id }, { slug: id }] },
+      updateData,
+      { new: true, runValidators: true }
+    );
+
+    if (!consultation) {
+      return res.status(404).json({
+        success: false,
+        message: 'Consultation service not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Consultation service updated successfully',
+      data: consultation
+    });
+  } catch (error) {
+    console.error('❌ Update consultation error:', error);
+    console.error('❌ Error details:', error.message);
+    if (error.name === 'ValidationError') {
+      console.error('❌ Validation errors:', error.errors);
+    }
+    res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to update consultation service',
+      errors: error.errors || null
+    });
+  }
+};
+
+// @desc    Delete consultation service
+// @route   DELETE /api/consultations/:id
+// @access  Private (Admin only)
+exports.deleteConsultation = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const consultation = await Consultation.findOneAndDelete({
+      $or: [{ _id: mongoose.Types.ObjectId.isValid(id) ? id : null }, { id: id }, { slug: id }]
+    });
+
+    if (!consultation) {
+      return res.status(404).json({
+        success: false,
+        message: 'Consultation service not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Consultation service deleted successfully',
+      data: consultation
+    });
+  } catch (error) {
+    console.error('❌ Delete consultation error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete consultation service'
+    });
+  }
+};
+
+// @desc    Toggle consultation active status
+// @route   PATCH /api/consultations/:id/toggle
+// @access  Private (Admin only)
+exports.toggleConsultationStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const consultation = await Consultation.findOne({
+      $or: [{ _id: mongoose.Types.ObjectId.isValid(id) ? id : null }, { id: id }, { slug: id }]
+    });
+
+    if (!consultation) {
+      return res.status(404).json({
+        success: false,
+        message: 'Consultation service not found'
+      });
+    }
+
+    consultation.isActive = !consultation.isActive;
+    await consultation.save();
+
+    res.status(200).json({
+      success: true,
+      message: `Consultation service ${consultation.isActive ? 'activated' : 'deactivated'} successfully`,
+      data: consultation
+    });
+  } catch (error) {
+    console.error('❌ Toggle consultation status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to toggle consultation status'
+    });
+  }
+};
+
+// @desc    Get consultation statistics
+// @route   GET /api/consultations/stats/overview
+// @access  Private (Admin only)
+exports.getConsultationStats = async (req, res) => {
+  try {
+    const totalServices = await Consultation.countDocuments();
+    const activeServices = await Consultation.countDocuments({ isActive: true });
+    const inactiveServices = await Consultation.countDocuments({ isActive: false });
+    
+    // Get average rating (only from consultations with ratings)
+    const ratingAgg = await Consultation.aggregate([
+      { $match: { rating: { $ne: null } } },
+      { $group: { _id: null, avgRating: { $avg: '$rating' } } }
+    ]);
+    const avgRating = ratingAgg.length > 0 && ratingAgg[0].avgRating ? ratingAgg[0].avgRating.toFixed(1) : 0;
+
+    // Get total confirmed bookings (only Confirmed status)
+    const totalBookings = await Booking.countDocuments({ status: 'Confirmed' });
+    
+    // Get booking statistics by status
+    const completedBookings = await Booking.countDocuments({ status: 'Completed' });
+    const confirmedBookings = await Booking.countDocuments({ status: 'Confirmed' });
+    const awaitingBookings = await Booking.countDocuments({ status: 'Awaiting Confirmation' });
+    const cancelledBookings = await Booking.countDocuments({ status: 'Cancelled' });
+
+    // Get popular services count (services marked as popular)
+    const featuredServices = await Consultation.countDocuments({ isPopular: true, isActive: true });
+
+    // Get services added this month
+    const startOfMonth = new Date();
+    startOfMonth.setDate(1);
+    startOfMonth.setHours(0, 0, 0, 0);
+    const newThisMonth = await Consultation.countDocuments({
+      createdAt: { $gte: startOfMonth }
+    });
+
+    // Get category breakdown (all consultations)
+    const categoryBreakdown = await Consultation.aggregate([
+      { $group: { _id: '$category', count: { $sum: 1 } } },
+      { $sort: { count: -1 } }
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        totalServices,
+        activeServices,
+        inactiveServices,
+        featuredServices,
+        avgRating: parseFloat(avgRating),
+        totalBookings,
+        bookingBreakdown: {
+          completed: completedBookings,
+          confirmed: confirmedBookings,
+          awaiting: awaitingBookings,
+          cancelled: cancelledBookings
+        },
+        newThisMonth,
+        categoryBreakdown
+      }
+    });
+  } catch (error) {
+    console.error('❌ Get consultation stats error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch consultation statistics'
+    });
+  }
+};
 
 // @desc    Get all consultations
 // @route   GET /api/consultations
@@ -15,7 +284,7 @@ exports.getAllConsultations = async (req, res) => {
     } = req.query;
 
     // Build query
-    let query = { isActive: true };
+    let query = {};
 
     // Filter by category
     if (category && category !== 'All') {
@@ -197,7 +466,20 @@ exports.getFeaturedConsultations = async (req, res) => {
 // @access  Public
 exports.getCategories = async (req, res) => {
   try {
-    const categories = await Consultation.distinct('category', { isActive: true });
+    // Try to get from Category model first
+    let categories = await Category.find({ isActive: true })
+      .select('name slug consultationCount')
+      .sort({ name: 1 });
+    
+    // If no categories in Category model, fallback to distinct from consultations
+    if (!categories || categories.length === 0) {
+      const distinctCategories = await Consultation.distinct('category');
+      // Convert to name array for backward compatibility
+      categories = distinctCategories;
+    } else {
+      // Extract just the names for backward compatibility
+      categories = categories.map(cat => cat.name);
+    }
 
     res.status(200).json({
       success: true,
@@ -209,6 +491,52 @@ exports.getCategories = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch categories'
+    });
+  }
+};
+
+// @desc    Create new category
+// @route   POST /api/consultations/categories
+// @access  Private (Admin only)
+exports.createCategory = async (req, res) => {
+  try {
+    const { name, description } = req.body;
+
+    if (!name || !name.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Category name is required'
+      });
+    }
+
+    // Check if category already exists (case-insensitive)
+    const existingCategory = await Category.findOne({ 
+      name: { $regex: new RegExp(`^${name.trim()}$`, 'i') } 
+    });
+
+    if (existingCategory) {
+      return res.status(400).json({
+        success: false,
+        message: 'Category already exists'
+      });
+    }
+
+    // Create new category
+    const category = await Category.create({
+      name: name.trim(),
+      description: description || ''
+    });
+
+    res.status(201).json({
+      success: true,
+      message: 'Category created successfully',
+      data: category
+    });
+  } catch (error) {
+    console.error('❌ Create category error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create category'
     });
   }
 };
