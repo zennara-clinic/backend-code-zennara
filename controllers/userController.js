@@ -75,7 +75,7 @@ exports.getAllUsers = async (req, res) => {
       gender: user.gender,
       profilePhoto: user.profilePicture?.url || null, // Changed to profilePhoto and return null if not exists
       profilePicture: user.profilePicture?.url || null, // Keep for backwards compatibility
-      totalVisits: user.totalVisits || 0,
+      totalVisits: user.appOpenCount || 0, // Now shows app opens instead of clinic visits
       totalSpent: user.totalSpent || 0,
       upcomingAppointments: user.upcomingAppointments || 0,
       isVerified: user.isVerified,
@@ -142,7 +142,7 @@ exports.getUserById = async (req, res) => {
       gender: user.gender,
       profilePhoto: user.profilePicture?.url || null,
       profilePicture: user.profilePicture?.url || null,
-      totalVisits: user.totalVisits || 0,
+      totalVisits: user.appOpenCount || 0, // Now shows app opens instead of clinic visits
       totalSpent: user.totalSpent || 0,
       upcomingAppointments: user.upcomingAppointments || 0,
       isActive: user.isActive !== undefined ? user.isActive : true,

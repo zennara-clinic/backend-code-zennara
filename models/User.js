@@ -138,6 +138,11 @@ const UserSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  appOpenCount: {
+    type: Number,
+    default: 0,
+    description: 'Number of times user has opened/logged into the app'
+  },
   totalSpent: {
     type: Number,
     default: 0

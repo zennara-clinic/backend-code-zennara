@@ -259,6 +259,7 @@ exports.verifyOTP = async (req, res) => {
     user.isVerified = true;
     user.emailVerified = true; // Mark email as verified
     user.lastLogin = Date.now();
+    user.appOpenCount = (user.appOpenCount || 0) + 1; // Increment app open count
     user.clearOTP();
     await user.save({ validateModifiedOnly: true });
 
