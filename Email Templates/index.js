@@ -14,6 +14,8 @@ const getAppointmentCompletedTemplate = require('./appointmentCompleted');
 const getRatingRequestTemplate = require('./ratingRequest');
 const getNoShowNotificationTemplate = require('./noShowNotification');
 const getCheckInSuccessfulTemplate = require('./checkInSuccessful');
+const getSupportMessageConfirmationTemplate = require('./supportMessageConfirmation');
+const getSupportMessageNotificationTemplate = require('./supportMessageNotification');
 
 module.exports = {
   // Authentication Templates
@@ -32,4 +34,8 @@ module.exports = {
   getRatingRequestTemplate,
   getNoShowNotificationTemplate,
   getCheckInSuccessfulTemplate,
+  
+  // Support Templates
+  getSupportMessageConfirmationTemplate,
+  getSupportMessageNotificationTemplate,
 };

@@ -11,6 +11,8 @@ const getRatingRequestTemplate = require('../Email Templates/ratingRequest');
 const getNoShowNotificationTemplate = require('../Email Templates/noShowNotification');
 const getCheckInSuccessfulTemplate = require('../Email Templates/checkInSuccessful');
 const { getAdminOTPEmailTemplate } = require('../Email Templates/adminOtpEmailTemplate');
+const getSupportMessageConfirmationTemplate = require('../Email Templates/supportMessageConfirmation');
+const getSupportMessageNotificationTemplate = require('../Email Templates/supportMessageNotification');
 
 // Create AWS SES client
 const sesClient = new SESClient({
@@ -220,6 +222,38 @@ exports.sendAdminOTP = async (email, adminName, otp) => {
     return response;
   } catch (error) {
     console.error('❌ Admin email sending failed');
+    throw error;
+  }
+};
+
+// ========================================
+// SUPPORT MESSAGE EMAILS
+// ========================================
+
+// Send Support Message Confirmation Email (to user)
+exports.sendSupportMessageConfirmation = async (email, name, messageData) => {
+  try {
+    const htmlContent = getSupportMessageConfirmationTemplate(name, messageData);
+    
+    const response = await sendEmail(email, 'We\'ve Received Your Message - Zennara Support', htmlContent);
+    console.log('✅ Support confirmation email sent successfully');
+    return response;
+  } catch (error) {
+    console.error('❌ Support confirmation email sending failed');
+    throw error;
+  }
+};
+
+// Send Support Message Notification Email (to admin)
+exports.sendSupportMessageNotification = async (adminEmail, messageData) => {
+  try {
+    const htmlContent = getSupportMessageNotificationTemplate(messageData);
+    
+    const response = await sendEmail(adminEmail, `🔔 New Support Message - ${messageData.subject}`, htmlContent);
+    console.log('✅ Support notification email sent to admin');
+    return response;
+  } catch (error) {
+    console.error('❌ Support notification email sending failed');
     throw error;
   }
 };
