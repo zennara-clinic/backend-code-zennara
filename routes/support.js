@@ -4,11 +4,8 @@ const {
   createSupportMessage,
   getUserSupportMessages,
   getSupportMessage,
-  getAllSupportMessages,
-  updateSupportMessageStatus,
 } = require('../controllers/supportController');
 const { protect } = require('../middleware/auth');
-const { adminProtect } = require('../middleware/adminAuth');
 
 // Public/Private route - works for both logged in and guest users
 // If token is present, it will be associated with user, otherwise treated as guest
@@ -25,8 +22,8 @@ router.post('/', (req, res, next) => {
 router.get('/my-messages', protect, getUserSupportMessages);
 router.get('/:id', protect, getSupportMessage);
 
-// Admin routes (protected + admin only)
-router.get('/admin/all', protect, adminProtect, getAllSupportMessages);
-router.put('/admin/:id/status', protect, adminProtect, updateSupportMessageStatus);
+// TODO: Admin routes will be added when admin authentication is implemented
+// router.get('/admin/all', protect, adminProtect, getAllSupportMessages);
+// router.put('/admin/:id/status', protect, adminProtect, updateSupportMessageStatus);
 
 module.exports = router;
