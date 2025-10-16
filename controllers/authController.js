@@ -34,18 +34,19 @@ exports.signup = async (req, res) => {
       });
     }
 
-    // Create new user
+    // Create new user with Regular Member as default
     const user = await User.create({
       email,
       fullName,
       phone,
       location,
       dateOfBirth,
-      gender
+      gender,
+      memberType: 'Regular Member' // All new users start as Regular Members
     });
 
     // Send welcome email (non-blocking)
-    sendWelcomeEmail(user.email, user.fullName).catch(err => {
+    sendWelcomeEmail(user.email, user.fullName, user.location).catch(err => {
       console.error('❌ Failed to send welcome email:', err);
       // Don't fail registration if email fails
     });
@@ -66,6 +67,63 @@ exports.signup = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Registration failed. Please try again.'
+    });
+  }
+};
+
+// @desc    Upgrade user to Zen Member
+// @route   POST /api/auth/upgrade-membership
+// @access  Private (User must be logged in)
+exports.upgradeMembership = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Check if already a Zen Member
+    if (user.memberType === 'Zen Member') {
+      return res.status(400).json({
+        success: false,
+        message: 'You are already a Zen Member'
+      });
+    }
+
+    // Upgrade to Zen Member with 30-day expiry
+    user.memberType = 'Zen Member';
+    user.zenMembershipStartDate = new Date();
+    
+    // Set expiry to 30 days from now
+    const expiryDate = new Date();
+    expiryDate.setDate(expiryDate.getDate() + 30);
+    user.zenMembershipExpiryDate = expiryDate;
+    user.zenMembershipAutoRenew = true;
+    
+    await user.save();
+
+    console.log(`✅ User upgraded to Zen Member: ${user.fullName} (Expires: ${expiryDate.toDateString()})`);
+
+    res.status(200).json({
+      success: true,
+      message: 'Successfully upgraded to Zen Member!',
+      data: {
+        memberType: user.memberType,
+        zenMembershipStartDate: user.zenMembershipStartDate,
+        zenMembershipExpiryDate: user.zenMembershipExpiryDate,
+        zenMembershipAutoRenew: user.zenMembershipAutoRenew
+      }
+    });
+  } catch (error) {
+    console.error('❌ Membership upgrade failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to upgrade membership. Please try again.'
     });
   }
 };
@@ -121,7 +179,7 @@ exports.login = async (req, res) => {
 
     // Send OTP via email
     try {
-      await sendOTPEmail(user.email, user.fullName, otp);
+      await sendOTPEmail(user.email, user.fullName, otp, user.location);
       
       res.status(200).json({
         success: true,
@@ -320,7 +378,7 @@ exports.resendOTP = async (req, res) => {
 
     // Send OTP via email
     try {
-      await sendOTPEmail(user.email, user.fullName, otp);
+      await sendOTPEmail(user.email, user.fullName, otp, user.location);
       
       res.status(200).json({
         success: true,
@@ -384,7 +442,7 @@ exports.logout = async (req, res) => {
 exports.logoutAll = async (req, res) => {
   try {
     // Revoke all active tokens for this user
-    await Token.revokeAllUserTokens(req.user.userId);
+    await Token.revokeAllUserTokens(req.user._id);
     console.log('✅ All tokens revoked successfully');
 
     res.status(200).json({
@@ -405,15 +463,15 @@ exports.logoutAll = async (req, res) => {
 // @access  Private
 exports.getMe = async (req, res) => {
   try {
-    console.log('🔍 Fetching profile for user:', req.user.userId);
+    console.log('🔍 Fetching profile for user:', req.user._id);
     
     // Use lean() to get plain JavaScript object (no Mongoose caching)
-    const user = await User.findById(req.user.userId)
+    const user = await User.findById(req.user._id)
       .select('-otp -otpExpiry')
       .lean();
 
     if (!user) {
-      console.log('❌ User not found:', req.user.userId);
+      console.log('❌ User not found:', req.user._id);
       return res.status(404).json({
         success: false,
         message: 'User not found'
@@ -425,7 +483,8 @@ exports.getMe = async (req, res) => {
       phone: user.phone,
       location: user.location,
       dateOfBirth: user.dateOfBirth,
-      gender: user.gender
+      gender: user.gender,
+      memberType: user.memberType
     });
 
     res.status(200).json({
@@ -438,6 +497,10 @@ exports.getMe = async (req, res) => {
         location: user.location,
         dateOfBirth: user.dateOfBirth,
         gender: user.gender,
+        memberType: user.memberType,
+        zenMembershipStartDate: user.zenMembershipStartDate,
+        zenMembershipExpiryDate: user.zenMembershipExpiryDate,
+        zenMembershipAutoRenew: user.zenMembershipAutoRenew,
         profilePicture: user.profilePicture?.url || null,
         isVerified: user.isVerified,
         createdAt: user.createdAt
@@ -467,7 +530,7 @@ exports.updateProfile = async (req, res) => {
       dateOfBirth: typeof dateOfBirth,
       gender: typeof gender
     });
-    console.log('👤 User ID:', req.user.userId);
+    console.log('👤 User ID:', req.user._id);
     
     // Build update object with only provided fields
     const updateData = {};
@@ -478,12 +541,12 @@ exports.updateProfile = async (req, res) => {
     if (gender !== undefined) updateData.gender = gender;
 
     console.log('🔄 Updating with data:', updateData);
-    console.log('🔑 Looking for user with ID:', req.user.userId);
+    console.log('🔑 Looking for user with ID:', req.user._id);
 
     // First, verify user exists
-    const existingUser = await User.findById(req.user.userId);
+    const existingUser = await User.findById(req.user._id);
     if (!existingUser) {
-      console.log('❌ User not found with ID:', req.user.userId);
+      console.log('❌ User not found with ID:', req.user._id);
       return res.status(404).json({
         success: false,
         message: 'User not found'
@@ -529,7 +592,7 @@ exports.updateProfile = async (req, res) => {
     });
 
     // Fetch fresh from DB to confirm
-    const updatedUser = await User.findById(req.user.userId)
+    const updatedUser = await User.findById(req.user._id)
       .select('-otp -otpExpiry')
       .lean();
 
@@ -597,7 +660,7 @@ exports.uploadProfilePicture = async (req, res) => {
       size: req.file.size
     });
 
-    const user = await User.findById(req.user.userId);
+    const user = await User.findById(req.user._id);
 
     if (!user) {
       return res.status(404).json({
@@ -644,7 +707,7 @@ exports.uploadProfilePicture = async (req, res) => {
 // @access  Private
 exports.deleteProfilePicture = async (req, res) => {
   try {
-    const user = await User.findById(req.user.userId);
+    const user = await User.findById(req.user._id);
 
     if (!user) {
       return res.status(404).json({
@@ -684,7 +747,7 @@ exports.deleteProfilePicture = async (req, res) => {
 // @access  Private
 exports.getActiveSessions = async (req, res) => {
   try {
-    const sessions = await Token.getActiveSessions(req.user.userId);
+    const sessions = await Token.getActiveSessions(req.user._id);
     
     res.status(200).json({
       success: true,
@@ -720,7 +783,7 @@ exports.revokeSession = async (req, res) => {
     
     const session = await Token.findOne({
       _id: tokenId,
-      userId: req.user.userId,
+      userId: req.user._id,
       isActive: true
     });
 
@@ -733,7 +796,7 @@ exports.revokeSession = async (req, res) => {
 
     await session.revoke();
     
-    await SecurityLog.logEvent(req.user.userId, 'session_revoked', {
+    await SecurityLog.logEvent(req.user._id, 'session_revoked', {
       ipAddress: req.ip,
       metadata: { revokedTokenId: tokenId }
     });
@@ -757,7 +820,7 @@ exports.revokeSession = async (req, res) => {
 exports.getSecurityLog = async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 20;
-    const activity = await SecurityLog.getUserActivity(req.user.userId, limit);
+    const activity = await SecurityLog.getUserActivity(req.user._id, limit);
     
     res.status(200).json({
       success: true,
@@ -780,9 +843,9 @@ exports.getSecurityLog = async (req, res) => {
 // @access  Private
 exports.getSecurityStatus = async (req, res) => {
   try {
-    const user = await User.findById(req.user.userId).select('-otp -otpExpiry');
-    const suspiciousActivity = await SecurityLog.detectSuspiciousActivity(req.user.userId);
-    const activeSessions = await Token.getActiveSessions(req.user.userId);
+    const user = await User.findById(req.user._id).select('-otp -otpExpiry');
+    const suspiciousActivity = await SecurityLog.detectSuspiciousActivity(req.user._id);
+    const activeSessions = await Token.getActiveSessions(req.user._id);
 
     res.status(200).json({
       success: true,

@@ -23,7 +23,11 @@ const SecurityLogSchema = new mongoose.Schema({
       'phone_changed',
       'logout',
       'session_created',
-      'session_revoked'
+      'session_revoked',
+      'admin_otp_requested',
+      'admin_otp_verified',
+      'admin_otp_failed',
+      'admin_login_success'
     ],
     required: true,
     index: true

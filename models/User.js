@@ -2,6 +2,13 @@ const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 
 const UserSchema = new mongoose.Schema({
+  // Patient ID - 8 character unique ID
+  patientId: {
+    type: String,
+    unique: true,
+    sparse: true
+  },
+  
   // Personal Information (from signup step 2)
   email: {
     type: String,
@@ -28,6 +35,27 @@ const UserSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Location is required'],
     enum: ['Jubilee Hills', 'Financial District', 'Kondapur']
+  },
+  
+  // Member Type - Only 2 types
+  memberType: {
+    type: String,
+    enum: ['Zen Member', 'Regular Member'],
+    default: 'Regular Member'
+  },
+  
+  // Zen Membership Details
+  zenMembershipStartDate: {
+    type: Date,
+    default: null
+  },
+  zenMembershipExpiryDate: {
+    type: Date,
+    default: null
+  },
+  zenMembershipAutoRenew: {
+    type: Boolean,
+    default: true
   },
   
   // Additional Details (from signup step 3)
@@ -105,6 +133,20 @@ const UserSchema = new mongoose.Schema({
     default: null
   },
   
+  // Statistics for admin panel
+  totalVisits: {
+    type: Number,
+    default: 0
+  },
+  totalSpent: {
+    type: Number,
+    default: 0
+  },
+  upcomingAppointments: {
+    type: Number,
+    default: 0
+  },
+  
   // Timestamps
   createdAt: {
     type: Date,
@@ -125,13 +167,40 @@ const UserSchema = new mongoose.Schema({
 // Index for faster queries
 UserSchema.index({ email: 1 });
 UserSchema.index({ phone: 1 });
+UserSchema.index({ patientId: 1 });
+
+// Pre-save hook to generate patient ID
+UserSchema.pre('save', async function(next) {
+  // Only generate patientId if it doesn't exist
+  if (!this.patientId) {
+    // Generate 8-character patient ID: ZEN + 5 random alphanumeric characters
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let patientId;
+    let isUnique = false;
+    
+    // Keep generating until we get a unique ID
+    while (!isUnique) {
+      patientId = 'ZEN' + Array.from({ length: 5 }, () => 
+        chars.charAt(Math.floor(Math.random() * chars.length))
+      ).join('');
+      
+      // Check if this ID already exists
+      const existing = await this.constructor.findOne({ patientId });
+      if (!existing) {
+        isUnique = true;
+      }
+    }
+    
+    this.patientId = patientId;
+  }
+  next();
+});
 
 // Method to check rate limiting for OTP requests
 UserSchema.methods.canRequestOTP = function() {
   const now = Date.now();
-  const oneHour = 60 * 60 * 1000; // 1 hour in milliseconds
   
-  // Check if account is locked
+  // Check if account is locked only
   if (this.accountLockedUntil && now < this.accountLockedUntil) {
     const minutesLeft = Math.ceil((this.accountLockedUntil - now) / 60000);
     return { 
@@ -140,21 +209,7 @@ UserSchema.methods.canRequestOTP = function() {
     };
   }
   
-  // Reset counter if outside time window (1 hour)
-  if (!this.otpRequestWindowStart || now - this.otpRequestWindowStart > oneHour) {
-    this.otpRequestCount = 0;
-    this.otpRequestWindowStart = now;
-  }
-  
-  // Check rate limit (max 5 requests per hour)
-  if (this.otpRequestCount >= 5) {
-    const timeLeft = Math.ceil((oneHour - (now - this.otpRequestWindowStart)) / 60000);
-    return { 
-      allowed: false, 
-      reason: `Too many OTP requests. Please try again in ${timeLeft} minutes.` 
-    };
-  }
-  
+  // Rate limiting removed - always allow OTP requests
   return { allowed: true };
 };
 
@@ -166,7 +221,6 @@ UserSchema.methods.generateOTP = function() {
   this.otp = bcrypt.hashSync(otp, 10);
   this.otpExpiry = Date.now() + 5 * 60 * 1000; // 5 minutes
   this.otpAttempts = 0; // Reset attempt counter
-  this.otpRequestCount += 1; // Increment request counter
   this.lastOtpRequest = Date.now();
   
   return otp; // Return plain OTP to send via email

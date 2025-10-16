@@ -14,7 +14,8 @@ const {
   getActiveSessions,
   revokeSession,
   getSecurityLog,
-  getSecurityStatus
+  getSecurityStatus,
+  upgradeMembership
 } = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
 const { upload } = require('../middleware/upload');
@@ -30,6 +31,7 @@ router.post('/logout', protect, logout);
 router.post('/logout-all', protect, logoutAll);
 router.get('/me', protect, getMe);
 router.put('/profile', protect, updateProfile);
+router.post('/upgrade-membership', protect, upgradeMembership);
 
 // Profile picture upload with error handling
 router.post('/profile-picture', protect, (req, res, next) => {

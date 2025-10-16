@@ -57,7 +57,12 @@ app.use((req, res, next) => {
 
 // Routes
 app.use('/api/auth', require('./routes/auth'));
+app.use('/api/admin/auth', require('./routes/adminAuth'));
+app.use('/api/admin/users', require('./routes/user'));
 app.use('/api/addresses', require('./routes/address'));
+app.use('/api/consultations', require('./routes/consultation'));
+app.use('/api/bookings', require('./routes/booking'));
+app.use('/api/branches', require('./routes/branch'));
 
 // Health check - Beautiful status page
 app.get('/', (req, res) => {

@@ -1,0 +1,268 @@
+[
+  {
+    "id": "svc-acne-facial",
+    "slug": "acne-facial",
+    "name": "Acne Facial",
+    "category": "Facial & Peels",
+    "summary": "Deep-cleansing facial to calm breakouts and clear congestion.",
+    "about": "Targets acne with enzymatic exfoliation, gentle extractions, and anti-inflammatory actives to reduce comedones and redness.",
+    "key_benefits": [
+      "Unclogs pores",
+      "Reduces inflammation",
+      "Balances oil",
+      "Improves texture"
+    ],
+    "ideal_for": ["Active acne", "Oily skin", "Congested pores"],
+    "duration_minutes": 60,
+    "price": 3500,
+    "cta_label": "Book Consultation",
+    "tags": ["acne", "facial"],
+    "faqs": [
+      { "q": "When will I see results?", "a": "Skin usually looks calmer within 3–5 days; a series improves long-term clarity." }
+    ],
+    "pre_care": ["Avoid retinoids for 3 days", "Arrive with clean skin"],
+    "post_care": ["Use non-comedogenic moisturizer", "Daily SPF 30+"],
+    "image": "https://images.unsplash.com/photo-1570172619644-dfd03ed5d881?w=600&h=400&fit=crop",
+    "rating": 4.8,
+    "reviews": 124
+  },
+  {
+    "id": "svc-acnelan-peel",
+    "slug": "acnelan-peel",
+    "name": "Acnelan Peel",
+    "category": "Medical Peels",
+    "summary": "Medical-grade peel for acne, oiliness, and post-acne marks.",
+    "about": "Multi-step protocol with keratolytic/comedolytic actives to reduce lesions, control sebum, and fade PIH.",
+    "key_benefits": [
+      "Clears acne lesions",
+      "Regulates oil",
+      "Refines pores",
+      "Fades PIH"
+    ],
+    "ideal_for": ["Mild–moderate acne", "Post-acne marks", "Oily skin"],
+    "duration_minutes": 45,
+    "price": 7500,
+    "cta_label": "Book Consultation",
+    "tags": ["acne", "peel"],
+    "faqs": [
+      { "q": "Will I peel?", "a": "Expect light flaking for 2–4 days; moisturize and use SPF." }
+    ],
+    "pre_care": ["Stop retinoids 5–7 days prior", "No waxing/laser for 1 week"],
+    "post_care": ["Gentle cleanser & moisturizer", "Strict sun protection"],
+    "image": "https://images.unsplash.com/photo-1616394584738-fc6e612e71b9?w=600&h=400&fit=crop",
+    "rating": 4.7,
+    "reviews": 89
+  },
+  {
+    "id": "svc-anti-aging-facial",
+    "slug": "anti-aging-facial",
+    "name": "Anti-Aging Facial",
+    "category": "Facial & Peels",
+    "summary": "Firming, glow-boosting facial for fine lines and dullness.",
+    "about": "Antioxidant infusion, collagen massage, and hydrating mask to improve tone, elasticity, and radiance.",
+    "key_benefits": [
+      "Softens fine lines",
+      "Boosts hydration",
+      "Improves firmness",
+      "Enhances glow"
+    ],
+    "ideal_for": ["Early aging", "Dull/dehydrated skin", "Event prep"],
+    "duration_minutes": 75,
+    "price": 4800,
+    "cta_label": "Book Consultation",
+    "tags": ["anti-aging", "glow"],
+    "faqs": [],
+    "pre_care": ["Avoid strong actives 48 hrs"],
+    "post_care": ["Hydrate well", "SPF 30+ daily"],
+    "image": "https://images.unsplash.com/photo-1552693673-1bf958298935?w=600&h=400&fit=crop",
+    "rating": 4.9,
+    "reviews": 156
+  },
+  {
+    "id": "svc-aqua-gold-hydration",
+    "slug": "aqua-gold-hydration",
+    "name": "Aqua Gold Hydration",
+    "category": "Skin Boosters",
+    "summary": "Micro-channel infusion of HA for instant glass-skin glow.",
+    "about": "Micro-channel device delivers hyaluronic acid and antioxidants into superficial skin for deep hydration and refined texture.",
+    "key_benefits": [
+      "Deep hydration",
+      "Refines texture",
+      "Pore appearance reduced",
+      "Minimal downtime"
+    ],
+    "ideal_for": ["Dehydrated skin", "Dullness", "Event prep"],
+    "duration_minutes": 45,
+    "price": 15000,
+    "cta_label": "Book Consultation",
+    "tags": ["skin-booster", "hydration"],
+    "faqs": [
+      { "q": "Any downtime?", "a": "Mild redness up to 24 hours; avoid makeup for 12 hours." }
+    ],
+    "pre_care": ["Pause blood thinners 24 hrs if advised", "Arrive with clean skin"],
+    "post_care": ["Gentle skincare 48 hrs", "SPF daily"],
+    "image": "https://images.unsplash.com/photo-1598440947619-2c35fc9aa908?w=600&h=400&fit=crop",
+    "rating": 4.8,
+    "reviews": 92
+  },
+  {
+    "id": "svc-aqua-gold-rejuvenation",
+    "slug": "aqua-gold-rejuvenation",
+    "name": "Aqua Gold Rejuvenation",
+    "category": "Skin Boosters",
+    "summary": "Customized micro-infusion to brighten tone and smooth fine lines.",
+    "about": "Tailored cocktail of HA, vitamins, and peptides infused via micro-channels to even tone and reduce fine lines.",
+    "key_benefits": [
+      "Evens tone",
+      "Smooths fine lines",
+      "Refines pores",
+      "Radiant finish"
+    ],
+    "ideal_for": ["Early aging", "Uneven texture", "Dullness"],
+    "duration_minutes": 50,
+    "price": 17500,
+    "cta_label": "Book Consultation",
+    "tags": ["rejuvenation", "micro-infusion"],
+    "faqs": [],
+    "pre_care": ["Stop retinoids 3 days prior"],
+    "post_care": ["Hydrate", "Avoid sauna/gym 24 hrs"],
+    "image": "https://images.unsplash.com/photo-1560750588-73207b1ef5b8?w=600&h=400&fit=crop",
+    "rating": 4.9,
+    "reviews": 78
+  },
+  {
+    "id": "svc-art-lip-filler-1ml",
+    "slug": "art-lip-filler-1ml",
+    "name": "Art Lip Filler 1ml",
+    "category": "Injectables",
+    "summary": "Premium HA filler for natural lip shape, definition, and hydration.",
+    "about": "1 ml hyaluronic acid filler to enhance volume, define borders, and correct asymmetry while keeping proportions natural.",
+    "key_benefits": [
+      "Natural volume",
+      "Improves symmetry",
+      "Hydrates lips",
+      "Immediate results"
+    ],
+    "ideal_for": ["Thin lips", "Asymmetry", "Lip lines"],
+    "duration_minutes": 45,
+    "price": 28000,
+    "cta_label": "Book Consultation",
+    "tags": ["lip-filler", "HA"],
+    "faqs": [
+      { "q": "How long does it last?", "a": "Typically 9–12 months depending on metabolism and product." }
+    ],
+    "pre_care": ["Avoid alcohol/blood thinners 24 hrs if advised"],
+    "post_care": ["Cold compress for swelling", "Avoid heat/sauna 48 hrs"],
+    "image": "https://images.unsplash.com/photo-1559056199-641a0ac8b55e?w=600&h=400&fit=crop",
+    "rating": 4.9,
+    "reviews": 203
+  },
+  {
+    "id": "svc-botox-1-unit",
+    "slug": "botox-1-unit",
+    "name": "Botox (per Unit)",
+    "category": "Injectables",
+    "summary": "Neuromodulator injections priced per unit to soften dynamic lines.",
+    "about": "Precise placement of botulinum toxin to relax overactive muscles, softening wrinkles and preventing new lines.",
+    "key_benefits": [
+      "Softens frown/forehead lines",
+      "Reduces crow's feet",
+      "Prevents wrinkle formation",
+      "No downtime"
+    ],
+    "ideal_for": ["Forehead lines", "Frown lines", "Crow's feet"],
+    "duration_minutes": 20,
+    "price": 450,
+    "cta_label": "Book Consultation",
+    "tags": ["botox", "wrinkle-relaxer"],
+    "faqs": [
+      { "q": "Onset & duration?", "a": "Results begin in 3–5 days, peak by 2 weeks, and last ~3–4 months." }
+    ],
+    "pre_care": ["Avoid alcohol same day"],
+    "post_care": ["Stay upright 4 hrs", "Do not rub/massage area same day"],
+    "image": "https://images.unsplash.com/photo-1612349317150-e413f6a5b16d?w=600&h=400&fit=crop",
+    "rating": 4.8,
+    "reviews": 312
+  },
+  {
+    "id": "svc-chin-lipolysis-injection",
+    "slug": "chin-lipolysis-injection",
+    "name": "Chin Lipolysis Injection",
+    "category": "Body Contouring",
+    "summary": "Injection lipolysis to reduce double chin and contour the jawline.",
+    "about": "Deoxycholate injections break down submental fat over multiple sessions for gradual contouring.",
+    "key_benefits": [
+      "Targets double chin",
+      "Non-surgical",
+      "Gradual, natural results",
+      "Improves jawline definition"
+    ],
+    "ideal_for": ["Submental fullness", "Mild–moderate double chin"],
+    "duration_minutes": 30,
+    "price": 22000,
+    "cta_label": "Book Consultation",
+    "tags": ["lipolysis", "contouring"],
+    "faqs": [
+      { "q": "How many sessions?", "a": "Usually 2–4 sessions spaced 4–6 weeks apart." }
+    ],
+    "pre_care": ["Avoid anti-inflammatories 24 hrs if advised"],
+    "post_care": ["Cold compress first 24 hrs", "Expect swelling 3–7 days"],
+    "image": "https://images.unsplash.com/photo-1519824145371-296894a0daa9?w=600&h=400&fit=crop",
+    "rating": 4.7,
+    "reviews": 67
+  },
+  {
+    "id": "svc-cosmelan-peel-face-neck",
+    "slug": "cosmelan-peel-face-neck",
+    "name": "Cosmelan Peel (Face & Neck)",
+    "category": "Pigmentation",
+    "summary": "Gold-standard depigmenting protocol for melasma and uneven tone.",
+    "about": "Inhibits melanin and accelerates cell renewal to reduce dark patches and even overall tone.",
+    "key_benefits": [
+      "Targets melasma & spots",
+      "Evens skin tone",
+      "Improves texture",
+      "Works across phototypes"
+    ],
+    "ideal_for": ["Melasma", "Sun/age spots", "PIH"],
+    "duration_minutes": 60,
+    "price": 38000,
+    "cta_label": "Book Consultation",
+    "tags": ["cosmelan", "pigmentation"],
+    "faqs": [
+      { "q": "Is home care required?", "a": "Yes—strict home routine is essential for best and lasting results." }
+    ],
+    "pre_care": ["Stop retinoids 7 days prior", "Avoid tanning"],
+    "post_care": ["Gentle skincare", "High-SPF and sun avoidance"],
+    "image": "https://images.unsplash.com/photo-1487412947147-5cebf100ffc2?w=600&h=400&fit=crop",
+    "rating": 4.9,
+    "reviews": 145
+  },
+  {
+    "id": "svc-derma-pen",
+    "slug": "derma-pen",
+    "name": "Derma Pen (Microneedling)",
+    "category": "Skin Rejuvenation",
+    "summary": "Automated microneedling to boost collagen and refine texture/scars.",
+    "about": "Controlled micro-injuries stimulate collagen remodeling, improving acne scars, pores, and fine lines.",
+    "key_benefits": [
+      "Improves acne scars",
+      "Reduces fine lines",
+      "Minimizes pores",
+      "Enhances product penetration"
+    ],
+    "ideal_for": ["Acne scarring", "Pores", "Uneven texture"],
+    "duration_minutes": 60,
+    "price": 9000,
+    "cta_label": "Book Consultation",
+    "tags": ["microneedling", "collagen"],
+    "faqs": [
+      { "q": "Session gap?", "a": "Typically every 4–6 weeks depending on recovery." }
+    ],
+    "pre_care": ["Pause retinoids/actives 3–5 days"],
+    "post_care": ["No makeup 24 hrs", "SPF 50 daily", "Avoid gym/sauna 24 hrs"],
+    "image": "https://images.unsplash.com/photo-1528385344095-8f1d970ba56e?w=600&h=400&fit=crop",
+    "rating": 4.8,
+    "reviews": 187
+  }
+]

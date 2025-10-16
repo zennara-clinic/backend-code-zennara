@@ -1,9 +1,9 @@
 /**
- * OTP Email Template
- * Clean, modern design for OTP verification emails
+ * Appointment Booking Confirmation Email Template
+ * Sent when user books an appointment (Awaiting Confirmation)
  */
 
-const getOTPEmailTemplate = (fullName, otp, branch = 'Zennara Clinic') => {
+const getAppointmentBookingConfirmationTemplate = (fullName, bookingData, branch = 'Zennara Clinic') => {
   return `
     <!DOCTYPE html>
     <html>
@@ -64,50 +64,44 @@ const getOTPEmailTemplate = (fullName, otp, branch = 'Zennara Clinic') => {
           line-height: 1.6;
           margin-bottom: 30px;
         }
-        .otp-section {
-          background: #ffffff;
-          border: 2px solid #e0e0e0;
-          border-radius: 12px;
-          padding: 35px 30px;
-          text-align: center;
-          margin: 30px 0;
-        }
-        .otp-label {
-          font-size: 14px;
-          font-weight: 600;
-          color: #0a6049;
-          margin-bottom: 20px;
-        }
-        .otp-code {
-          font-size: 48px;
-          font-weight: 700;
-          color: #1a1a1a;
-          letter-spacing: 12px;
-          margin: 15px 0;
-          font-family: 'Poppins', sans-serif;
-        }
-        .otp-icon {
-          font-size: 20px;
-          margin-bottom: 10px;
-          opacity: 0.6;
-        }
-        .important-notice {
-          background: #fef9f3;
-          border-left: 3px solid #f59e0b;
-          padding: 15px 20px;
+        .booking-details {
+          background: #f9f9f9;
+          padding: 25px;
+          border-radius: 8px;
           margin: 25px 0;
-          border-radius: 6px;
         }
-        .important-title {
+        .detail-row {
+          display: flex;
+          justify-content: space-between;
+          padding: 12px 0;
+          border-bottom: 1px solid #e5e5e5;
+        }
+        .detail-row:last-child {
+          border-bottom: none;
+        }
+        .detail-label {
           font-size: 14px;
-          font-weight: 700;
-          color: #1a1a1a;
-          margin-bottom: 5px;
-        }
-        .important-text {
-          font-size: 13px;
           color: #666666;
-          line-height: 1.5;
+          font-weight: 500;
+        }
+        .detail-value {
+          font-size: 14px;
+          color: #1a1a1a;
+          font-weight: 600;
+          text-align: right;
+        }
+        .status-message {
+          background: #fff9e6;
+          padding: 20px;
+          border-radius: 8px;
+          margin: 25px 0;
+          text-align: center;
+        }
+        .status-text {
+          font-size: 14px;
+          color: #b45309;
+          font-weight: 500;
+          line-height: 1.6;
         }
         .footer {
           background: #f9f9f9;
@@ -148,12 +142,15 @@ const getOTPEmailTemplate = (fullName, otp, branch = 'Zennara Clinic') => {
           .message {
             font-size: 14px;
           }
-          .otp-section {
-            padding: 25px 15px;
+          .booking-details {
+            padding: 20px 15px;
           }
-          .otp-code {
-            font-size: 36px;
-            letter-spacing: 8px;
+          .detail-row {
+            flex-direction: column;
+            gap: 5px;
+          }
+          .detail-value {
+            text-align: left;
           }
           .footer {
             padding: 20px 15px;
@@ -171,19 +168,49 @@ const getOTPEmailTemplate = (fullName, otp, branch = 'Zennara Clinic') => {
         <div class="content">
           <div class="greeting">Hello ${fullName}!</div>
           <p class="message">
-            Thank you for choosing Zennara! To complete your verification, please use the following OTP code:
+            Thank you for choosing Zennara Clinic. We've received your appointment request and our team will confirm it shortly.
           </p>
           
-          <div class="otp-section">
-            <div class="otp-icon">🔑</div>
-            <div class="otp-label">Your Verification Code</div>
-            <div class="otp-code">${otp}</div>
+          <div class="booking-details">
+            <div class="detail-row">
+              <span class="detail-label">Booking ID</span>
+              <span class="detail-value">${bookingData.referenceNumber}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Treatment</span>
+              <span class="detail-value">${bookingData.treatment}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Category</span>
+              <span class="detail-value">${bookingData.category}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Preferred Date</span>
+              <span class="detail-value">${bookingData.preferredDate}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Time Slots</span>
+              <span class="detail-value">${bookingData.timeSlots}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Location</span>
+              <span class="detail-value">${bookingData.location}</span>
+            </div>
+          </div>
+
+          <div class="status-message">
+            <p class="status-text">
+              🕐 Your appointment is awaiting confirmation. We'll notify you once it's confirmed by our team.
+            </p>
           </div>
           
+          <p class="message" style="margin-top: 25px;">
+            You'll receive a confirmation email with the exact appointment time once our team reviews your request.
+          </p>
         </div>
         
         <div class="footer">
-          <p class="footer-text">This is an automated message from Zennara Clinic.<br>Please do not reply to this email.</p>
+          <p class="footer-text">Thank you for choosing Zennara Clinic.</p>
           <p class="branch-info">Serving you from ${branch}</p>
         </div>
       </div>
@@ -192,4 +219,4 @@ const getOTPEmailTemplate = (fullName, otp, branch = 'Zennara Clinic') => {
   `;
 };
 
-module.exports = getOTPEmailTemplate;
+module.exports = getAppointmentBookingConfirmationTemplate;

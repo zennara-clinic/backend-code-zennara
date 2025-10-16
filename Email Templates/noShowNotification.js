@@ -1,9 +1,9 @@
 /**
- * Welcome Email Template
- * Clean, modern design for new user registration
+ * No-Show Notification Email Template
+ * Sent when patient doesn't show up for appointment
  */
 
-const getWelcomeEmailTemplate = (fullName, branch = 'Zennara Clinic') => {
+const getNoShowNotificationTemplate = (fullName, appointmentData, branch = 'Zennara Clinic') => {
   return `
     <!DOCTYPE html>
     <html>
@@ -64,44 +64,73 @@ const getWelcomeEmailTemplate = (fullName, branch = 'Zennara Clinic') => {
           line-height: 1.6;
           margin-bottom: 30px;
         }
-        .next-steps {
-          background: #ffffff;
-          border-left: 4px solid #0a6049;
-          padding: 25px 30px;
-          margin: 30px 0;
-          border-radius: 6px;
+        .missed-details {
+          background: #fef2f2;
+          padding: 25px;
+          border-radius: 8px;
+          margin: 25px 0;
         }
-        .next-steps-title {
-          font-size: 18px;
-          font-weight: 700;
-          color: #0a6049;
-          margin-bottom: 20px;
-        }
-        .step-item {
-          margin-bottom: 12px;
-          padding-left: 10px;
-        }
-        .step-item:last-child {
-          margin-bottom: 0;
-        }
-        .step-text {
-          font-size: 14px;
-          color: #555555;
-          line-height: 1.6;
-        }
-        .step-text strong {
-          color: #1a1a1a;
-        }
-        .step-link {
-          color: #0a6049;
-          text-decoration: none;
+        .missed-title {
+          font-size: 16px;
           font-weight: 600;
+          color: #991b1b;
+          margin-bottom: 15px;
+          text-align: center;
         }
-        .support-text {
+        .detail-row {
+          display: flex;
+          justify-content: space-between;
+          padding: 12px 0;
+          border-bottom: 1px solid #fecaca;
+        }
+        .detail-row:last-child {
+          border-bottom: none;
+        }
+        .detail-label {
+          font-size: 14px;
+          color: #666666;
+          font-weight: 500;
+        }
+        .detail-value {
+          font-size: 14px;
+          color: #1a1a1a;
+          font-weight: 600;
+          text-align: right;
+        }
+        .policy-box {
+          background: #fff9e6;
+          padding: 20px;
+          border-radius: 8px;
+          margin: 25px 0;
+        }
+        .policy-title {
+          font-size: 15px;
+          font-weight: 600;
+          color: #b45309;
+          margin-bottom: 10px;
+        }
+        .policy-text {
+          font-size: 14px;
+          color: #78350f;
+          line-height: 1.6;
+        }
+        .reschedule-box {
+          background: #ecfdf5;
+          padding: 25px;
+          border-radius: 8px;
+          margin: 25px 0;
+          text-align: center;
+        }
+        .reschedule-title {
+          font-size: 16px;
+          font-weight: 600;
+          color: #047857;
+          margin-bottom: 10px;
+        }
+        .reschedule-text {
           font-size: 14px;
           color: #555555;
           line-height: 1.6;
-          margin-top: 25px;
         }
         .footer {
           background: #f9f9f9;
@@ -142,8 +171,15 @@ const getWelcomeEmailTemplate = (fullName, branch = 'Zennara Clinic') => {
           .message {
             font-size: 14px;
           }
-          .next-steps {
-            padding: 20px 20px;
+          .missed-details, .policy-box, .reschedule-box {
+            padding: 20px 15px;
+          }
+          .detail-row {
+            flex-direction: column;
+            gap: 5px;
+          }
+          .detail-value {
+            text-align: left;
           }
           .footer {
             padding: 20px 15px;
@@ -159,33 +195,47 @@ const getWelcomeEmailTemplate = (fullName, branch = 'Zennara Clinic') => {
         </div>
         
         <div class="content">
-          <div class="greeting">Welcome ${fullName}!</div>
+          <div class="greeting">Hello ${fullName},</div>
           <p class="message">
-            Congratulations! Your Zennara account has been successfully created. We're excited to be part of your beauty transformation journey.
+            We noticed you missed your scheduled appointment today. We hope everything is okay!
           </p>
-          
-          <div class="next-steps">
-            <div class="next-steps-title">What's Next?</div>
-            
-            <div class="step-item">
-              <p class="step-text">• Explore our premium beauty <strong>treatments</strong></p>
+
+          <div class="missed-details">
+            <div class="missed-title">Missed Appointment</div>
+            <div class="detail-row">
+              <span class="detail-label">Treatment</span>
+              <span class="detail-value">${appointmentData.treatment}</span>
             </div>
-            
-            <div class="step-item">
-              <p class="step-text">• <strong>Book your first appointment</strong></p>
+            <div class="detail-row">
+              <span class="detail-label">Date</span>
+              <span class="detail-value">${appointmentData.date}</span>
             </div>
-            
-            <div class="step-item">
-              <p class="step-text">• Browse our pharmacy for <strong>beauty products</strong></p>
+            <div class="detail-row">
+              <span class="detail-label">Time</span>
+              <span class="detail-value">${appointmentData.time}</span>
             </div>
-            
-            <div class="step-item">
-              <p class="step-text">• Manage your <a href="#" class="step-link">appointments</a> easily</p>
+            <div class="detail-row">
+              <span class="detail-label">Location</span>
+              <span class="detail-value">${appointmentData.location}</span>
             </div>
           </div>
+
+          <div class="policy-box">
+            <div class="policy-title">Cancellation Policy Reminder:</div>
+            <p class="policy-text">
+              Please cancel or reschedule appointments at least 24 hours in advance to avoid no-show charges.
+            </p>
+          </div>
+
+          <div class="reschedule-box">
+            <div class="reschedule-title">We'd Love to See You Again!</div>
+            <p class="reschedule-text">
+              Book your next appointment through the Zennara app and continue your beauty transformation journey.
+            </p>
+          </div>
           
-          <p class="support-text">
-            If you have any questions or need assistance, our support team is here to help you every step of the way.
+          <p class="message" style="margin-top: 25px; text-align: center;">
+            If you have any questions, please contact us through the app or visit our clinic.
           </p>
         </div>
         
@@ -199,4 +249,4 @@ const getWelcomeEmailTemplate = (fullName, branch = 'Zennara Clinic') => {
   `;
 };
 
-module.exports = getWelcomeEmailTemplate;
+module.exports = getNoShowNotificationTemplate;

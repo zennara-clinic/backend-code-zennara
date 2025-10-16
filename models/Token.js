@@ -3,9 +3,14 @@ const mongoose = require('mongoose');
 const TokenSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'User',
+    refPath: 'userType',
     required: true,
     index: true
+  },
+  userType: {
+    type: String,
+    enum: ['User', 'Admin'],
+    default: 'User'
   },
   token: {
     type: String,
@@ -14,7 +19,7 @@ const TokenSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['access', 'refresh'],
+    enum: ['access', 'refresh', 'admin_access'],
     default: 'access'
   },
   deviceInfo: {

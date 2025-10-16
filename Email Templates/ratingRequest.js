@@ -1,9 +1,9 @@
 /**
- * OTP Email Template
- * Clean, modern design for OTP verification emails
+ * Rating Request Email Template
+ * Sent 24 hours after completed appointment
  */
 
-const getOTPEmailTemplate = (fullName, otp, branch = 'Zennara Clinic') => {
+const getRatingRequestTemplate = (fullName, appointmentData, branch = 'Zennara Clinic') => {
   return `
     <!DOCTYPE html>
     <html>
@@ -64,50 +64,59 @@ const getOTPEmailTemplate = (fullName, otp, branch = 'Zennara Clinic') => {
           line-height: 1.6;
           margin-bottom: 30px;
         }
-        .otp-section {
-          background: #ffffff;
-          border: 2px solid #e0e0e0;
-          border-radius: 12px;
-          padding: 35px 30px;
+        .treatment-info {
+          background: #f9f9f9;
+          padding: 20px;
+          border-radius: 8px;
+          margin: 25px 0;
           text-align: center;
-          margin: 30px 0;
         }
-        .otp-label {
-          font-size: 14px;
+        .treatment-name {
+          font-size: 16px;
           font-weight: 600;
           color: #0a6049;
-          margin-bottom: 20px;
-        }
-        .otp-code {
-          font-size: 48px;
-          font-weight: 700;
-          color: #1a1a1a;
-          letter-spacing: 12px;
-          margin: 15px 0;
-          font-family: 'Poppins', sans-serif;
-        }
-        .otp-icon {
-          font-size: 20px;
-          margin-bottom: 10px;
-          opacity: 0.6;
-        }
-        .important-notice {
-          background: #fef9f3;
-          border-left: 3px solid #f59e0b;
-          padding: 15px 20px;
-          margin: 25px 0;
-          border-radius: 6px;
-        }
-        .important-title {
-          font-size: 14px;
-          font-weight: 700;
-          color: #1a1a1a;
           margin-bottom: 5px;
         }
-        .important-text {
-          font-size: 13px;
+        .treatment-date {
+          font-size: 14px;
           color: #666666;
-          line-height: 1.5;
+        }
+        .rating-box {
+          background: #fff9e6;
+          padding: 30px;
+          border-radius: 8px;
+          margin: 25px 0;
+          text-align: center;
+        }
+        .rating-title {
+          font-size: 18px;
+          font-weight: 600;
+          color: #0a6049;
+          margin-bottom: 15px;
+        }
+        .rating-subtitle {
+          font-size: 14px;
+          color: #555555;
+          line-height: 1.6;
+          margin-bottom: 20px;
+        }
+        .star-display {
+          font-size: 36px;
+          letter-spacing: 8px;
+          margin: 20px 0;
+        }
+        .app-note {
+          background: #eff6ff;
+          padding: 20px;
+          border-radius: 8px;
+          margin: 25px 0;
+          text-align: center;
+        }
+        .app-note-text {
+          font-size: 14px;
+          color: #1e40af;
+          font-weight: 500;
+          line-height: 1.6;
         }
         .footer {
           background: #f9f9f9;
@@ -148,12 +157,12 @@ const getOTPEmailTemplate = (fullName, otp, branch = 'Zennara Clinic') => {
           .message {
             font-size: 14px;
           }
-          .otp-section {
+          .rating-box {
             padding: 25px 15px;
           }
-          .otp-code {
-            font-size: 36px;
-            letter-spacing: 8px;
+          .star-display {
+            font-size: 28px;
+            letter-spacing: 6px;
           }
           .footer {
             padding: 20px 15px;
@@ -169,21 +178,37 @@ const getOTPEmailTemplate = (fullName, otp, branch = 'Zennara Clinic') => {
         </div>
         
         <div class="content">
-          <div class="greeting">Hello ${fullName}!</div>
+          <div class="greeting">Hi ${fullName}!</div>
           <p class="message">
-            Thank you for choosing Zennara! To complete your verification, please use the following OTP code:
+            We hope you're enjoying the results of your recent treatment! Your feedback means the world to us.
           </p>
-          
-          <div class="otp-section">
-            <div class="otp-icon">🔑</div>
-            <div class="otp-label">Your Verification Code</div>
-            <div class="otp-code">${otp}</div>
+
+          <div class="treatment-info">
+            <div class="treatment-name">${appointmentData.treatment}</div>
+            <div class="treatment-date">${appointmentData.date}</div>
+          </div>
+
+          <div class="rating-box">
+            <div class="rating-title">How Was Your Experience?</div>
+            <p class="rating-subtitle">
+              Your feedback helps us maintain the highest quality of service.
+            </p>
+            <div class="star-display">⭐⭐⭐⭐⭐</div>
+          </div>
+
+          <div class="app-note">
+            <p class="app-note-text">
+              📱 Please open the Zennara app to rate your experience and share your thoughts!
+            </p>
           </div>
           
+          <p class="message" style="margin-top: 25px; text-align: center;">
+            Thank you for being a valued member of the Zennara family!
+          </p>
         </div>
         
         <div class="footer">
-          <p class="footer-text">This is an automated message from Zennara Clinic.<br>Please do not reply to this email.</p>
+          <p class="footer-text">Thank you for choosing Zennara Clinic.</p>
           <p class="branch-info">Serving you from ${branch}</p>
         </div>
       </div>
@@ -192,4 +217,4 @@ const getOTPEmailTemplate = (fullName, otp, branch = 'Zennara Clinic') => {
   `;
 };
 
-module.exports = getOTPEmailTemplate;
+module.exports = getRatingRequestTemplate;

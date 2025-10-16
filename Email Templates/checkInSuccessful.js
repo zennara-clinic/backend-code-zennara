@@ -1,9 +1,9 @@
 /**
- * Welcome Email Template
- * Clean, modern design for new user registration
+ * Check-in Successful Email Template
+ * Sent when patient checks in at clinic
  */
 
-const getWelcomeEmailTemplate = (fullName, branch = 'Zennara Clinic') => {
+const getCheckInSuccessfulTemplate = (fullName, appointmentData, branch = 'Zennara Clinic') => {
   return `
     <!DOCTYPE html>
     <html>
@@ -64,44 +64,76 @@ const getWelcomeEmailTemplate = (fullName, branch = 'Zennara Clinic') => {
           line-height: 1.6;
           margin-bottom: 30px;
         }
-        .next-steps {
-          background: #ffffff;
-          border-left: 4px solid #0a6049;
-          padding: 25px 30px;
-          margin: 30px 0;
-          border-radius: 6px;
+        .checkin-box {
+          background: #ecfdf5;
+          padding: 25px;
+          border-radius: 8px;
+          margin: 25px 0;
+          text-align: center;
         }
-        .next-steps-title {
+        .checkin-icon {
+          font-size: 48px;
+          margin-bottom: 15px;
+        }
+        .checkin-title {
           font-size: 18px;
-          font-weight: 700;
-          color: #0a6049;
-          margin-bottom: 20px;
-        }
-        .step-item {
-          margin-bottom: 12px;
-          padding-left: 10px;
-        }
-        .step-item:last-child {
-          margin-bottom: 0;
-        }
-        .step-text {
-          font-size: 14px;
-          color: #555555;
-          line-height: 1.6;
-        }
-        .step-text strong {
-          color: #1a1a1a;
-        }
-        .step-link {
-          color: #0a6049;
-          text-decoration: none;
           font-weight: 600;
+          color: #047857;
+          margin-bottom: 10px;
         }
-        .support-text {
+        .checkin-text {
           font-size: 14px;
           color: #555555;
           line-height: 1.6;
-          margin-top: 25px;
+        }
+        .appointment-details {
+          background: #f9f9f9;
+          padding: 25px;
+          border-radius: 8px;
+          margin: 25px 0;
+        }
+        .detail-row {
+          display: flex;
+          justify-content: space-between;
+          padding: 12px 0;
+          border-bottom: 1px solid #e5e5e5;
+        }
+        .detail-row:last-child {
+          border-bottom: none;
+        }
+        .detail-label {
+          font-size: 14px;
+          color: #666666;
+          font-weight: 500;
+        }
+        .detail-value {
+          font-size: 14px;
+          color: #1a1a1a;
+          font-weight: 600;
+          text-align: right;
+        }
+        .wait-time-box {
+          background: #eff6ff;
+          padding: 20px;
+          border-radius: 8px;
+          margin: 25px 0;
+          text-align: center;
+        }
+        .wait-time-title {
+          font-size: 14px;
+          color: #666666;
+          margin-bottom: 10px;
+        }
+        .wait-time-value {
+          font-size: 32px;
+          font-weight: 700;
+          color: #1e40af;
+          margin: 10px 0;
+        }
+        .wait-time-note {
+          font-size: 13px;
+          color: #555555;
+          margin-top: 10px;
         }
         .footer {
           background: #f9f9f9;
@@ -142,8 +174,21 @@ const getWelcomeEmailTemplate = (fullName, branch = 'Zennara Clinic') => {
           .message {
             font-size: 14px;
           }
-          .next-steps {
-            padding: 20px 20px;
+          .checkin-box, .appointment-details, .wait-time-box {
+            padding: 20px 15px;
+          }
+          .checkin-icon {
+            font-size: 40px;
+          }
+          .wait-time-value {
+            font-size: 28px;
+          }
+          .detail-row {
+            flex-direction: column;
+            gap: 5px;
+          }
+          .detail-value {
+            text-align: left;
           }
           .footer {
             padding: 20px 15px;
@@ -159,33 +204,42 @@ const getWelcomeEmailTemplate = (fullName, branch = 'Zennara Clinic') => {
         </div>
         
         <div class="content">
-          <div class="greeting">Welcome ${fullName}!</div>
+          <div class="greeting">Welcome, ${fullName}!</div>
           <p class="message">
-            Congratulations! Your Zennara account has been successfully created. We're excited to be part of your beauty transformation journey.
+            Thank you for checking in! We're excited to see you today.
           </p>
-          
-          <div class="next-steps">
-            <div class="next-steps-title">What's Next?</div>
-            
-            <div class="step-item">
-              <p class="step-text">• Explore our premium beauty <strong>treatments</strong></p>
+
+          <div class="checkin-box">
+            <div class="checkin-icon">✓</div>
+            <div class="checkin-title">Check-in Confirmed</div>
+            <p class="checkin-text">
+              You're all set! Our team will be with you shortly.
+            </p>
+          </div>
+
+          <div class="appointment-details">
+            <div class="detail-row">
+              <span class="detail-label">Treatment</span>
+              <span class="detail-value">${appointmentData.treatment}</span>
             </div>
-            
-            <div class="step-item">
-              <p class="step-text">• <strong>Book your first appointment</strong></p>
+            <div class="detail-row">
+              <span class="detail-label">Time</span>
+              <span class="detail-value">${appointmentData.time}</span>
             </div>
-            
-            <div class="step-item">
-              <p class="step-text">• Browse our pharmacy for <strong>beauty products</strong></p>
-            </div>
-            
-            <div class="step-item">
-              <p class="step-text">• Manage your <a href="#" class="step-link">appointments</a> easily</p>
+            <div class="detail-row">
+              <span class="detail-label">Location</span>
+              <span class="detail-value">${appointmentData.location}</span>
             </div>
           </div>
+
+          <div class="wait-time-box">
+            <div class="wait-time-title">Estimated Wait Time</div>
+            <div class="wait-time-value">${appointmentData.waitTime || '5-10'} min</div>
+            <p class="wait-time-note">We'll notify you when it's your turn</p>
+          </div>
           
-          <p class="support-text">
-            If you have any questions or need assistance, our support team is here to help you every step of the way.
+          <p class="message" style="margin-top: 25px; text-align: center;">
+            Please relax in our waiting area. We appreciate your patience!
           </p>
         </div>
         
@@ -199,4 +253,4 @@ const getWelcomeEmailTemplate = (fullName, branch = 'Zennara Clinic') => {
   `;
 };
 
-module.exports = getWelcomeEmailTemplate;
+module.exports = getCheckInSuccessfulTemplate;

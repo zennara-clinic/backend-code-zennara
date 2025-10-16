@@ -1,9 +1,9 @@
 /**
- * OTP Email Template
- * Clean, modern design for OTP verification emails
+ * Appointment Cancelled Email Template
+ * Sent when appointment is cancelled
  */
 
-const getOTPEmailTemplate = (fullName, otp, branch = 'Zennara Clinic') => {
+const getAppointmentCancelledTemplate = (fullName, appointmentData, branch = 'Zennara Clinic') => {
   return `
     <!DOCTYPE html>
     <html>
@@ -64,50 +64,62 @@ const getOTPEmailTemplate = (fullName, otp, branch = 'Zennara Clinic') => {
           line-height: 1.6;
           margin-bottom: 30px;
         }
-        .otp-section {
-          background: #ffffff;
-          border: 2px solid #e0e0e0;
-          border-radius: 12px;
-          padding: 35px 30px;
-          text-align: center;
-          margin: 30px 0;
+        .cancelled-details {
+          background: #f9f9f9;
+          padding: 25px;
+          border-radius: 8px;
+          margin: 25px 0;
         }
-        .otp-label {
+        .detail-row {
+          display: flex;
+          justify-content: space-between;
+          padding: 12px 0;
+          border-bottom: 1px solid #e5e5e5;
+        }
+        .detail-row:last-child {
+          border-bottom: none;
+        }
+        .detail-label {
           font-size: 14px;
+          color: #666666;
+          font-weight: 500;
+        }
+        .detail-value {
+          font-size: 14px;
+          color: #1a1a1a;
+          font-weight: 600;
+          text-align: right;
+        }
+        .cancelled-message {
+          background: #fef2f2;
+          padding: 20px;
+          border-radius: 8px;
+          margin: 25px 0;
+          text-align: center;
+        }
+        .cancelled-text {
+          font-size: 14px;
+          color: #991b1b;
+          font-weight: 500;
+          line-height: 1.6;
+        }
+        .cta-box {
+          background: #f9f9f9;
+          padding: 25px;
+          border-radius: 8px;
+          margin: 25px 0;
+          text-align: center;
+        }
+        .cta-title {
+          font-size: 16px;
           font-weight: 600;
           color: #0a6049;
-          margin-bottom: 20px;
-        }
-        .otp-code {
-          font-size: 48px;
-          font-weight: 700;
-          color: #1a1a1a;
-          letter-spacing: 12px;
-          margin: 15px 0;
-          font-family: 'Poppins', sans-serif;
-        }
-        .otp-icon {
-          font-size: 20px;
           margin-bottom: 10px;
-          opacity: 0.6;
         }
-        .important-notice {
-          background: #fef9f3;
-          border-left: 3px solid #f59e0b;
-          padding: 15px 20px;
-          margin: 25px 0;
-          border-radius: 6px;
-        }
-        .important-title {
+        .cta-text {
           font-size: 14px;
-          font-weight: 700;
-          color: #1a1a1a;
-          margin-bottom: 5px;
-        }
-        .important-text {
-          font-size: 13px;
-          color: #666666;
-          line-height: 1.5;
+          color: #555555;
+          line-height: 1.6;
         }
         .footer {
           background: #f9f9f9;
@@ -148,12 +160,15 @@ const getOTPEmailTemplate = (fullName, otp, branch = 'Zennara Clinic') => {
           .message {
             font-size: 14px;
           }
-          .otp-section {
-            padding: 25px 15px;
+          .cancelled-details {
+            padding: 20px 15px;
           }
-          .otp-code {
-            font-size: 36px;
-            letter-spacing: 8px;
+          .detail-row {
+            flex-direction: column;
+            gap: 5px;
+          }
+          .detail-value {
+            text-align: left;
           }
           .footer {
             padding: 20px 15px;
@@ -169,21 +184,54 @@ const getOTPEmailTemplate = (fullName, otp, branch = 'Zennara Clinic') => {
         </div>
         
         <div class="content">
-          <div class="greeting">Hello ${fullName}!</div>
+          <div class="greeting">Hello ${fullName},</div>
           <p class="message">
-            Thank you for choosing Zennara! To complete your verification, please use the following OTP code:
+            Your appointment has been cancelled as requested. We hope to see you again soon!
           </p>
           
-          <div class="otp-section">
-            <div class="otp-icon">🔑</div>
-            <div class="otp-label">Your Verification Code</div>
-            <div class="otp-code">${otp}</div>
+          <div class="cancelled-message">
+            <p class="cancelled-text">
+              ✕ Appointment Cancelled
+            </p>
+          </div>
+
+          <div class="cancelled-details">
+            <div class="detail-row">
+              <span class="detail-label">Booking ID</span>
+              <span class="detail-value">${appointmentData.referenceNumber}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Treatment</span>
+              <span class="detail-value">${appointmentData.treatment}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Date</span>
+              <span class="detail-value">${appointmentData.date}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Time</span>
+              <span class="detail-value">${appointmentData.time}</span>
+            </div>
+            <div class="detail-row">
+              <span class="detail-label">Location</span>
+              <span class="detail-value">${appointmentData.location}</span>
+            </div>
+          </div>
+
+          <div class="cta-box">
+            <div class="cta-title">Book Another Appointment</div>
+            <p class="cta-text">
+              Explore our premium treatments and book your next appointment through the Zennara app.
+            </p>
           </div>
           
+          <p class="message" style="margin-top: 25px; text-align: center;">
+            We look forward to serving you again!
+          </p>
         </div>
         
         <div class="footer">
-          <p class="footer-text">This is an automated message from Zennara Clinic.<br>Please do not reply to this email.</p>
+          <p class="footer-text">Thank you for choosing Zennara Clinic.</p>
           <p class="branch-info">Serving you from ${branch}</p>
         </div>
       </div>
@@ -192,4 +240,4 @@ const getOTPEmailTemplate = (fullName, otp, branch = 'Zennara Clinic') => {
   `;
 };
 
-module.exports = getOTPEmailTemplate;
+module.exports = getAppointmentCancelledTemplate;
