@@ -75,8 +75,58 @@ const deleteFromCloudinary = async (publicId) => {
   }
 };
 
+// Middleware to upload profile picture with Cloudinary
+const uploadProfilePicture = async (req, res, next) => {
+  // Use multer to handle file upload
+  upload.single('profilePicture')(req, res, async (err) => {
+    if (err) {
+      if (err instanceof multer.MulterError) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return res.status(400).json({
+            success: false,
+            message: 'File size too large. Maximum size is 5MB'
+          });
+        }
+        return res.status(400).json({
+          success: false,
+          message: `Upload error: ${err.message}`
+        });
+      }
+      return res.status(400).json({
+        success: false,
+        message: err.message || 'Invalid file upload'
+      });
+    }
+
+    // If there's a file, upload to Cloudinary
+    if (req.file) {
+      try {
+        console.log('📤 Uploading file to Cloudinary...');
+        const result = await uploadToCloudinary(req.file.buffer, 'zennara/profiles');
+        
+        // Attach Cloudinary result to request
+        req.cloudinaryResult = {
+          url: result.secure_url,
+          publicId: result.public_id
+        };
+        
+        console.log('✅ File uploaded to Cloudinary:', result.secure_url);
+      } catch (uploadError) {
+        console.error('❌ Cloudinary upload error:', uploadError);
+        return res.status(500).json({
+          success: false,
+          message: 'Failed to upload image to cloud storage'
+        });
+      }
+    }
+
+    next();
+  });
+};
+
 module.exports = {
   upload,
   uploadToCloudinary,
-  deleteFromCloudinary
+  deleteFromCloudinary,
+  uploadProfilePicture
 };

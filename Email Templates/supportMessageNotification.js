@@ -219,7 +219,6 @@ const getSupportMessageNotificationTemplate = (messageData) => {
           
           <div class="cta-container">
             <a href="mailto:${messageData.email}" class="cta-button primary">Reply to Customer</a>
-            <a href="tel:+91${messageData.phone}" class="cta-button secondary">Call Customer</a>
           </div>
         </div>
         

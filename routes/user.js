@@ -13,6 +13,7 @@ const {
   toggleUserStatus
 } = require('../controllers/userController');
 const { protectAdmin } = require('../middleware/auth');
+const { uploadProfilePicture } = require('../middleware/upload');
 
 // All routes require admin authentication
 router.use(protectAdmin);
@@ -22,7 +23,7 @@ router.post('/', createUser); // Create new user (admin)
 router.get('/', getAllUsers);
 router.get('/export', exportUsers);
 router.get('/:id', getUserById);
-router.put('/:id', updateUser);
+router.put('/:id', uploadProfilePicture, updateUser); // Add upload middleware
 router.delete('/:id', deleteUser);
 router.patch('/:id/statistics', updateUserStatistics);
 

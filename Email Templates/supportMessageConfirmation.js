@@ -189,12 +189,8 @@ const getSupportMessageConfirmationTemplate = (name, messageData) => {
           </div>
           
           <p class="message">
-            Our team typically responds within 24 hours during business days. For urgent matters, please call us directly at <strong style="color: #20594e;">+91 7013509984</strong>.
+            Our team typically responds within 24 hours during business days. We will get back to you via email as soon as possible.
           </p>
-          
-          <div class="cta-container">
-            <a href="tel:+917013509984" class="cta-button">Call Support</a>
-          </div>
         </div>
         
         <div class="footer">

@@ -16,6 +16,8 @@ exports.createSupportMessage = async (req, res) => {
       });
     }
 
+    console.log('📝 Support message details:', { name, email, phone, location, subject });
+
     // Create support message
     const supportMessage = await SupportMessage.create({
       userId: req.user?._id || null, // Will be null for guest users

@@ -171,7 +171,8 @@ exports.getUserById = async (req, res) => {
 // @access  Private (Admin only)
 exports.updateUser = async (req, res) => {
   try {
-    const { fullName, phone, location, memberType, dateOfBirth, gender } = req.body;
+    const { fullName, phone, location, memberType, dateOfBirth, gender, removeProfilePicture } = req.body;
+    const { deleteFromCloudinary } = require('../middleware/upload');
 
     const user = await User.findById(req.params.id);
 
@@ -182,6 +183,9 @@ exports.updateUser = async (req, res) => {
       });
     }
 
+    // Store old profile picture publicId for deletion
+    const oldPublicId = user.profilePicture?.publicId;
+
     // Update fields if provided
     if (fullName) user.fullName = fullName;
     if (phone) user.phone = phone;
@@ -189,6 +193,37 @@ exports.updateUser = async (req, res) => {
     if (memberType) user.memberType = memberType;
     if (dateOfBirth) user.dateOfBirth = dateOfBirth;
     if (gender) user.gender = gender;
+
+    // Handle profile picture removal
+    if (removeProfilePicture === 'true' || removeProfilePicture === true) {
+      // Delete old image from Cloudinary if it exists
+      if (oldPublicId) {
+        await deleteFromCloudinary(oldPublicId);
+        console.log('🗑️ Deleted old profile picture from Cloudinary:', oldPublicId);
+      }
+      
+      user.profilePicture = {
+        url: null,
+        publicId: null
+      };
+      console.log('✅ Profile picture removed for user:', user._id);
+    }
+
+    // Handle profile picture upload from Cloudinary
+    if (req.cloudinaryResult) {
+      // Delete old image from Cloudinary if it exists
+      if (oldPublicId && !removeProfilePicture) {
+        await deleteFromCloudinary(oldPublicId);
+        console.log('🗑️ Deleted old profile picture from Cloudinary:', oldPublicId);
+      }
+
+      user.profilePicture = {
+        url: req.cloudinaryResult.url,
+        publicId: req.cloudinaryResult.publicId
+      };
+      console.log('✅ Profile picture uploaded to Cloudinary for user:', user._id);
+      console.log('📸 Cloudinary URL:', req.cloudinaryResult.url);
+    }
 
     await user.save();
 
@@ -201,14 +236,16 @@ exports.updateUser = async (req, res) => {
         email: user.email,
         phone: user.phone,
         location: user.location,
-        memberType: user.memberType
+        memberType: user.memberType,
+        profilePhoto: user.profilePicture?.url || null
       }
     });
   } catch (error) {
     console.error('❌ Update user failed:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to update user'
+      message: 'Failed to update user',
+      error: error.message
     });
   }
 };
