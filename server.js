@@ -7,6 +7,8 @@ const express = require('express');
 const cors = require('cors');
 const connectDB = require('./config/db');
 const { startBookingScheduler } = require('./utils/bookingScheduler');
+const BookingStatusService = require('./services/bookingStatusService');
+const { checkBookingStatus } = require('./middleware/bookingStatusMiddleware');
 
 // Initialize Express app
 const app = express();
@@ -16,6 +18,9 @@ connectDB();
 
 // Start booking cleanup scheduler
 startBookingScheduler();
+
+// Start automatic No Show status checker
+BookingStatusService.startAutoChecker();
 
 // Middleware - CORS Configuration (CRITICAL FOR FILE UPLOADS)
 app.use(cors({
@@ -42,6 +47,9 @@ app.use(cors({
 // Body parsing middleware with larger limits for file uploads
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Apply booking status check middleware to all booking routes
+app.use('/api/bookings', checkBookingStatus);
 
 // Handle OPTIONS preflight requests for CORS
 app.options('*', cors());
