@@ -80,24 +80,6 @@ const getAdminOTPEmailTemplate = (adminName, otp) => {
           line-height: 1.8;
         }
         
-        .admin-badge {
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          background: linear-gradient(135deg, #FEF3C7 0%, #FDE68A 100%);
-          color: #92400E;
-          padding: 10px 20px;
-          border-radius: 12px;
-          font-size: 13px;
-          font-weight: 600;
-          margin-bottom: 30px;
-          border: 2px solid #FCD34D;
-        }
-        
-        .admin-badge::before {
-          content: "🛡️";
-          font-size: 18px;
-        }
         
         .otp-container {
           background: linear-gradient(135deg, #F0FDF4 0%, #DCFCE7 100%);
@@ -138,54 +120,7 @@ const getAdminOTPEmailTemplate = (adminName, otp) => {
           font-weight: 700;
         }
         
-        .security-notice {
-          background: linear-gradient(135deg, #FEF2F2 0%, #FEE2E2 100%);
-          border-left: 4px solid #EF4444;
-          padding: 20px;
-          border-radius: 12px;
-          margin: 30px 0;
-        }
         
-        .security-notice h3 {
-          font-size: 15px;
-          font-weight: 700;
-          color: #991B1B;
-          margin-bottom: 10px;
-          display: flex;
-          align-items: center;
-          gap: 8px;
-        }
-        
-        .security-notice h3::before {
-          content: "⚠️";
-          font-size: 18px;
-        }
-        
-        .security-notice p {
-          font-size: 14px;
-          color: #7F1D1D;
-          line-height: 1.7;
-          margin: 0;
-        }
-        
-        .info-box {
-          background: #F9FAFB;
-          border-radius: 12px;
-          padding: 20px;
-          margin: 25px 0;
-        }
-        
-        .info-box p {
-          font-size: 14px;
-          color: #4B5563;
-          margin: 8px 0;
-          line-height: 1.7;
-        }
-        
-        .info-box strong {
-          color: #1F2937;
-          font-weight: 600;
-        }
         
         .divider {
           height: 1px;
@@ -289,12 +224,8 @@ const getAdminOTPEmailTemplate = (adminName, otp) => {
         <div class="content">
           <p class="greeting">Hello Admin ${adminName},</p>
           
-          <div class="admin-badge">
-            Admin Authentication Request
-          </div>
-          
           <p class="message">
-            A login request was made to access the Zennara Admin Panel. Please use the verification code below to complete your authentication.
+            Please use the verification code below to complete your admin panel login.
           </p>
           
           <!-- OTP Box -->

@@ -199,7 +199,7 @@ const getAppointmentConfirmedTemplate = (fullName, appointmentData, branch = 'Ze
           
           <div class="success-message">
             <p class="success-text">
-              ✓ Appointment Confirmed
+              Appointment Confirmed
             </p>
           </div>
 

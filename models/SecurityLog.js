@@ -60,8 +60,7 @@ const SecurityLogSchema = new mongoose.Schema({
   errorMessage: String,
   createdAt: {
     type: Date,
-    default: Date.now,
-    index: true
+    default: Date.now
   }
 }, {
   timestamps: true

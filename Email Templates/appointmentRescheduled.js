@@ -226,7 +226,7 @@ const getAppointmentRescheduledTemplate = (fullName, appointmentData, branch = '
 
           <div class="info-box">
             <p class="info-text">
-              ℹ️ Your new appointment has been confirmed
+              Your new appointment has been confirmed
             </p>
           </div>
           

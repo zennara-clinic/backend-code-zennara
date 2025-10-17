@@ -37,10 +37,6 @@ const getSupportMessageNotificationTemplate = (messageData) => {
           padding: 40px 30px;
           text-align: center;
         }
-        .header-icon {
-          font-size: 48px;
-          margin-bottom: 10px;
-        }
         .header-title {
           font-size: 28px;
           color: #ffffff;
@@ -174,7 +170,6 @@ const getSupportMessageNotificationTemplate = (messageData) => {
     <body>
       <div class="email-wrapper">
         <div class="header">
-          <div class="header-icon">🔔</div>
           <div class="header-title">New Support Message</div>
           <div class="header-subtitle">Zennara Support Ticket</div>
         </div>
@@ -196,9 +191,9 @@ const getSupportMessageNotificationTemplate = (messageData) => {
               <div class="detail-label">Customer Details</div>
               <div class="detail-value customer-details">
                 <strong>${messageData.name}</strong><br/>
-                📧 ${messageData.email}<br/>
-                📱 ${messageData.phone}<br/>
-                📍 ${messageData.location}
+                Email: ${messageData.email}<br/>
+                Phone: ${messageData.phone}<br/>
+                Location: ${messageData.location}
               </div>
             </div>
             

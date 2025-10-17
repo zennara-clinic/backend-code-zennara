@@ -86,29 +86,6 @@ const getOTPEmailTemplate = (fullName, otp, branch = 'Zennara Clinic') => {
           margin: 15px 0;
           font-family: 'Poppins', sans-serif;
         }
-        .otp-icon {
-          font-size: 20px;
-          margin-bottom: 10px;
-          opacity: 0.6;
-        }
-        .important-notice {
-          background: #fef9f3;
-          border-left: 3px solid #f59e0b;
-          padding: 15px 20px;
-          margin: 25px 0;
-          border-radius: 6px;
-        }
-        .important-title {
-          font-size: 14px;
-          font-weight: 700;
-          color: #1a1a1a;
-          margin-bottom: 5px;
-        }
-        .important-text {
-          font-size: 13px;
-          color: #666666;
-          line-height: 1.5;
-        }
         .footer {
           background: #f9f9f9;
           padding: 25px 30px;
@@ -175,7 +152,6 @@ const getOTPEmailTemplate = (fullName, otp, branch = 'Zennara Clinic') => {
           </p>
           
           <div class="otp-section">
-            <div class="otp-icon">🔑</div>
             <div class="otp-label">Your Verification Code</div>
             <div class="otp-code">${otp}</div>
           </div>

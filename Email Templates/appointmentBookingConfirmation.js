@@ -200,7 +200,7 @@ const getAppointmentBookingConfirmationTemplate = (fullName, bookingData, branch
 
           <div class="status-message">
             <p class="status-text">
-              🕐 Your appointment is awaiting confirmation. We'll notify you once it's confirmed by our team.
+              Your appointment is awaiting confirmation. We'll notify you once it's confirmed by our team.
             </p>
           </div>
           

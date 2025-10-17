@@ -191,7 +191,7 @@ const getAppointmentCancelledTemplate = (fullName, appointmentData, branch = 'Ze
           
           <div class="cancelled-message">
             <p class="cancelled-text">
-              ✕ Appointment Cancelled
+              Appointment Cancelled
             </p>
           </div>
 

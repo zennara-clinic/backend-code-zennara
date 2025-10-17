@@ -74,8 +74,7 @@ const AdminSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Index for faster queries
-AdminSchema.index({ email: 1 });
+// Email is already indexed via unique: true
 
 // Method to check if account is locked
 AdminSchema.methods.canRequestOTP = function() {

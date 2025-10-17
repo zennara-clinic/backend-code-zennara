@@ -71,10 +71,6 @@ const getCheckInSuccessfulTemplate = (fullName, appointmentData, branch = 'Zenna
           margin: 25px 0;
           text-align: center;
         }
-        .checkin-icon {
-          font-size: 48px;
-          margin-bottom: 15px;
-        }
         .checkin-title {
           font-size: 18px;
           font-weight: 600;
@@ -210,7 +206,6 @@ const getCheckInSuccessfulTemplate = (fullName, appointmentData, branch = 'Zenna
           </p>
 
           <div class="checkin-box">
-            <div class="checkin-icon">✓</div>
             <div class="checkin-title">Check-in Confirmed</div>
             <p class="checkin-text">
               You're all set! Our team will be with you shortly.

@@ -556,6 +556,416 @@ exports.rateBooking = async (req, res) => {
   }
 };
 
+// @desc    Get all bookings (Admin)
+// @route   GET /api/bookings/admin/all
+// @access  Private (Admin)
+exports.getAllBookingsAdmin = async (req, res) => {
+  try {
+    const { status, location, date, search } = req.query;
+
+    // Build query
+    const query = {};
+
+    if (status && status !== 'all') {
+      query.status = status;
+    }
+
+    if (location && location !== 'all') {
+      query.preferredLocation = location;
+    }
+
+    if (date) {
+      const startDate = new Date(date);
+      startDate.setHours(0, 0, 0, 0);
+      const endDate = new Date(date);
+      endDate.setHours(23, 59, 59, 999);
+      query.preferredDate = { $gte: startDate, $lte: endDate };
+    }
+
+    if (search) {
+      query.$or = [
+        { fullName: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
+        { mobileNumber: { $regex: search, $options: 'i' } },
+        { referenceNumber: { $regex: search, $options: 'i' } }
+      ];
+    }
+
+    const bookings = await Booking.find(query)
+      .populate('consultationId', 'name category price image')
+      .populate('userId', 'fullName email phone patientId')
+      .populate('branchId', 'name address')
+      .sort({ createdAt: -1 })
+      .select('-__v');
+
+    res.status(200).json({
+      success: true,
+      count: bookings.length,
+      data: bookings
+    });
+  } catch (error) {
+    console.error('❌ Get all bookings admin error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch bookings'
+    });
+  }
+};
+
+// @desc    Confirm booking (Admin)
+// @route   PUT /api/bookings/admin/:id/confirm
+// @access  Private (Admin)
+exports.confirmBooking = async (req, res) => {
+  try {
+    const { confirmedDate, confirmedTime } = req.body;
+
+    const booking = await Booking.findById(req.params.id);
+
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (booking.status !== 'Awaiting Confirmation' && booking.status !== 'Rescheduled') {
+      return res.status(400).json({
+        success: false,
+        message: 'Only awaiting or rescheduled bookings can be confirmed'
+      });
+    }
+
+    booking.status = 'Confirmed';
+    booking.confirmedDate = new Date(confirmedDate);
+    booking.confirmedTime = confirmedTime;
+
+    await booking.save();
+
+    // Populate consultation details for email
+    await booking.populate('consultationId', 'name');
+
+    // Send confirmation email
+    try {
+      await emailService.sendAppointmentConfirmed(
+        booking.email,
+        booking.fullName,
+        {
+          referenceNumber: booking.referenceNumber,
+          treatment: booking.consultationId.name,
+          confirmedDate: booking.confirmedDate.toLocaleDateString('en-US', { 
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+          }),
+          confirmedTime: booking.confirmedTime,
+          location: booking.preferredLocation,
+          address: 'Clinic Address' // You can get this from branchId
+        },
+        booking.preferredLocation
+      );
+      console.log('📧 Confirmation email sent');
+    } catch (emailError) {
+      console.error('⚠️ Email sending failed:', emailError.message);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Booking confirmed successfully',
+      data: booking
+    });
+  } catch (error) {
+    console.error('❌ Confirm booking error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to confirm booking'
+    });
+  }
+};
+
+// @desc    Mark booking as No Show (Admin)
+// @route   PUT /api/bookings/admin/:id/no-show
+// @access  Private (Admin)
+exports.markNoShow = async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id);
+
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (booking.status !== 'Confirmed' && booking.status !== 'Rescheduled') {
+      return res.status(400).json({
+        success: false,
+        message: 'Only confirmed bookings can be marked as no-show'
+      });
+    }
+
+    booking.status = 'No Show';
+    await booking.save();
+
+    // Populate consultation details for email
+    await booking.populate('consultationId', 'name');
+
+    // Send no-show notification email
+    try {
+      await emailService.sendNoShowNotification(
+        booking.email,
+        booking.fullName,
+        {
+          treatment: booking.consultationId.name,
+          date: booking.confirmedDate?.toLocaleDateString('en-US', { 
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+          }) || booking.preferredDate.toLocaleDateString('en-US', { 
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+          }),
+          time: booking.confirmedTime || booking.preferredTimeSlots[0],
+          location: booking.preferredLocation
+        },
+        booking.preferredLocation
+      );
+      console.log('📧 No-show notification email sent');
+    } catch (emailError) {
+      console.error('⚠️ Email sending failed:', emailError.message);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Booking marked as no-show',
+      data: booking
+    });
+  } catch (error) {
+    console.error('❌ Mark no-show error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to mark as no-show'
+    });
+  }
+};
+
+// @desc    Get booking by ID (Admin)
+// @route   GET /api/bookings/admin/:id
+// @access  Private (Admin)
+exports.getBookingByIdAdmin = async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id)
+      .populate('consultationId', 'name category price image duration_minutes')
+      .populate('userId', 'name email patientId');
+
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: booking
+    });
+  } catch (error) {
+    console.error('❌ Get booking by ID admin error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch booking'
+    });
+  }
+};
+
+// @desc    Check-in booking (Admin)
+// @route   PUT /api/bookings/admin/:id/checkin
+// @access  Private (Admin)
+exports.checkInBookingAdmin = async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id);
+
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (!['Confirmed', 'Rescheduled'].includes(booking.status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Only confirmed bookings can be checked in'
+      });
+    }
+
+    booking.status = 'In Progress';
+    booking.checkInTime = new Date();
+
+    await booking.save();
+
+    // Populate consultation details for email
+    await booking.populate('consultationId', 'name');
+
+    // Send check-in email
+    try {
+      await emailService.sendCheckInSuccessful(
+        booking.email,
+        booking.fullName,
+        {
+          treatment: booking.consultationId.name,
+          time: booking.confirmedTime || booking.preferredTimeSlots[0],
+          location: booking.preferredLocation,
+          waitTime: '5-10'
+        },
+        booking.preferredLocation
+      );
+      console.log('📧 Check-in email sent');
+    } catch (emailError) {
+      console.error('⚠️ Email sending failed:', emailError.message);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Patient checked in successfully',
+      data: booking
+    });
+  } catch (error) {
+    console.error('❌ Check-in booking admin error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check in booking'
+    });
+  }
+};
+
+// @desc    Check-out booking (Admin)
+// @route   PUT /api/bookings/admin/:id/checkout
+// @access  Private (Admin)
+exports.checkOutBookingAdmin = async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id);
+
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    if (booking.status !== 'In Progress') {
+      return res.status(400).json({
+        success: false,
+        message: 'Only in-progress bookings can be checked out'
+      });
+    }
+
+    booking.status = 'Completed';
+    booking.checkOutTime = new Date();
+
+    await booking.save();
+
+    // Populate consultation details
+    await booking.populate('consultationId', 'name');
+
+    // Send completion email
+    try {
+      await emailService.sendAppointmentCompleted(
+        booking.email,
+        booking.fullName,
+        {
+          treatment: booking.consultationId.name,
+          date: booking.confirmedDate?.toLocaleDateString('en-US', { 
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+          }) || booking.preferredDate.toLocaleDateString('en-US', { 
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+          }),
+          location: booking.preferredLocation
+        },
+        booking.preferredLocation
+      );
+      console.log('📧 Completion email sent');
+    } catch (emailError) {
+      console.error('⚠️ Email sending failed:', emailError.message);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Booking completed successfully',
+      data: booking
+    });
+  } catch (error) {
+    console.error('❌ Check-out booking admin error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to check out booking'
+    });
+  }
+};
+
+// @desc    Cancel booking (Admin)
+// @route   PUT /api/bookings/admin/:id/cancel
+// @access  Private (Admin)
+exports.cancelBookingAdmin = async (req, res) => {
+  try {
+    const { reason } = req.body;
+
+    const booking = await Booking.findById(req.params.id);
+
+    if (!booking) {
+      return res.status(404).json({
+        success: false,
+        message: 'Booking not found'
+      });
+    }
+
+    // Admin can cancel Confirmed or Rescheduled bookings
+    if (!['Confirmed', 'Rescheduled'].includes(booking.status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Only confirmed or rescheduled bookings can be cancelled'
+      });
+    }
+
+    booking.status = 'Cancelled';
+    booking.cancellationReason = reason || 'Cancelled by admin';
+    booking.cancelledAt = new Date();
+    booking.cancelledBy = 'admin';
+
+    await booking.save();
+
+    // Populate consultation details for email
+    await booking.populate('consultationId', 'name');
+
+    // Send cancellation email
+    try {
+      await emailService.sendAppointmentCancelled(
+        booking.email,
+        booking.fullName,
+        {
+          referenceNumber: booking.referenceNumber,
+          treatment: booking.consultationId.name,
+          date: (booking.confirmedDate || booking.preferredDate).toLocaleDateString('en-US', { 
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+          }),
+          time: booking.confirmedTime || booking.preferredTimeSlots[0],
+          location: booking.preferredLocation
+        },
+        booking.preferredLocation
+      );
+      console.log('📧 Cancellation email sent by admin');
+    } catch (emailError) {
+      console.error('⚠️ Email sending failed:', emailError.message);
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Booking cancelled successfully',
+      data: booking
+    });
+  } catch (error) {
+    console.error('❌ Cancel booking admin error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to cancel booking'
+    });
+  }
+};
+
 // @desc    Get available time slots for a date and location
 // @route   GET /api/bookings/available-slots
 // @access  Public

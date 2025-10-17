@@ -100,11 +100,6 @@ const getRatingRequestTemplate = (fullName, appointmentData, branch = 'Zennara C
           line-height: 1.6;
           margin-bottom: 20px;
         }
-        .star-display {
-          font-size: 36px;
-          letter-spacing: 8px;
-          margin: 20px 0;
-        }
         .app-note {
           background: #eff6ff;
           padding: 20px;
@@ -193,12 +188,11 @@ const getRatingRequestTemplate = (fullName, appointmentData, branch = 'Zennara C
             <p class="rating-subtitle">
               Your feedback helps us maintain the highest quality of service.
             </p>
-            <div class="star-display">⭐⭐⭐⭐⭐</div>
           </div>
 
           <div class="app-note">
             <p class="app-note-text">
-              📱 Please open the Zennara app to rate your experience and share your thoughts!
+              Please open the Zennara app to rate your experience and share your thoughts!
             </p>
           </div>
           

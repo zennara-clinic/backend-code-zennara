@@ -13,18 +13,48 @@ const getCheckInSuccessfulTemplate = require('../Email Templates/checkInSuccessf
 const { getAdminOTPEmailTemplate } = require('../Email Templates/adminOtpEmailTemplate');
 const getSupportMessageConfirmationTemplate = require('../Email Templates/supportMessageConfirmation');
 const getSupportMessageNotificationTemplate = require('../Email Templates/supportMessageNotification');
+const getServiceCompletionOTPTemplate = require('../Email Templates/serviceCompletionOtpTemplate');
+const getPackageCancellationOtpTemplate = require('../Email Templates/packageCancellationOtpTemplate');
+const getBookingExpiredNotificationTemplate = require('../Email Templates/bookingExpiredNotification');
 
-// Create AWS SES client
-const sesClient = new SESClient({
-  region: process.env.AWS_REGION,
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
-  },
-});
+// Validate AWS credentials on module load
+const validateAWSCredentials = () => {
+  const required = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION', 'FROM_EMAIL'];
+  const missing = required.filter(key => !process.env[key]);
+  
+  if (missing.length > 0) {
+    console.error('❌ Missing AWS SES credentials:', missing);
+    console.log('⚠️ AWS SES not configured properly - emails will fail');
+    return false;
+  }
+  
+  console.log('✅ AWS SES credentials validated successfully');
+  return true;
+};
+
+// Create AWS SES client with validation
+let sesClient;
+const isAWSConfigured = validateAWSCredentials();
+
+if (isAWSConfigured) {
+  sesClient = new SESClient({
+    region: process.env.AWS_REGION,
+    credentials: {
+      accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+      secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+    },
+  });
+}
 
 // Helper function to send email via AWS SES
 const sendEmail = async (to, subject, htmlContent) => {
+  if (!isAWSConfigured || !sesClient) {
+    const error = new Error('AWS SES client not initialized. Check your credentials in .env file');
+    console.error('❌ Email Service Error:', error.message);
+    console.log('📋 Required env variables: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, FROM_EMAIL');
+    throw error;
+  }
+
   const params = {
     Source: `${process.env.FROM_NAME} <${process.env.FROM_EMAIL}>`,
     Destination: {
@@ -254,6 +284,56 @@ exports.sendSupportMessageNotification = async (adminEmail, messageData) => {
     return response;
   } catch (error) {
     console.error('❌ Support notification email sending failed');
+    throw error;
+  }
+};
+
+// ========================================
+// PACKAGE SERVICE COMPLETION EMAILS
+// ========================================
+
+// Send Service Completion OTP Email
+exports.sendOtpEmail = async (email, otp, fullName, serviceName, packageName) => {
+  try {
+    const htmlContent = getServiceCompletionOTPTemplate(fullName, otp, serviceName, packageName);
+    
+    const response = await sendEmail(email, '🔐 Service Completion Verification - Zennara Clinic', htmlContent);
+    console.log('✅ Service completion OTP email sent successfully');
+    return response;
+  } catch (error) {
+    console.error('❌ Service completion OTP email sending failed');
+    throw error;
+  }
+};
+
+// ========================================
+// PACKAGE CANCELLATION EMAILS
+// ========================================
+
+// Send Package Cancellation OTP Email
+exports.sendPackageCancellationOtp = async (email, otp, fullName, packageName, assignmentId) => {
+  try {
+    const htmlContent = getPackageCancellationOtpTemplate(fullName, otp, packageName, assignmentId);
+    
+    const response = await sendEmail(email, '⚠️ Package Cancellation Verification - Zennara', htmlContent);
+    console.log('✅ Package cancellation OTP email sent successfully');
+    return response;
+  } catch (error) {
+    console.error('❌ Package cancellation OTP email sending failed');
+    throw error;
+  }
+};
+
+// Send Booking Expired Notification
+exports.sendBookingExpiredNotification = async (email, fullName, bookingDetails) => {
+  try {
+    const htmlContent = getBookingExpiredNotificationTemplate(fullName, bookingDetails);
+    
+    const response = await sendEmail(email, '⏰ Appointment Request Expired - Zennara', htmlContent);
+    console.log('✅ Booking expired notification email sent successfully');
+    return response;
+  } catch (error) {
+    console.error('❌ Booking expired notification email sending failed');
     throw error;
   }
 };

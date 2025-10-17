@@ -1,16 +1,21 @@
+const dotenv = require('dotenv');
+
+// Load environment variables FIRST before any other imports
+dotenv.config();
+
 const express = require('express');
 const cors = require('cors');
-const dotenv = require('dotenv');
 const connectDB = require('./config/db');
-
-// Load environment variables
-dotenv.config();
+const { startBookingScheduler } = require('./utils/bookingScheduler');
 
 // Initialize Express app
 const app = express();
 
 // Connect to MongoDB
 connectDB();
+
+// Start booking cleanup scheduler
+startBookingScheduler();
 
 // Middleware - CORS Configuration (CRITICAL FOR FILE UPLOADS)
 app.use(cors({
@@ -65,6 +70,10 @@ app.use('/api/bookings', require('./routes/booking'));
 app.use('/api/branches', require('./routes/branch'));
 app.use('/api/support', require('./routes/support'));
 app.use('/api/categories', require('./routes/category'));
+app.use('/api/packages', require('./routes/package'));
+app.use('/api/package-assignments', require('./routes/packageAssignment'));
+app.use('/api/products', require('./routes/product'));
+app.use('/api/product-orders', require('./routes/productOrder'));
 app.use('/api/upload', require('./routes/upload'));
 
 // Health check - Beautiful status page
@@ -225,4 +234,5 @@ const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT} in ${process.env.NODE_ENV} mode`);
+  console.log(`📅 Automatic booking cleanup enabled`);
 });

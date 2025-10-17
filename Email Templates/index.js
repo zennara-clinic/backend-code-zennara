@@ -16,6 +16,7 @@ const getNoShowNotificationTemplate = require('./noShowNotification');
 const getCheckInSuccessfulTemplate = require('./checkInSuccessful');
 const getSupportMessageConfirmationTemplate = require('./supportMessageConfirmation');
 const getSupportMessageNotificationTemplate = require('./supportMessageNotification');
+const getPackageCancellationOtpTemplate = require('./packageCancellationOtpTemplate');
 
 module.exports = {
   // Authentication Templates
@@ -38,4 +39,7 @@ module.exports = {
   // Support Templates
   getSupportMessageConfirmationTemplate,
   getSupportMessageNotificationTemplate,
+  
+  // Package Templates
+  getPackageCancellationOtpTemplate,
 };

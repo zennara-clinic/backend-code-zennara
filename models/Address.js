@@ -56,12 +56,10 @@ const addressSchema = new mongoose.Schema({
   location: {
     type: {
       type: String,
-      enum: ['Point'],
-      default: 'Point'
+      enum: ['Point']
     },
     coordinates: {
-      type: [Number], // [longitude, latitude]
-      index: '2dsphere'
+      type: [Number] // [longitude, latitude]
     }
   },
   isDefault: {
@@ -83,6 +81,9 @@ addressSchema.pre('save', function(next) {
   this.updatedAt = Date.now();
   next();
 });
+
+// Index for geospatial queries (if location is provided)
+addressSchema.index({ 'location.coordinates': '2dsphere' });
 
 // Ensure only one default address per user
 addressSchema.pre('save', async function(next) {

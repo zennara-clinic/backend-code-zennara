@@ -169,10 +169,8 @@ const UserSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Index for faster queries
-UserSchema.index({ email: 1 });
+// Index for faster queries (email and patientId already indexed via unique: true)
 UserSchema.index({ phone: 1 });
-UserSchema.index({ patientId: 1 });
 
 // Pre-save hook to generate patient ID
 UserSchema.pre('save', async function(next) {

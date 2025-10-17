@@ -5,7 +5,7 @@ const Address = require('../models/Address');
 // @access  Private
 exports.getAddresses = async (req, res) => {
   try {
-    const addresses = await Address.find({ userId: req.user.userId })
+    const addresses = await Address.find({ userId: req.user._id })
       .sort({ isDefault: -1, createdAt: -1 });
 
     res.status(200).json({
@@ -28,7 +28,7 @@ exports.getAddressById = async (req, res) => {
   try {
     const address = await Address.findOne({
       _id: req.params.id,
-      userId: req.user.userId
+      userId: req.user._id
     });
 
     if (!address) {
@@ -81,7 +81,7 @@ exports.createAddress = async (req, res) => {
 
     // Create address object
     const addressData = {
-      userId: req.user.userId,
+      userId: req.user._id,
       label,
       fullName,
       phone,
@@ -94,8 +94,10 @@ exports.createAddress = async (req, res) => {
       isDefault: isDefault || false
     };
 
-    // Add location if coordinates provided
-    if (latitude && longitude) {
+    // Add location if BOTH coordinates are valid numbers
+    if (latitude != null && longitude != null && 
+        !isNaN(latitude) && !isNaN(longitude) &&
+        typeof latitude === 'number' && typeof longitude === 'number') {
       addressData.location = {
         type: 'Point',
         coordinates: [longitude, latitude]
@@ -104,18 +106,27 @@ exports.createAddress = async (req, res) => {
 
     const address = await Address.create(addressData);
 
-    console.log('✅ Address created successfully');
-
     res.status(201).json({
       success: true,
       message: 'Address added successfully',
       data: address
     });
   } catch (error) {
-    console.error('❌ Create address failed:', error);
+    console.error('❌ Create address error:', error.message);
+    
+    // Check for validation errors
+    if (error.name === 'ValidationError') {
+      const errors = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({
+        success: false,
+        message: 'Validation error: ' + errors.join(', ')
+      });
+    }
+    
     res.status(500).json({
       success: false,
-      message: 'Failed to create address. Please try again.'
+      message: 'Failed to create address. Please try again.',
+      error: error.message
     });
   }
 };
@@ -143,7 +154,7 @@ exports.updateAddress = async (req, res) => {
     // Find address and verify ownership
     const address = await Address.findOne({
       _id: req.params.id,
-      userId: req.user.userId
+      userId: req.user._id
     });
 
     if (!address) {
@@ -165,8 +176,10 @@ exports.updateAddress = async (req, res) => {
     if (country !== undefined) address.country = country;
     if (isDefault !== undefined) address.isDefault = isDefault;
 
-    // Update location if coordinates provided
-    if (latitude && longitude) {
+    // Update location if BOTH coordinates are valid numbers
+    if (latitude != null && longitude != null && 
+        !isNaN(latitude) && !isNaN(longitude) &&
+        typeof latitude === 'number' && typeof longitude === 'number') {
       address.location = {
         type: 'Point',
         coordinates: [longitude, latitude]
@@ -198,7 +211,7 @@ exports.deleteAddress = async (req, res) => {
   try {
     const address = await Address.findOne({
       _id: req.params.id,
-      userId: req.user.userId
+      userId: req.user._id
     });
 
     if (!address) {
@@ -232,7 +245,7 @@ exports.setDefaultAddress = async (req, res) => {
   try {
     const address = await Address.findOne({
       _id: req.params.id,
-      userId: req.user.userId
+      userId: req.user._id
     });
 
     if (!address) {
@@ -244,7 +257,7 @@ exports.setDefaultAddress = async (req, res) => {
 
     // Remove default from all other addresses
     await Address.updateMany(
-      { userId: req.user.userId, _id: { $ne: req.params.id } },
+      { userId: req.user._id, _id: { $ne: req.params.id } },
       { isDefault: false }
     );
 

@@ -196,7 +196,7 @@ const getAppointmentReminderTemplate = (fullName, appointmentData, branch = 'Zen
           
           <div class="reminder-box">
             <p class="reminder-text">
-              ⏰ Your appointment is tomorrow!
+              Your appointment is tomorrow!
             </p>
           </div>
 

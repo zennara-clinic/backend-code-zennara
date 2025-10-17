@@ -45,8 +45,8 @@ exports.protect = async (req, res, next) => {
         });
       }
 
-      // Check if user account still exists and is active
-      const user = await User.findById(decoded.userId).select('isActive');
+      // Check if user account still exists and is active (fetch full user data)
+      const user = await User.findById(decoded.userId).select('-password -otp -otpExpires');
       
       if (!user) {
         // User account deleted - revoke all tokens
@@ -72,12 +72,26 @@ exports.protect = async (req, res, next) => {
       tokenDoc.lastUsedAt = Date.now();
       await tokenDoc.save();
       
-      // Add user info to request with proper _id field
+      // Convert Mongoose document to plain object and add to request
       req.user = {
-        _id: decoded.userId,
-        email: decoded.email
+        _id: user._id,
+        email: user.email,
+        fullName: user.fullName,
+        phone: user.phone,
+        location: user.location,
+        dateOfBirth: user.dateOfBirth,
+        gender: user.gender,
+        memberType: user.memberType || 'Regular Member',
+        zenMembershipStartDate: user.zenMembershipStartDate,
+        zenMembershipExpiryDate: user.zenMembershipExpiryDate,
+        zenMembershipAutoRenew: user.zenMembershipAutoRenew,
+        profilePicture: user.profilePicture,
+        isVerified: user.isVerified,
+        isActive: user.isActive,
+        createdAt: user.createdAt
       };
       req.tokenId = tokenDoc._id;
+      
       next();
     } catch (error) {
       if (error.name === 'TokenExpiredError') {
