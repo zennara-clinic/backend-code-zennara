@@ -322,6 +322,11 @@ exports.rescheduleBooking = async (req, res) => {
 
     booking.preferredDate = new Date(newDate);
     booking.preferredTimeSlots = newTimeSlots;
+    
+    // Update confirmed date and time to the new rescheduled values
+    booking.confirmedDate = new Date(newDate);
+    booking.confirmedTime = newTimeSlots[0]; // Use first time slot as confirmed time
+    
     booking.status = 'Rescheduled';
     booking.rescheduledAt = new Date();
 
