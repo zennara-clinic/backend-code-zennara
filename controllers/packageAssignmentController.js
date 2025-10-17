@@ -728,3 +728,64 @@ exports.verifyCancellationOtp = async (req, res) => {
     });
   }
 };
+
+// USER-FACING ENDPOINTS
+
+// @desc    Get user's treatment packages
+// @route   GET /api/user/package-assignments
+// @access  Private (User)
+exports.getUserPackages = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    const assignments = await PackageAssignment.find({ userId })
+      .sort({ createdAt: -1 })
+      .populate('packageId', 'name description price duration');
+
+    res.status(200).json({
+      success: true,
+      data: assignments
+    });
+  } catch (error) {
+    console.error('Get user packages error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch your treatment packages',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Get single user package by ID
+// @route   GET /api/user/package-assignments/:id
+// @access  Private (User)
+exports.getUserPackageById = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const assignmentId = req.params.id;
+
+    const assignment = await PackageAssignment.findOne({ 
+      _id: assignmentId,
+      userId: userId 
+    }).populate('packageId');
+
+    if (!assignment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Treatment package not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: assignment
+    });
+  } catch (error) {
+    console.error('Get user package error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch treatment package details',
+      error: error.message
+    });
+  }
+};

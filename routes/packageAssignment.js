@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const packageAssignmentController = require('../controllers/packageAssignmentController');
-const { protectAdmin } = require('../middleware/auth');
+const { protectAdmin, protect } = require('../middleware/auth');
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -19,6 +19,11 @@ const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB limit
 });
 
+// USER-FACING ROUTES (must be before admin routes to avoid conflicts)
+router.get('/user/my-packages', protect, packageAssignmentController.getUserPackages);
+router.get('/user/my-packages/:id', protect, packageAssignmentController.getUserPackageById);
+
+// ADMIN ROUTES
 // Get all assignments with filters
 router.get('/', protectAdmin, packageAssignmentController.getAllAssignments);
 
