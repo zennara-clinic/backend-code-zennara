@@ -740,7 +740,7 @@ exports.getUserPackages = async (req, res) => {
 
     const assignments = await PackageAssignment.find({ userId })
       .sort({ createdAt: -1 })
-      .populate('packageId', 'name description price duration');
+      .populate('packageId', 'name description price duration benefits originalPrice discount');
 
     res.status(200).json({
       success: true,
@@ -767,7 +767,7 @@ exports.getUserPackageById = async (req, res) => {
     const assignment = await PackageAssignment.findOne({ 
       _id: assignmentId,
       userId: userId 
-    }).populate('packageId');
+    }).populate('packageId', 'name description price duration benefits originalPrice discount');
 
     if (!assignment) {
       return res.status(404).json({
