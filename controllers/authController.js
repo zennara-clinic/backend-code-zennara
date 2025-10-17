@@ -3,6 +3,7 @@ const Token = require('../models/Token');
 const SecurityLog = require('../models/SecurityLog');
 const Booking = require('../models/Booking');
 const ProductOrder = require('../models/ProductOrder');
+const PackageAssignment = require('../models/PackageAssignment');
 const jwt = require('jsonwebtoken');
 const { sendOTPEmail, sendWelcomeEmail } = require('../utils/emailService');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../middleware/upload');
@@ -900,23 +901,23 @@ exports.getUserStats = async (req, res) => {
       orderStatus: { $nin: ['Cancelled', 'Refunded'] } // Exclude cancelled and refunded
     });
 
-    // Calculate total savings for Zen Members
+    // Calculate total savings from treatment packages (Zen Members only)
     let totalSavings = 0;
 
     if (user.memberType === 'Zen Member') {
-      // Calculate savings from product orders (assuming 10% discount on average)
-      const productOrders = await ProductOrder.find({ 
+      // Calculate savings from treatment package assignments
+      const packageAssignments = await PackageAssignment.find({ 
         userId: userId,
-        orderStatus: { $nin: ['Cancelled', 'Refunded'] }
+        status: { $nin: ['Cancelled'] }, // Exclude cancelled packages
+        'pricing.isZenMemberDiscount': true // Only count Zen member discounts
       }).select('pricing');
 
-      // Sum up all discounts from orders
-      totalSavings = productOrders.reduce((sum, order) => {
-        return sum + (order.pricing?.discount || 0);
+      // Sum up all discount amounts from packages
+      totalSavings = packageAssignments.reduce((sum, assignment) => {
+        return sum + (assignment.pricing?.discountAmount || 0);
       }, 0);
 
-      // Note: In a real scenario, you might want to track savings in a separate field
-      // For now, we'll use the discount amount from orders as a proxy for savings
+      console.log(`💰 Total savings calculated for Zen Member: ₹${totalSavings} from ${packageAssignments.length} packages`);
     }
 
     res.status(200).json({
