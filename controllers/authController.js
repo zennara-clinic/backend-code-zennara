@@ -1,6 +1,8 @@
 const User = require('../models/User');
 const Token = require('../models/Token');
 const SecurityLog = require('../models/SecurityLog');
+const Booking = require('../models/Booking');
+const ProductOrder = require('../models/ProductOrder');
 const jwt = require('jsonwebtoken');
 const { sendOTPEmail, sendWelcomeEmail } = require('../utils/emailService');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../middleware/upload');
@@ -867,6 +869,71 @@ exports.getSecurityStatus = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch security status.'
+    });
+  }
+};
+
+// @desc    Get user statistics (appointments, orders, savings)
+// @route   GET /api/auth/stats
+// @access  Private
+exports.getUserStats = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Count total appointments (bookings)
+    const appointmentsCount = await Booking.countDocuments({ 
+      userId: userId,
+      status: { $nin: ['Cancelled', 'No Show'] } // Exclude cancelled and no-show
+    });
+
+    // Count total orders (product/medicine orders)
+    const ordersCount = await ProductOrder.countDocuments({ 
+      userId: userId,
+      orderStatus: { $nin: ['Cancelled', 'Refunded'] } // Exclude cancelled and refunded
+    });
+
+    // Calculate total savings for Zen Members
+    let totalSavings = 0;
+
+    if (user.memberType === 'Zen Member') {
+      // Calculate savings from product orders (assuming 10% discount on average)
+      const productOrders = await ProductOrder.find({ 
+        userId: userId,
+        orderStatus: { $nin: ['Cancelled', 'Refunded'] }
+      }).select('pricing');
+
+      // Sum up all discounts from orders
+      totalSavings = productOrders.reduce((sum, order) => {
+        return sum + (order.pricing?.discount || 0);
+      }, 0);
+
+      // Note: In a real scenario, you might want to track savings in a separate field
+      // For now, we'll use the discount amount from orders as a proxy for savings
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        appointments: appointmentsCount,
+        orders: ordersCount,
+        savings: Math.round(totalSavings), // Round to nearest rupee
+        memberType: user.memberType
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Get user stats failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch user statistics.'
     });
   }
 };

@@ -15,7 +15,8 @@ const {
   revokeSession,
   getSecurityLog,
   getSecurityStatus,
-  upgradeMembership
+  upgradeMembership,
+  getUserStats
 } = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
 const { upload } = require('../middleware/upload');
@@ -30,6 +31,7 @@ router.post('/resend-otp', resendOTP);
 router.post('/logout', protect, logout);
 router.post('/logout-all', protect, logoutAll);
 router.get('/me', protect, getMe);
+router.get('/stats', protect, getUserStats);
 router.put('/profile', protect, updateProfile);
 router.post('/upgrade-membership', protect, upgradeMembership);
 
