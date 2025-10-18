@@ -5,13 +5,13 @@ const Product = require('../models/Product');
 // @access  Public
 exports.getAllProducts = async (req, res) => {
   try {
-    const { category, search, minPrice, maxPrice, sort, isPopular } = req.query;
+    const { formulation, search, minPrice, maxPrice, sort, isPopular } = req.query;
     
     // Build query
     const query = { isActive: true };
     
-    if (category && category !== 'All') {
-      query.category = category;
+    if (formulation && formulation !== 'All') {
+      query.formulation = formulation;
     }
     
     if (search) {
@@ -91,15 +91,15 @@ exports.getProductById = async (req, res) => {
   }
 };
 
-// @desc    Get products by category
-// @route   GET /api/products/category/:category
+// @desc    Get products by formulation
+// @route   GET /api/products/formulation/:formulation
 // @access  Public
-exports.getProductsByCategory = async (req, res) => {
+exports.getProductsByFormulation = async (req, res) => {
   try {
-    const { category } = req.params;
+    const { formulation } = req.params;
     const { limit } = req.query;
     
-    const query = { category, isActive: true };
+    const query = { formulation, isActive: true };
     
     let productsQuery = Product.find(query).sort({ createdAt: -1 });
     
@@ -115,7 +115,7 @@ exports.getProductsByCategory = async (req, res) => {
       count: products.length
     });
   } catch (error) {
-    console.error('Get products by category error:', error);
+    console.error('Get products by formulation error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to fetch products',
@@ -137,8 +137,8 @@ exports.searchProducts = async (req, res) => {
       $or: [
         { name: { $regex: query, $options: 'i' } },
         { description: { $regex: query, $options: 'i' } },
-        { brand: { $regex: query, $options: 'i' } },
-        { category: { $regex: query, $options: 'i' } }
+        { OrgName: { $regex: query, $options: 'i' } },
+        { formulation: { $regex: query, $options: 'i' } }
       ]
     };
     
@@ -165,22 +165,22 @@ exports.searchProducts = async (req, res) => {
   }
 };
 
-// @desc    Get all categories
-// @route   GET /api/products/categories/list
+// @desc    Get all formulations
+// @route   GET /api/products/formulations/list
 // @access  Public
-exports.getCategories = async (req, res) => {
+exports.getFormulations = async (req, res) => {
   try {
-    const categories = await Product.distinct('category', { isActive: true });
+    const formulations = await Product.distinct('formulation', { isActive: true });
     
     res.json({
       success: true,
-      data: categories
+      data: formulations
     });
   } catch (error) {
-    console.error('Get categories error:', error);
+    console.error('Get formulations error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch categories',
+      message: 'Failed to fetch formulations',
       error: error.message
     });
   }

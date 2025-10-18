@@ -8,8 +8,7 @@ const productOrderSchema = new mongoose.Schema({
   },
   orderNumber: {
     type: String,
-    required: true,
-    unique: true
+    required: true
   },
   items: [{
     productId: {
@@ -74,6 +73,10 @@ const productOrderSchema = new mongoose.Schema({
       type: Number,
       required: true
     },
+    gst: {
+      type: Number,
+      default: 0
+    },
     discount: {
       type: Number,
       default: 0
@@ -118,6 +121,27 @@ const productOrderSchema = new mongoose.Schema({
   deliveryDate: Date,
   cancelReason: String,
   cancelledAt: Date,
+  returnReason: String,
+  returnedAt: Date,
+  returnApproved: {
+    type: Boolean,
+    default: false
+  },
+  returnApprovedAt: Date,
+  returnApprovedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Admin'
+  },
+  returnRejected: {
+    type: Boolean,
+    default: false
+  },
+  returnRejectedAt: Date,
+  returnRejectedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Admin'
+  },
+  returnRejectionReason: String,
   deliveredAt: Date,
   notes: String
 }, {

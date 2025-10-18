@@ -67,10 +67,8 @@ exports.createOrder = async (req, res) => {
         });
       }
       
-      // Use zen member price if user is zen member
-      const price = req.user.memberType === 'Zen Member' && product.zenMemberPrice 
-        ? product.zenMemberPrice 
-        : product.price;
+      // Use product price
+      const price = product.price;
       
       const subtotal = price * item.quantity;
       calculatedSubtotal += subtotal;
@@ -111,9 +109,10 @@ exports.createOrder = async (req, res) => {
       },
       pricing: {
         subtotal: calculatedSubtotal,
+        gst: pricing.gst || 0,
         discount: pricing.discount || 0,
         deliveryFee: pricing.deliveryFee || 0,
-        total: pricing.total
+        total: calculatedSubtotal + (pricing.gst || 0) + (pricing.deliveryFee || 0) - (pricing.discount || 0)
       },
       coupon: coupon ? {
         code: coupon.code,
@@ -361,6 +360,298 @@ exports.updateOrderStatus = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to update order status',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Cancel order
+// @route   POST /api/orders/:id/cancel
+// @access  Private
+exports.cancelOrder = async (req, res) => {
+  try {
+    const { reason } = req.body;
+    
+    const order = await ProductOrder.findById(req.params.id);
+    
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+    
+    // Check if order belongs to user
+    if (order.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to cancel this order'
+      });
+    }
+    
+    // Check if order can be cancelled (not delivered)
+    if (order.orderStatus === 'Delivered') {
+      return res.status(400).json({
+        success: false,
+        message: 'Cannot cancel delivered orders. Please request a return instead.'
+      });
+    }
+    
+    if (order.orderStatus === 'Cancelled') {
+      return res.status(400).json({
+        success: false,
+        message: 'Order is already cancelled'
+      });
+    }
+    
+    // Update order status
+    order.orderStatus = 'Cancelled';
+    order.cancelReason = reason || 'Cancelled by customer';
+    order.cancelledAt = new Date();
+    
+    // Add to status history
+    order.statusHistory.push({
+      status: 'Cancelled',
+      timestamp: new Date(),
+      note: `Cancelled by customer: ${reason || 'No reason provided'}`
+    });
+    
+    // Restore stock for all items
+    const Product = require('../models/Product');
+    for (const item of order.items) {
+      const product = await Product.findById(item.productId);
+      if (product) {
+        product.stock += item.quantity;
+        await product.save();
+      }
+    }
+    
+    await order.save();
+    
+    // Populate order details
+    const populatedOrder = await ProductOrder.findById(order._id)
+      .populate('userId', 'fullName email phone')
+      .populate('items.productId');
+    
+    res.json({
+      success: true,
+      message: 'Order cancelled successfully',
+      data: populatedOrder
+    });
+  } catch (error) {
+    console.error('Cancel order error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to cancel order',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Return order
+// @route   POST /api/orders/:id/return
+// @access  Private
+exports.returnOrder = async (req, res) => {
+  try {
+    const { reason } = req.body;
+    
+    const order = await ProductOrder.findById(req.params.id);
+    
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+    
+    // Check if order belongs to user
+    if (order.userId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to return this order'
+      });
+    }
+    
+    // Check if order is delivered
+    if (order.orderStatus !== 'Delivered') {
+      return res.status(400).json({
+        success: false,
+        message: 'Only delivered orders can be returned'
+      });
+    }
+    
+    if (order.orderStatus === 'Returned') {
+      return res.status(400).json({
+        success: false,
+        message: 'Order is already marked as returned'
+      });
+    }
+    
+    // Check if return window is valid (e.g., within 7 days of delivery)
+    const deliveryDate = new Date(order.deliveredAt);
+    const currentDate = new Date();
+    const daysSinceDelivery = Math.floor((currentDate - deliveryDate) / (1000 * 60 * 60 * 24));
+    
+    if (daysSinceDelivery > 7) {
+      return res.status(400).json({
+        success: false,
+        message: 'Return window has expired. Returns are only accepted within 7 days of delivery.'
+      });
+    }
+    
+    // Update order status
+    order.orderStatus = 'Returned';
+    order.returnReason = reason || 'Returned by customer';
+    order.returnedAt = new Date();
+    
+    // Add to status history
+    order.statusHistory.push({
+      status: 'Returned',
+      timestamp: new Date(),
+      note: `Return requested by customer: ${reason || 'No reason provided'}`
+    });
+    
+    await order.save();
+    
+    // Populate order details
+    const populatedOrder = await ProductOrder.findById(order._id)
+      .populate('userId', 'fullName email phone')
+      .populate('items.productId');
+    
+    res.json({
+      success: true,
+      message: 'Return request submitted successfully. Our team will contact you soon.',
+      data: populatedOrder
+    });
+  } catch (error) {
+    console.error('Return order error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to process return request',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Approve return request (Admin)
+// @route   PUT /api/admin/product-orders/:id/approve-return
+// @access  Private (Admin)
+exports.approveReturn = async (req, res) => {
+  try {
+    const order = await ProductOrder.findById(req.params.id);
+    
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+    
+    if (order.orderStatus !== 'Returned') {
+      return res.status(400).json({
+        success: false,
+        message: 'Only returned orders can be approved'
+      });
+    }
+    
+    // Update order with approval
+    order.returnApproved = true;
+    order.returnApprovedAt = new Date();
+    order.returnApprovedBy = req.user?._id || null;
+    
+    // Add to status history
+    order.statusHistory.push({
+      status: 'Return Approved',
+      timestamp: new Date(),
+      note: 'Return request approved by admin. Pickup will be scheduled.'
+    });
+    
+    await order.save();
+    
+    // TODO: Schedule pickup with logistics partner
+    // TODO: Send email notification to customer
+    
+    const populatedOrder = await ProductOrder.findById(order._id)
+      .populate('userId', 'fullName email phone')
+      .populate('items.productId');
+    
+    res.json({
+      success: true,
+      message: 'Return request approved successfully. Pickup will be scheduled.',
+      data: populatedOrder
+    });
+  } catch (error) {
+    console.error('Approve return error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to approve return request',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Reject return request (Admin)
+// @route   PUT /api/admin/product-orders/:id/reject-return
+// @access  Private (Admin)
+exports.rejectReturn = async (req, res) => {
+  try {
+    const { reason } = req.body;
+    
+    if (!reason) {
+      return res.status(400).json({
+        success: false,
+        message: 'Rejection reason is required'
+      });
+    }
+    
+    const order = await ProductOrder.findById(req.params.id);
+    
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        message: 'Order not found'
+      });
+    }
+    
+    if (order.orderStatus !== 'Returned') {
+      return res.status(400).json({
+        success: false,
+        message: 'Only returned orders can be rejected'
+      });
+    }
+    
+    // Update order status back to Delivered
+    order.orderStatus = 'Delivered';
+    order.returnRejected = true;
+    order.returnRejectedAt = new Date();
+    order.returnRejectedBy = req.user?._id || null;
+    order.returnRejectionReason = reason;
+    
+    // Add to status history
+    order.statusHistory.push({
+      status: 'Return Rejected',
+      timestamp: new Date(),
+      note: `Return request rejected: ${reason}`
+    });
+    
+    await order.save();
+    
+    // TODO: Send email notification to customer with rejection reason
+    
+    const populatedOrder = await ProductOrder.findById(order._id)
+      .populate('userId', 'fullName email phone')
+      .populate('items.productId');
+    
+    res.json({
+      success: true,
+      message: 'Return request rejected. Customer will be notified.',
+      data: populatedOrder
+    });
+  } catch (error) {
+    console.error('Reject return error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to reject return request',
       error: error.message
     });
   }

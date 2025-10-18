@@ -10,14 +10,19 @@ const productSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Product description is required']
   },
-  category: {
+  formulation: {
     type: String,
-    required: [true, 'Product category is required'],
-    enum: ['First Aid', 'Pain Relief', 'Personal Care', 'Skincare', 'Supplements']
+    required: [true, 'Product formulation is required'],
+    enum: [
+      'Serum', 'Hydrafacial Consumable', 'Cream', 'Facial Treatment', 
+      'Face Wash', 'Lipbalm', 'Sunscreen Stick', 'Sunscreen', 
+      'Moisturizer', 'Sachets', 'Anti Aging', 'Pigmentation', 
+      'Injection', 'Shampoo'
+    ]
   },
-  brand: {
+  OrgName: {
     type: String,
-    required: [true, 'Brand name is required'],
+    required: [true, 'Organization name is required'],
     trim: true
   },
   price: {
@@ -25,9 +30,12 @@ const productSchema = new mongoose.Schema({
     required: [true, 'Product price is required'],
     min: [0, 'Price cannot be negative']
   },
-  zenMemberPrice: {
+  gstPercentage: {
     type: Number,
-    min: [0, 'Zen member price cannot be negative']
+    required: [true, 'GST percentage is required'],
+    min: [0, 'GST percentage cannot be negative'],
+    max: [100, 'GST percentage cannot exceed 100'],
+    default: 18
   },
   image: {
     type: String,
@@ -63,8 +71,8 @@ const productSchema = new mongoose.Schema({
 });
 
 // Indexes for better query performance
-productSchema.index({ category: 1 });
-productSchema.index({ name: 'text', description: 'text', brand: 'text' });
+productSchema.index({ formulation: 1 });
+productSchema.index({ name: 'text', description: 'text', OrgName: 'text' });
 productSchema.index({ isActive: 1 });
 
 module.exports = mongoose.model('Product', productSchema);

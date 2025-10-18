@@ -72,6 +72,11 @@ app.use((req, res, next) => {
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/admin/auth', require('./routes/adminAuth'));
 app.use('/api/admin/users', require('./routes/user'));
+app.use('/api/admin/products', require('./routes/adminProducts'));
+app.use('/api/admin/product-orders', require('./routes/adminOrders'));
+app.use('/api/admin/brands', require('./routes/brand'));
+app.use('/api/admin/formulations', require('./routes/formulation'));
+app.use('/api/admin/coupons', require('./routes/coupon'));
 app.use('/api/addresses', require('./routes/address'));
 app.use('/api/consultations', require('./routes/consultation'));
 app.use('/api/bookings', require('./routes/booking'));
@@ -82,7 +87,9 @@ app.use('/api/packages', require('./routes/package'));
 app.use('/api/package-assignments', require('./routes/packageAssignment'));
 app.use('/api/products', require('./routes/product'));
 app.use('/api/product-orders', require('./routes/productOrder'));
+app.use('/api/reviews', require('./routes/review'));
 app.use('/api/upload', require('./routes/upload'));
+app.use('/api/coupons', require('./routes/coupon'));
 
 // Health check - Beautiful status page
 app.get('/', (req, res) => {
