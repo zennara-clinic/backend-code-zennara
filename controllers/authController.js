@@ -889,10 +889,10 @@ exports.getUserStats = async (req, res) => {
       });
     }
 
-    // Count total appointments (bookings)
+    // Count total appointments (bookings) - ALL statuses
     const appointmentsCount = await Booking.countDocuments({ 
-      userId: userId,
-      status: { $nin: ['Cancelled', 'No Show'] } // Exclude cancelled and no-show
+      userId: userId
+      // No status filter - count ALL appointments including cancelled and no-show
     });
 
     // Count total orders (product/medicine orders)

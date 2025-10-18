@@ -9,7 +9,7 @@ const ProductOrder = require('../models/ProductOrder');
 exports.submitReview = async (req, res) => {
   try {
     const { productId, orderId, rating, reviewText, images } = req.body;
-    const userId = req.user.id;
+    const userId = req.user._id;
 
     // Validate required fields
     if (!productId || !orderId || !rating || !reviewText) {
@@ -29,7 +29,7 @@ exports.submitReview = async (req, res) => {
     }
 
     // Check if order is delivered
-    if (order.status !== 'Delivered') {
+    if (order.orderStatus !== 'Delivered') {
       return res.status(400).json({
         success: false,
         message: 'You can only review products after delivery is completed'
@@ -168,7 +168,7 @@ exports.getProductReviews = async (req, res) => {
 // @access  Private
 exports.getMyReviews = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user._id;
     const { page = 1, limit = 10 } = req.query;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -211,7 +211,7 @@ exports.getMyReviews = async (req, res) => {
 exports.updateReview = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.user.id;
+    const userId = req.user._id;
     const { rating, reviewText, images } = req.body;
 
     const review = await Review.findOne({ _id: id, userId });
@@ -223,8 +223,8 @@ exports.updateReview = async (req, res) => {
     }
 
     // Update fields
-    if (rating) review.rating = rating;
-    if (reviewText) review.reviewText = reviewText;
+    if (rating !== undefined) review.rating = rating;
+    if (reviewText !== undefined) review.reviewText = reviewText;
     if (images !== undefined) review.images = images;
 
     await review.save();
@@ -255,7 +255,7 @@ exports.updateReview = async (req, res) => {
 exports.deleteReview = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.user.id;
+    const userId = req.user._id;
 
     const review = await Review.findOneAndDelete({ _id: id, userId });
     if (!review) {
@@ -323,7 +323,7 @@ exports.markReviewHelpful = async (req, res) => {
 exports.canReviewProduct = async (req, res) => {
   try {
     const { productId, orderId } = req.params;
-    const userId = req.user.id;
+    const userId = req.user._id;
 
     // Check if order exists and belongs to user
     const order = await ProductOrder.findOne({ _id: orderId, userId });
@@ -335,7 +335,7 @@ exports.canReviewProduct = async (req, res) => {
     }
 
     // Check if order is delivered
-    if (order.status !== 'Delivered') {
+    if (order.orderStatus !== 'Delivered') {
       return res.json({
         success: true,
         data: { canReview: false, reason: 'Order not delivered yet' }

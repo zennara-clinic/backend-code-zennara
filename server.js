@@ -90,6 +90,7 @@ app.use('/api/product-orders', require('./routes/productOrder'));
 app.use('/api/reviews', require('./routes/review'));
 app.use('/api/upload', require('./routes/upload'));
 app.use('/api/coupons', require('./routes/coupon'));
+app.use('/api/vendors', require('./routes/vendor'));
 
 // Health check - Beautiful status page
 app.get('/', (req, res) => {
