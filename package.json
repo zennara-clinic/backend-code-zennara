@@ -8,7 +8,9 @@
     "dev": "nodemon server.js",
     "seed:products": "node seeders/productSeeder.js",
     "seed:all": "node seedAll.js",
-    "seed:brands-formulations": "node seedBrandsFormulations.js"
+    "seed:brands-formulations": "node seedBrandsFormulations.js",
+    "seed:vendors": "node scripts/seedVendors.js",
+    "seed:consultations": "node scripts/seedConsultations.js"
   },
   "keywords": [
     "zennara",

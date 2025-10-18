@@ -121,6 +121,7 @@ exports.createProduct = async (req, res) => {
       description,
       formulation,
       OrgName,
+      code,
       price,
       gstPercentage,
       image,
@@ -143,6 +144,7 @@ exports.createProduct = async (req, res) => {
       description,
       formulation,
       OrgName,
+      code: code || undefined, // Save code if provided
       price,
       gstPercentage: gstPercentage || 18,
       image,
@@ -180,11 +182,15 @@ exports.updateProduct = async (req, res) => {
       });
     }
 
+    console.log('Update product request body:', req.body);
+    console.log('Code from request:', req.body.code);
+
     const {
       name,
       description,
       formulation,
       OrgName,
+      code,
       price,
       gstPercentage,
       image,
@@ -198,6 +204,10 @@ exports.updateProduct = async (req, res) => {
     if (description) product.description = description;
     if (formulation) product.formulation = formulation;
     if (OrgName) product.OrgName = OrgName;
+    if (code !== undefined) {
+      product.code = code;
+      console.log('Setting product code to:', code);
+    }
     if (price !== undefined) product.price = price;
     if (gstPercentage !== undefined) product.gstPercentage = gstPercentage;
     if (image) product.image = image;
@@ -206,6 +216,7 @@ exports.updateProduct = async (req, res) => {
     if (isPopular !== undefined) product.isPopular = isPopular;
 
     await product.save();
+    console.log('Product saved with code:', product.code);
 
     res.json({
       success: true,

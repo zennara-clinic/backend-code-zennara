@@ -91,6 +91,7 @@ app.use('/api/reviews', require('./routes/review'));
 app.use('/api/upload', require('./routes/upload'));
 app.use('/api/coupons', require('./routes/coupon'));
 app.use('/api/vendors', require('./routes/vendor'));
+app.use('/api/admin/inventory', require('./routes/inventory'));
 
 // Health check - Beautiful status page
 app.get('/', (req, res) => {

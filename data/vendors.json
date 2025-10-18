@@ -1,0 +1,254 @@
+[
+  {
+    "name": "DermaCare Pharmaceuticals Pvt Ltd",
+    "contactPerson": "Dr. Rajesh Kumar",
+    "email": "rajesh@dermacarepharma.com",
+    "phone": "+91 9876543210",
+    "address": "Plot No. 45, Pharma Industrial Park, Phase 2",
+    "city": "Mumbai",
+    "state": "Maharashtra",
+    "pincode": "400001",
+    "gstNumber": "27AABCH1234F1Z5",
+    "panNumber": "AABCH1234F",
+    "bankDetails": {
+      "accountNumber": "1234567890",
+      "ifscCode": "HDFC0001234",
+      "bankName": "HDFC Bank",
+      "accountHolderName": "DermaCare Pharmaceuticals Pvt Ltd"
+    },
+    "status": "Active",
+    "rating": 5,
+    "notes": "Leading supplier of dermatological pharmaceuticals, serums, and medical-grade creams. FDA approved products."
+  },
+  {
+    "name": "Medical Aesthetics Supply India",
+    "contactPerson": "Dr. Priya Sharma",
+    "email": "priya@medicalaesthetics.com",
+    "phone": "+91 9876543211",
+    "address": "12/A, Medical Plaza, Whitefield",
+    "city": "Bangalore",
+    "state": "Karnataka",
+    "pincode": "560001",
+    "gstNumber": "29AABCA5678G1Z3",
+    "panNumber": "AABCA5678G",
+    "bankDetails": {
+      "accountNumber": "9876543210",
+      "ifscCode": "ICIC0005678",
+      "bankName": "ICICI Bank",
+      "accountHolderName": "Medical Aesthetics Supply India"
+    },
+    "status": "Active",
+    "rating": 5,
+    "notes": "Premier supplier of dermal fillers, botox injections, and medical aesthetic injectables. CDSCO approved."
+  },
+  {
+    "name": "SkinVitals Dermatology Products",
+    "contactPerson": "Dr. Amit Patel",
+    "email": "amit@skinvitals.com",
+    "phone": "+91 9876543212",
+    "address": "56, Pharma Hub, CG Road",
+    "city": "Ahmedabad",
+    "state": "Gujarat",
+    "pincode": "380001",
+    "gstNumber": "24AABCN9012H1Z7",
+    "panNumber": "AABCN9012H",
+    "bankDetails": {
+      "accountNumber": "5678901234",
+      "ifscCode": "SBIN0009012",
+      "bankName": "State Bank of India",
+      "accountHolderName": "SkinVitals Dermatology Products"
+    },
+    "status": "Active",
+    "rating": 5,
+    "notes": "Medical-grade moisturizers, sunscreens, cleansers, and retinol products. Dermatologist-tested."
+  },
+  {
+    "name": "HydraFacial Systems India",
+    "contactPerson": "Meera Singh",
+    "email": "meera@hydrafacial-india.com",
+    "phone": "+91 9876543213",
+    "address": "78, Medical Equipment Plaza, Viman Nagar",
+    "city": "Pune",
+    "state": "Maharashtra",
+    "pincode": "411001",
+    "gstNumber": "27AABCA3456K1Z9",
+    "panNumber": "AABCA3456K",
+    "bankDetails": {
+      "accountNumber": "3456789012",
+      "ifscCode": "HDFC0003456",
+      "bankName": "HDFC Bank",
+      "accountHolderName": "HydraFacial Systems India"
+    },
+    "status": "Active",
+    "rating": 5,
+    "notes": "Authorized distributor of HydraFacial consumables, Dermapen cartridges, and facial treatment equipment."
+  },
+  {
+    "name": "Chemical Peels & Cosmelan India",
+    "contactPerson": "Dr. Vikram Reddy",
+    "email": "vikram@cosmelanIndia.com",
+    "phone": "+91 9876543214",
+    "address": "34, Dermatology Center, Jubilee Hills",
+    "city": "Hyderabad",
+    "state": "Telangana",
+    "pincode": "500081",
+    "gstNumber": "36AABCS7890M1Z2",
+    "panNumber": "AABCS7890M",
+    "bankDetails": {
+      "accountNumber": "7890123456",
+      "ifscCode": "ICIC0007890",
+      "bankName": "ICICI Bank",
+      "accountHolderName": "Chemical Peels & Cosmelan India"
+    },
+    "status": "Active",
+    "rating": 5,
+    "notes": "Exclusive distributor of Cosmelan products, chemical peels, pigmentation treatments, and professional facial solutions."
+  },
+  {
+    "name": "DermaHair Solutions Pvt Ltd",
+    "contactPerson": "Dr. Sunita Desai",
+    "email": "sunita@dermahair.com",
+    "phone": "+91 9876543215",
+    "address": "90, Dermatology Plaza, T Nagar",
+    "city": "Chennai",
+    "state": "Tamil Nadu",
+    "pincode": "600001",
+    "gstNumber": "33AABCM2345P1Z4",
+    "panNumber": "AABCM2345P",
+    "bankDetails": {
+      "accountNumber": "2345678901",
+      "ifscCode": "SBIN0002345",
+      "bankName": "State Bank of India",
+      "accountHolderName": "DermaHair Solutions Pvt Ltd"
+    },
+    "status": "Active",
+    "rating": 4,
+    "notes": "Specialized supplier of hair shampoos, serums, GFC kits, hair colors, and trichology products."
+  },
+  {
+    "name": "Advanced Skin Serums India",
+    "contactPerson": "Dr. Rahul Kapoor",
+    "email": "rahul@skinserums.com",
+    "phone": "+91 9876543216",
+    "address": "23, Medical Complex, Connaught Place",
+    "city": "Delhi",
+    "state": "Delhi",
+    "pincode": "110001",
+    "gstNumber": "07AABCO6789Q1Z6",
+    "panNumber": "AABCO6789Q",
+    "bankDetails": {
+      "accountNumber": "6789012345",
+      "ifscCode": "HDFC0006789",
+      "bankName": "HDFC Bank",
+      "accountHolderName": "Advanced Skin Serums India"
+    },
+    "status": "Active",
+    "rating": 5,
+    "notes": "Premium Vitamin C serums, anti-aging serums, exosome therapy products, and advanced peptide formulations."
+  },
+  {
+    "name": "Nutraceuticals & Supplements India",
+    "contactPerson": "Dr. Anjali Verma",
+    "email": "anjali@nutrasupplements.com",
+    "phone": "+91 9876543217",
+    "address": "67, Pharma District, Malviya Nagar",
+    "city": "Jaipur",
+    "state": "Rajasthan",
+    "pincode": "302001",
+    "gstNumber": "08AABCW4567R1Z8",
+    "panNumber": "AABCW4567R",
+    "bankDetails": {
+      "accountNumber": "4567890123",
+      "ifscCode": "ICIC0004567",
+      "bankName": "ICICI Bank",
+      "accountHolderName": "Nutraceuticals & Supplements India"
+    },
+    "status": "Active",
+    "rating": 4,
+    "notes": "Collagen powders, dermatology tablets, capsules, syrups, and oral supplements for skin health."
+  },
+  {
+    "name": "Clinical Acne Solutions",
+    "contactPerson": "Dr. Karthik Nair",
+    "email": "karthik@acnesolutions.com",
+    "phone": "+91 9876543218",
+    "address": "45, Medical Plaza, Ernakulam",
+    "city": "Kochi",
+    "state": "Kerala",
+    "pincode": "682001",
+    "gstNumber": "32AABCP8901S1Z1",
+    "panNumber": "AABCP8901S",
+    "bankDetails": {
+      "accountNumber": "8901234567",
+      "ifscCode": "SBIN0008901",
+      "bankName": "State Bank of India",
+      "accountHolderName": "Clinical Acne Solutions"
+    },
+    "status": "Inactive",
+    "rating": 3,
+    "notes": "Acne care products, cleansers, gels, and anti-bacterial treatments. On hold pending quality checks."
+  },
+  {
+    "name": "Professional Face Masks & Treatments",
+    "contactPerson": "Dr. Anand Sharma",
+    "email": "anand@facemasks-pro.com",
+    "phone": "+91 9876543219",
+    "address": "12, Medical District, AIIMS Road",
+    "city": "Dehradun",
+    "state": "Uttarakhand",
+    "pincode": "248001",
+    "gstNumber": "05AABCM1234T1Z3",
+    "panNumber": "AABCM1234T",
+    "bankDetails": {
+      "accountNumber": "1234509876",
+      "ifscCode": "HDFC0001234",
+      "bankName": "HDFC Bank",
+      "accountHolderName": "Professional Face Masks & Treatments"
+    },
+    "status": "Active",
+    "rating": 5,
+    "notes": "Professional face masks, facial treatment products, ointments, and therapeutic gels for clinical use."
+  },
+  {
+    "name": "Pigmentation & Brightening Specialists",
+    "contactPerson": "Dr. Neha Gupta",
+    "email": "neha@pigmentation-care.com",
+    "phone": "+91 9876543220",
+    "address": "89, Medical Hub, Sector 18",
+    "city": "Noida",
+    "state": "Uttar Pradesh",
+    "pincode": "201301",
+    "gstNumber": "09AABCE5678U1Z5",
+    "panNumber": "AABCE5678U",
+    "bankDetails": {
+      "accountNumber": "5678904321",
+      "ifscCode": "ICIC0005678",
+      "bankName": "ICICI Bank",
+      "accountHolderName": "Pigmentation & Brightening Specialists"
+    },
+    "status": "Active",
+    "rating": 4,
+    "notes": "Anti-pigmentation creams, brightening solutions, melasma treatments, and skin lightening products."
+  },
+  {
+    "name": "CosmeticPharma Supplies Ltd",
+    "contactPerson": "Ravi Malhotra",
+    "email": "ravi@cosmeticpharma.com",
+    "phone": "+91 9876543221",
+    "address": "34, Pharma Industrial Zone, GT Road",
+    "city": "Ludhiana",
+    "state": "Punjab",
+    "pincode": "141001",
+    "gstNumber": "03AABCL9012V1Z7",
+    "panNumber": "AABCL9012V",
+    "bankDetails": {
+      "accountNumber": "9012345678",
+      "ifscCode": "SBIN0009012",
+      "bankName": "State Bank of India",
+      "accountHolderName": "CosmeticPharma Supplies Ltd"
+    },
+    "status": "Active",
+    "rating": 5,
+    "notes": "Lip balms, under-eye creams, sprays, powders, sachets, and miscellaneous dermatology consumables."
+  }
+]

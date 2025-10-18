@@ -25,6 +25,12 @@ const productSchema = new mongoose.Schema({
     required: [true, 'Organization name is required'],
     trim: true
   },
+  code: {
+    type: String,
+    trim: true,
+    sparse: true,
+    unique: true
+  },
   price: {
     type: Number,
     required: [true, 'Product price is required'],

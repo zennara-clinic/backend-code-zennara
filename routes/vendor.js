@@ -8,7 +8,7 @@ const {
   deleteVendor,
   getVendorStats
 } = require('../controllers/vendorController');
-const { protectAdmin } = require('../middleware/auth');
+const { protectAdmin } = require('../middleware/auth'); // Fixed import path
 
 // All routes require admin authentication
 router.use(protectAdmin);
