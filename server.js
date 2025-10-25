@@ -11,83 +11,20 @@ const { checkBookingStatus } = require('./middleware/bookingStatusMiddleware');
 
 const app = express();
 
-/* ----------------------------- CORS (Production-Ready) ----------------------------- */
-const allowedOrigins = [
-  'https://admin.sizid.com',
-  'https://api.zennara.in',
-  'http://localhost:3000',
-  'http://localhost:5173',
-  'http://localhost:5174',
-  'http://localhost:4173'
-];
-
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, postman, curl, etc.)
-    if (!origin) return callback(null, true);
-    
-    // Allow all origins in development
-    if (process.env.NODE_ENV !== 'production') {
-      return callback(null, true);
-    }
-    
-    // In production, check if origin is in allowed list
-    if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.includes('*')) {
-      callback(null, true);
-    } else {
-      console.log('🚫 CORS blocked origin:', origin);
-      callback(null, true); // Still allow but log for debugging
-    }
-  },
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD'],
+// Allow ONLY your admin app (recommended)
+app.use(cors({
+  origin: 'https://admin.sizid.com',
+  credentials: false, // don't use cookies with a single origin unless you need them
+  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS','HEAD'],
   allowedHeaders: [
-    'Content-Type',
-    'Authorization',
-    'Accept',
-    'Origin',
-    'X-Requested-With',
-    'Content-Length',
-    'Accept-Encoding',
-    'X-CSRF-Token',
-    'Accept-Language',
-    'X-Forwarded-For',
-    'X-Real-IP'
+    'Content-Type','Authorization','Accept','Origin','X-Requested-With',
+    'Content-Length','Accept-Encoding','X-CSRF-Token','Accept-Language'
   ],
-  exposedHeaders: ['Content-Length', 'Content-Type', 'Content-Disposition'],
-  credentials: false,
-  maxAge: 86400,
+  exposedHeaders: ['Content-Length','Content-Type','Content-Disposition'],
   optionsSuccessStatus: 204,
-  preflightContinue: false
-};
-
-// Apply CORS globally first
-app.use(cors(corsOptions));
-
-// Explicitly handle ALL OPTIONS requests before any other middleware
-app.options('*', (req, res) => {
-  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
-  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,PATCH,OPTIONS,HEAD');
-  res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,Accept,Origin,X-Requested-With');
-  res.header('Access-Control-Max-Age', '86400');
-  res.sendStatus(204);
-});
-
-/*
-  If you later NEED cookies/session:
-  - Replace the block above with this dynamic reflection:
-  
-  const reflectOriginCors = {
-    origin: (origin, cb) => cb(null, true), // reflect any origin (sets ACAO to request origin)
-    methods: ['GET','POST','PUT','DELETE','PATCH','OPTIONS','HEAD'],
-    allowedHeaders: ['Content-Type','Authorization','Accept','Origin','X-Requested-With','Content-Length','Accept-Encoding','X-CSRF-Token','Accept-Language'],
-    exposedHeaders: ['Content-Length','Content-Type','Content-Disposition'],
-    credentials: true,           // cookies allowed
-    maxAge: 86400,
-    optionsSuccessStatus: 204
-  };
-  app.use(cors(reflectOriginCors));
-  app.options('*', cors(reflectOriginCors));
-*/
+  maxAge: 86400
+}));
+app.options('*', cors());
 
 /* ------------------------------ Core Middleware ------------------------------ */
 app.use(express.json({ limit: '10mb' }));
