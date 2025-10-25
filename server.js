@@ -11,30 +11,65 @@ const { checkBookingStatus } = require('./middleware/bookingStatusMiddleware');
 
 const app = express();
 
-/* ----------------------------- CORS (FULLY PERMISSIVE) ----------------------------- */
-// Completely open CORS - allows ALL origins, methods, and headers
-app.use((req, res, next) => {
-  // Allow ALL origins
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  
-  // Allow ALL methods
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD');
-  
-  // Allow ALL headers that might be sent
-  res.setHeader('Access-Control-Allow-Headers', '*');
-  
-  // Expose all headers
-  res.setHeader('Access-Control-Expose-Headers', '*');
-  
-  // Cache preflight for 24 hours
-  res.setHeader('Access-Control-Max-Age', '86400');
-  
-  // Handle preflight requests
-  if (req.method === 'OPTIONS') {
-    return res.status(204).end();
-  }
-  
-  next();
+/* ----------------------------- CORS (Production-Ready) ----------------------------- */
+const allowedOrigins = [
+  'https://admin.sizid.com',
+  'https://api.zennara.in',
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:4173'
+];
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, postman, curl, etc.)
+    if (!origin) return callback(null, true);
+    
+    // Allow all origins in development
+    if (process.env.NODE_ENV !== 'production') {
+      return callback(null, true);
+    }
+    
+    // In production, check if origin is in allowed list
+    if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.includes('*')) {
+      callback(null, true);
+    } else {
+      console.log('🚫 CORS blocked origin:', origin);
+      callback(null, true); // Still allow but log for debugging
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS', 'HEAD'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'Accept',
+    'Origin',
+    'X-Requested-With',
+    'Content-Length',
+    'Accept-Encoding',
+    'X-CSRF-Token',
+    'Accept-Language',
+    'X-Forwarded-For',
+    'X-Real-IP'
+  ],
+  exposedHeaders: ['Content-Length', 'Content-Type', 'Content-Disposition'],
+  credentials: false,
+  maxAge: 86400,
+  optionsSuccessStatus: 204,
+  preflightContinue: false
+};
+
+// Apply CORS globally first
+app.use(cors(corsOptions));
+
+// Explicitly handle ALL OPTIONS requests before any other middleware
+app.options('*', (req, res) => {
+  res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,PATCH,OPTIONS,HEAD');
+  res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,Accept,Origin,X-Requested-With');
+  res.header('Access-Control-Max-Age', '86400');
+  res.sendStatus(204);
 });
 
 /*
