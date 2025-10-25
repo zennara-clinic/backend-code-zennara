@@ -16,6 +16,7 @@ const getSupportMessageNotificationTemplate = require('../Email Templates/suppor
 const getServiceCompletionOTPTemplate = require('../Email Templates/serviceCompletionOtpTemplate');
 const getPackageCancellationOtpTemplate = require('../Email Templates/packageCancellationOtpTemplate');
 const getBookingExpiredNotificationTemplate = require('../Email Templates/bookingExpiredNotification');
+const getBirthdayWishTemplate = require('../Email Templates/birthdayWishTemplate');
 
 // Validate AWS credentials on module load
 const validateAWSCredentials = () => {
@@ -334,6 +335,24 @@ exports.sendBookingExpiredNotification = async (email, fullName, bookingDetails)
     return response;
   } catch (error) {
     console.error('❌ Booking expired notification email sending failed');
+    throw error;
+  }
+};
+
+// ========================================
+// BIRTHDAY WISH EMAILS
+// ========================================
+
+// Send Birthday Wish Email
+exports.sendBirthdayWish = async (email, fullName) => {
+  try {
+    const htmlContent = getBirthdayWishTemplate(fullName);
+    
+    const response = await sendEmail(email, '🎂 Happy Birthday from Zennara! 🎉', htmlContent);
+    console.log(`✅ Birthday wish email sent successfully to ${fullName}`);
+    return response;
+  } catch (error) {
+    console.error('❌ Birthday wish email sending failed');
     throw error;
   }
 };
