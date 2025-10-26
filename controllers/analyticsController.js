@@ -508,6 +508,8 @@ exports.getPatientAnalytics = async (req, res) => {
       }
     ]);
     
+    const inactiveCount = inactivePatients[0]?.total || 0;
+    
     // Get membership status
     const activeMemberships = await User.countDocuments({
       membershipStatus: 'Active'

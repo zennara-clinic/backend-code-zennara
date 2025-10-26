@@ -13,7 +13,7 @@ const app = express();
 
 // Allow ONLY your admin app (recommended)
 app.use(cors({
-  origin: 'https://admin.sizid.com',
+  origin: ['https://admin.sizid.com','http://localhost:5173'],
   credentials: false, // don't use cookies with a single origin unless you need them
   methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS','HEAD'],
   allowedHeaders: [
@@ -84,6 +84,7 @@ app.use('/api/upload', require('./routes/upload'));
 app.use('/api/coupons', require('./routes/coupon'));
 app.use('/api/vendors', require('./routes/vendor'));
 app.use('/api/admin/inventory', require('./routes/inventory'));
+app.use('/api/admin/analytics', require('./routes/analytics'));
 
 /* ------------------------------ Health Check -------------------------------- */
 app.get('/', (req, res) => {

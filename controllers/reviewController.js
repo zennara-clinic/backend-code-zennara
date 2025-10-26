@@ -103,6 +103,14 @@ exports.getProductReviews = async (req, res) => {
     const { productId } = req.params;
     const { page = 1, limit = 10, sort = '-createdAt', rating } = req.query;
 
+    // Validate productId
+    if (!mongoose.Types.ObjectId.isValid(productId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid product ID'
+      });
+    }
+
     // Build query
     const query = { productId, isApproved: true };
     if (rating) {
@@ -133,12 +141,18 @@ exports.getProductReviews = async (req, res) => {
       Review.countDocuments(query)
     ]);
 
-    // Get rating distribution
-    const ratingDistribution = await Review.aggregate([
-      { $match: { productId: mongoose.Types.ObjectId(productId), isApproved: true } },
-      { $group: { _id: '$rating', count: { $sum: 1 } } },
-      { $sort: { _id: -1 } }
-    ]);
+    // Get rating distribution - with error handling
+    let ratingDistribution = [];
+    try {
+      ratingDistribution = await Review.aggregate([
+        { $match: { productId: new mongoose.Types.ObjectId(productId), isApproved: true } },
+        { $group: { _id: '$rating', count: { $sum: 1 } } },
+        { $sort: { _id: -1 } }
+      ]);
+    } catch (aggError) {
+      console.error('Rating distribution aggregation error:', aggError);
+      // Continue without rating distribution
+    }
 
     res.json({
       success: true,
