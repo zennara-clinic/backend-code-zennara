@@ -45,7 +45,8 @@ const productSchema = new mongoose.Schema({
   },
   image: {
     type: String,
-    required: [true, 'Product image is required']
+    default: ''
+    // Not required to allow products without images
   },
   stock: {
     type: Number,

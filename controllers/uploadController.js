@@ -83,7 +83,7 @@ exports.uploadMedia = async (req, res) => {
 // @access  Private/Admin
 exports.deleteMedia = async (req, res) => {
   try {
-    const { publicId } = req.params;
+    let { publicId } = req.params;
     
     if (!publicId) {
       return res.status(400).json({
@@ -92,21 +92,55 @@ exports.deleteMedia = async (req, res) => {
       });
     }
 
+    // Decode the publicId (handles URL-encoded slashes %2F -> /)
+    publicId = decodeURIComponent(publicId);
+    
+    console.log('🗑️ Deleting image from Cloudinary');
+    console.log('   Public ID:', publicId);
+
     // Determine resource type from publicId or request
     const resourceType = req.query.resourceType || 'image';
     
-    await cloudinary.uploader.destroy(publicId, { resource_type: resourceType });
-
-    res.json({
-      success: true,
-      message: 'Media deleted successfully'
+    // Delete from Cloudinary
+    const result = await cloudinary.uploader.destroy(publicId, { 
+      resource_type: resourceType,
+      invalidate: true // Invalidate CDN cache
     });
+
+    console.log('   Cloudinary result:', result);
+
+    // Check if deletion was successful
+    if (result.result === 'ok') {
+      console.log('   ✅ Successfully deleted from Cloudinary');
+      return res.json({
+        success: true,
+        message: 'Media deleted successfully',
+        result: result.result
+      });
+    } else if (result.result === 'not found') {
+      console.log('   ⚠️ Image not found in Cloudinary (may already be deleted)');
+      return res.json({
+        success: true,
+        message: 'Media not found (may already be deleted)',
+        result: result.result
+      });
+    } else {
+      console.log('   ⚠️ Unexpected result:', result.result);
+      return res.json({
+        success: false,
+        message: 'Unexpected deletion result',
+        result: result.result
+      });
+    }
   } catch (error) {
-    console.error('Delete error:', error);
+    console.error('❌ Delete error:', error);
+    console.error('   Error message:', error.message);
+    console.error('   Error stack:', error.stack);
     res.status(500).json({
       success: false,
       message: 'Failed to delete media',
-      error: error.message
+      error: error.message,
+      details: error.toString()
     });
   }
 };

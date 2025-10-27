@@ -131,10 +131,10 @@ exports.createProduct = async (req, res) => {
     } = req.body;
 
     // Validation
-    if (!name || !description || !formulation || !OrgName || !price || !image) {
+    if (!name || !description || !formulation || !OrgName || !price) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide all required fields'
+        message: 'Please provide all required fields (name, description, formulation, OrgName, price)'
       });
     }
 
@@ -210,7 +210,7 @@ exports.updateProduct = async (req, res) => {
     }
     if (price !== undefined) product.price = price;
     if (gstPercentage !== undefined) product.gstPercentage = gstPercentage;
-    if (image) product.image = image;
+    if (image !== undefined) product.image = image; // Allow empty string to clear image
     if (stock !== undefined) product.stock = stock;
     if (isActive !== undefined) product.isActive = isActive;
     if (isPopular !== undefined) product.isPopular = isPopular;
