@@ -144,7 +144,7 @@ exports.createProduct = async (req, res) => {
       description,
       formulation,
       OrgName,
-      code: code || undefined, // Save code if provided
+      code: code && code !== '' ? code : undefined, // Only save code if provided and not empty
       price,
       gstPercentage: gstPercentage || 18,
       image,
@@ -205,8 +205,9 @@ exports.updateProduct = async (req, res) => {
     if (formulation) product.formulation = formulation;
     if (OrgName) product.OrgName = OrgName;
     if (code !== undefined) {
-      product.code = code;
-      console.log('Setting product code to:', code);
+      // Convert empty string to null to avoid unique constraint issues
+      product.code = code === '' ? null : code;
+      console.log('Setting product code to:', product.code);
     }
     if (price !== undefined) product.price = price;
     if (gstPercentage !== undefined) product.gstPercentage = gstPercentage;
