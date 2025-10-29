@@ -3,6 +3,7 @@ const Consultation = require('../models/Consultation');
 const User = require('../models/User');
 const Branch = require('../models/Branch');
 const emailService = require('../utils/emailService');
+const NotificationHelper = require('../utils/notificationHelper');
 
 // @desc    Create new booking
 // @route   POST /api/bookings
@@ -59,6 +60,20 @@ exports.createBooking = async (req, res) => {
 
     // Populate consultation details
     await booking.populate('consultationId', 'name category price image');
+
+    // Create notification for admin
+    try {
+      await NotificationHelper.bookingCreated({
+        _id: booking._id,
+        patientName: booking.fullName,
+        consultation: { name: consultation.name },
+        branch: { name: branch.name },
+        appointmentDate: booking.preferredDate
+      });
+      console.log('🔔 Booking notification created');
+    } catch (notifError) {
+      console.error('⚠️ Failed to create notification:', notifError.message);
+    }
 
     // Send booking confirmation email
     try {
@@ -648,6 +663,17 @@ exports.confirmBooking = async (req, res) => {
 
     // Populate consultation details for email
     await booking.populate('consultationId', 'name');
+
+    // Create notification for admin
+    try {
+      await NotificationHelper.bookingConfirmed({
+        _id: booking._id,
+        patientName: booking.fullName
+      });
+      console.log('🔔 Booking confirmation notification created');
+    } catch (notifError) {
+      console.error('⚠️ Failed to create notification:', notifError.message);
+    }
 
     // Send confirmation email
     try {

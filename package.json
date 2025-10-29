@@ -10,7 +10,8 @@
     "seed:all": "node seedAll.js",
     "seed:brands-formulations": "node seedBrandsFormulations.js",
     "seed:vendors": "node scripts/seedVendors.js",
-    "seed:consultations": "node scripts/seedConsultations.js"
+    "seed:consultations": "node scripts/seedConsultations.js",
+    "clear:orders": "node clearOrders.js"
   },
   "keywords": [
     "zennara",

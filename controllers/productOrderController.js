@@ -1,6 +1,7 @@
 const ProductOrder = require('../models/ProductOrder');
 const Product = require('../models/Product');
 const Address = require('../models/Address');
+const NotificationHelper = require('../utils/notificationHelper');
 
 // @desc    Create new product order
 // @route   POST /api/product-orders
@@ -128,6 +129,27 @@ exports.createOrder = async (req, res) => {
       .populate('items.productId');
     
     console.log('✅ Order created successfully:', populatedOrder.orderNumber);
+
+    // Create notification for admin
+    try {
+      console.log('📢 Attempting to create notification for order:', {
+        orderId: populatedOrder._id,
+        orderNumber: populatedOrder.orderNumber,
+        totalAmount: populatedOrder.pricing.total,
+        customerName: populatedOrder.shippingAddress.fullName
+      });
+      
+      await NotificationHelper.orderCreated({
+        _id: populatedOrder._id,
+        orderNumber: populatedOrder.orderNumber,
+        totalAmount: populatedOrder.pricing.total,
+        shippingAddress: { name: populatedOrder.shippingAddress.fullName }
+      });
+      console.log('✅ Order notification created successfully');
+    } catch (notifError) {
+      console.error('❌ Failed to create notification:', notifError);
+      console.error('Error stack:', notifError.stack);
+    }
     
     res.status(201).json({
       success: true,

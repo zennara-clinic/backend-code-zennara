@@ -2,6 +2,7 @@ const Consultation = require('../models/Consultation');
 const Booking = require('../models/Booking');
 const Category = require('../models/Category');
 const mongoose = require('mongoose');
+const NotificationHelper = require('../utils/notificationHelper');
 
 // @desc    Create new consultation service
 // @route   POST /api/consultations
@@ -60,6 +61,18 @@ exports.createConsultation = async (req, res) => {
       isPopular: isPopular !== undefined ? isPopular : false
     });
 
+    // Create notification for new consultation
+    try {
+      await NotificationHelper.consultationCreated({
+        _id: consultation._id,
+        name: consultation.name,
+        price: consultation.price
+      });
+      console.log('🔔 Consultation creation notification created');
+    } catch (notifError) {
+      console.error('⚠️ Failed to create notification:', notifError.message);
+    }
+
     res.status(201).json({
       success: true,
       message: 'Consultation service created successfully',
@@ -111,6 +124,17 @@ exports.updateConsultation = async (req, res) => {
         success: false,
         message: 'Consultation service not found'
       });
+    }
+
+    // Create notification for consultation update
+    try {
+      await NotificationHelper.consultationUpdated({
+        _id: consultation._id,
+        name: consultation.name
+      });
+      console.log('🔔 Consultation update notification created');
+    } catch (notifError) {
+      console.error('⚠️ Failed to create notification:', notifError.message);
     }
 
     res.status(200).json({

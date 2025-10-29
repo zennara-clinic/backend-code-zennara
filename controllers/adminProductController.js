@@ -1,5 +1,6 @@
 const Product = require('../models/Product');
 const cloudinary = require('../config/cloudinary');
+const NotificationHelper = require('../utils/notificationHelper');
 
 // @desc    Get all products (Admin)
 // @route   GET /api/admin/products
@@ -153,6 +154,18 @@ exports.createProduct = async (req, res) => {
       isPopular: isPopular || false
     });
 
+    // Create notification for new product
+    try {
+      await NotificationHelper.productCreated({
+        _id: product._id,
+        name: product.name,
+        price: product.price
+      });
+      console.log('🔔 Product creation notification created');
+    } catch (notifError) {
+      console.error('⚠️ Failed to create notification:', notifError.message);
+    }
+
     res.status(201).json({
       success: true,
       message: 'Product created successfully',
@@ -218,6 +231,17 @@ exports.updateProduct = async (req, res) => {
 
     await product.save();
     console.log('Product saved with code:', product.code);
+
+    // Create notification for product update
+    try {
+      await NotificationHelper.productUpdated({
+        _id: product._id,
+        name: product.name
+      });
+      console.log('🔔 Product update notification created');
+    } catch (notifError) {
+      console.error('⚠️ Failed to create notification:', notifError.message);
+    }
 
     res.json({
       success: true,

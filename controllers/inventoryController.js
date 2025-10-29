@@ -1,4 +1,5 @@
 const Inventory = require('../models/Inventory');
+const NotificationHelper = require('../utils/notificationHelper');
 
 // Get all inventory items with filters
 exports.getAllInventory = async (req, res) => {
@@ -132,6 +133,7 @@ exports.createInventory = async (req, res) => {
 // Update inventory item
 exports.updateInventory = async (req, res) => {
   try {
+    const oldInventory = await Inventory.findById(req.params.id);
     const inventory = await Inventory.findByIdAndUpdate(
       req.params.id,
       req.body,
@@ -146,6 +148,43 @@ exports.updateInventory = async (req, res) => {
         success: false,
         message: 'Inventory item not found'
       });
+    }
+
+    // Check for stock changes and send notifications
+    try {
+      const newQty = inventory.qohAllBatches;
+      const oldQty = oldInventory.qohAllBatches;
+      
+      // Low stock alert (threshold: 5 units)
+      if (newQty <= 5 && newQty > 0 && oldQty > 5) {
+        await NotificationHelper.lowStockAlert({
+          _id: inventory._id,
+          product: { name: inventory.inventoryName },
+          quantity: newQty,
+          branch: { name: inventory.branch || 'Main Branch' }
+        });
+      }
+      
+      // Out of stock alert
+      if (newQty === 0 && oldQty > 0) {
+        await NotificationHelper.outOfStockAlert({
+          _id: inventory._id,
+          product: { name: inventory.inventoryName },
+          branch: { name: inventory.branch || 'Main Branch' }
+        });
+      }
+      
+      // Restocked notification (significant increase)
+      if (newQty > oldQty + 10) {
+        await NotificationHelper.inventoryRestocked({
+          _id: inventory._id,
+          product: { name: inventory.inventoryName },
+          quantity: newQty,
+          branch: { name: inventory.branch || 'Main Branch' }
+        });
+      }
+    } catch (notifError) {
+      console.error('⚠️ Failed to create inventory notification:', notifError.message);
     }
 
     res.status(200).json({

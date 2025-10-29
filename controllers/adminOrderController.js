@@ -1,5 +1,6 @@
 const ProductOrder = require('../models/ProductOrder');
 const Product = require('../models/Product');
+const NotificationHelper = require('../utils/notificationHelper');
 
 // @desc    Get all orders (Admin)
 // @route   GET /api/admin/product-orders
@@ -116,6 +117,9 @@ exports.updateOrderStatus = async (req, res) => {
     const currentStatusIndex = statusSequence.indexOf(order.orderStatus);
     const newStatusIndex = statusSequence.indexOf(status);
     
+    // Store old status for notification (BEFORE changing it)
+    const oldStatus = order.orderStatus;
+    
     // Add intermediate statuses if skipping ahead
     if (newStatusIndex > currentStatusIndex && currentStatusIndex !== -1 && newStatusIndex !== -1) {
       // Add all intermediate statuses
@@ -172,6 +176,21 @@ exports.updateOrderStatus = async (req, res) => {
     // Populate before sending response
     await order.populate('userId', 'fullName email phone');
     await order.populate('items.productId', 'name image');
+    
+    // Create admin notification for status change
+    try {
+      await NotificationHelper.orderStatusChanged(
+        {
+          _id: order._id,
+          orderNumber: order.orderNumber
+        },
+        oldStatus,
+        status
+      );
+      console.log('🔔 Order status change notification created');
+    } catch (notifError) {
+      console.error('⚠️ Failed to create notification:', notifError.message);
+    }
     
     // Send notification if requested (placeholder for future email/SMS integration)
     if (sendNotification && order.userId?.email) {
