@@ -1,30 +1,61 @@
-const cloudinary = require('../config/cloudinary');
-const streamifier = require('streamifier');
+const { PutObjectCommand, DeleteObjectCommand, ListObjectsV2Command, HeadBucketCommand } = require('@aws-sdk/client-s3');
+const { s3Client, S3_BUCKET } = require('../config/s3');
+const sharp = require('sharp');
+const crypto = require('crypto');
 
-// Helper function to upload buffer to cloudinary
-const uploadToCloudinary = (buffer, resourceType = 'image') => {
-  return new Promise((resolve, reject) => {
-    const uploadStream = cloudinary.uploader.upload_stream(
-      {
-        folder: 'zennara/consultations',
-        resource_type: resourceType,
-        transformation: resourceType === 'image' ? [
-          { width: 1200, height: 800, crop: 'limit', quality: 'auto:good' }
-        ] : undefined
-      },
-      (error, result) => {
-        if (error) {
-          reject(error);
-        } else {
-          resolve(result);
-        }
-      }
-    );
-    streamifier.createReadStream(buffer).pipe(uploadStream);
-  });
+// Helper function to upload buffer to S3
+const uploadToS3 = async (buffer, resourceType = 'image', folder = 'consultations') => {
+  try {
+    let processedBuffer = buffer;
+    let contentType = 'application/octet-stream';
+    let fileExtension = '';
+
+    if (resourceType === 'image') {
+      // Process image with sharp
+      processedBuffer = await sharp(buffer)
+        .resize(1200, 800, {
+          fit: 'inside',
+          withoutEnlargement: true
+        })
+        .jpeg({ quality: 85 })
+        .toBuffer();
+      
+      contentType = 'image/jpeg';
+      fileExtension = '.jpg';
+    } else if (resourceType === 'video') {
+      contentType = 'video/mp4';
+      fileExtension = '.mp4';
+    }
+
+    // Generate unique filename
+    const fileKey = `zennara/${folder}/${crypto.randomBytes(16).toString('hex')}${fileExtension}`;
+
+    // Upload to S3
+    const uploadParams = {
+      Bucket: S3_BUCKET,
+      Key: fileKey,
+      Body: processedBuffer,
+      ContentType: contentType
+    };
+
+    await s3Client.send(new PutObjectCommand(uploadParams));
+
+    // Return S3 URL and key
+    const url = `https://${S3_BUCKET}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${fileKey}`;
+    
+    return {
+      secure_url: url,
+      url: url,
+      public_id: fileKey,
+      publicId: fileKey
+    };
+  } catch (error) {
+    console.error('S3 upload error:', error);
+    throw error;
+  }
 };
 
-// @desc    Upload media files to cloudinary
+// @desc    Upload media files to S3
 // @route   POST /api/upload/media
 // @access  Private/Admin
 exports.uploadMedia = async (req, res) => {
@@ -47,8 +78,8 @@ exports.uploadMedia = async (req, res) => {
       console.log('Processing file:', file.originalname, 'Type:', file.mimetype);
       const resourceType = file.mimetype.startsWith('video/') ? 'video' : 'image';
       
-      console.log('Uploading to Cloudinary as:', resourceType);
-      const result = await uploadToCloudinary(file.buffer, resourceType);
+      console.log('Uploading to S3 as:', resourceType);
+      const result = await uploadToS3(file.buffer, resourceType);
       console.log('✅ Uploaded:', result.secure_url);
 
       return {
@@ -78,7 +109,7 @@ exports.uploadMedia = async (req, res) => {
   }
 };
 
-// @desc    Delete media from cloudinary
+// @desc    Delete media from S3
 // @route   DELETE /api/upload/media/:publicId
 // @access  Private/Admin
 exports.deleteMedia = async (req, res) => {
@@ -95,47 +126,36 @@ exports.deleteMedia = async (req, res) => {
     // Decode the publicId (handles URL-encoded slashes %2F -> /)
     publicId = decodeURIComponent(publicId);
     
-    console.log('🗑️ Deleting image from Cloudinary');
-    console.log('   Public ID:', publicId);
+    console.log('🗑️ Deleting image from S3');
+    console.log('   File Key:', publicId);
 
-    // Determine resource type from publicId or request
-    const resourceType = req.query.resourceType || 'image';
-    
-    // Delete from Cloudinary
-    const result = await cloudinary.uploader.destroy(publicId, { 
-      resource_type: resourceType,
-      invalidate: true // Invalidate CDN cache
+    // Delete from S3
+    const deleteParams = {
+      Bucket: S3_BUCKET,
+      Key: publicId
+    };
+
+    await s3Client.send(new DeleteObjectCommand(deleteParams));
+
+    console.log('   ✅ Successfully deleted from S3');
+    return res.json({
+      success: true,
+      message: 'Media deleted successfully'
     });
-
-    console.log('   Cloudinary result:', result);
-
-    // Check if deletion was successful
-    if (result.result === 'ok') {
-      console.log('   ✅ Successfully deleted from Cloudinary');
-      return res.json({
-        success: true,
-        message: 'Media deleted successfully',
-        result: result.result
-      });
-    } else if (result.result === 'not found') {
-      console.log('   ⚠️ Image not found in Cloudinary (may already be deleted)');
-      return res.json({
-        success: true,
-        message: 'Media not found (may already be deleted)',
-        result: result.result
-      });
-    } else {
-      console.log('   ⚠️ Unexpected result:', result.result);
-      return res.json({
-        success: false,
-        message: 'Unexpected deletion result',
-        result: result.result
-      });
-    }
   } catch (error) {
     console.error('❌ Delete error:', error);
     console.error('   Error message:', error.message);
     console.error('   Error stack:', error.stack);
+    
+    // If file not found in S3, still return success
+    if (error.name === 'NoSuchKey' || error.Code === 'NoSuchKey') {
+      console.log('   ⚠️ File not found in S3 (may already be deleted)');
+      return res.json({
+        success: true,
+        message: 'Media not found (may already be deleted)'
+      });
+    }
+    
     res.status(500).json({
       success: false,
       message: 'Failed to delete media',
@@ -196,33 +216,46 @@ exports.addMediaUrl = async (req, res) => {
   }
 };
 
-// @desc    Get all uploaded media from Cloudinary
+// @desc    Get all uploaded media from S3
 // @route   GET /api/upload/media
 // @access  Private/Admin
 exports.getAllMedia = async (req, res) => {
   try {
-    const { resourceType = 'image', maxResults = 500 } = req.query;
+    const { maxResults = 500 } = req.query;
     
-    // Get resources from Cloudinary
-    const result = await cloudinary.api.resources({
-      type: 'upload',
-      prefix: 'zennara/',
-      resource_type: resourceType,
-      max_results: maxResults
-    });
+    // List objects from S3
+    const listParams = {
+      Bucket: S3_BUCKET,
+      Prefix: 'zennara/',
+      MaxKeys: parseInt(maxResults)
+    };
+
+    const result = await s3Client.send(new ListObjectsV2Command(listParams));
+
+    if (!result.Contents) {
+      return res.json({
+        success: true,
+        count: 0,
+        data: []
+      });
+    }
 
     // Transform to match frontend format
-    const media = result.resources.map(resource => ({
-      publicId: resource.public_id,
-      url: resource.secure_url,
-      type: resource.resource_type,
-      format: resource.format,
-      width: resource.width,
-      height: resource.height,
-      bytes: resource.bytes,
-      createdAt: resource.created_at,
-      folder: resource.folder
-    }));
+    const media = result.Contents.map(object => {
+      const url = `https://${S3_BUCKET}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${object.Key}`;
+      const extension = object.Key.split('.').pop().toLowerCase();
+      const isVideo = ['mp4', 'mov', 'avi', 'webm'].includes(extension);
+      
+      return {
+        publicId: object.Key,
+        url: url,
+        type: isVideo ? 'video' : 'image',
+        format: extension,
+        bytes: object.Size,
+        createdAt: object.LastModified,
+        key: object.Key
+      };
+    });
 
     res.json({
       success: true,
@@ -239,80 +272,64 @@ exports.getAllMedia = async (req, res) => {
   }
 };
 
-// @desc    Get Cloudinary storage stats
+// @desc    Get S3 storage stats
 // @route   GET /api/upload/stats
 // @access  Private/Admin
 exports.getStorageStats = async (req, res) => {
   try {
-    // Get fresh usage stats from Cloudinary (no caching)
-    const usage = await cloudinary.api.usage({ force: true });
+    console.log('🔍 S3 Stats Fetched at:', new Date().toISOString());
     
-    console.log('🔍 Cloudinary Stats Fetched at:', new Date().toISOString());
-    console.log('📊 Storage Usage:', usage.storage);
-    console.log('📈 Bandwidth Usage:', usage.bandwidth);
-    console.log('🔄 Transformations:', usage.transformations);
-    console.log('📁 Resources Count:', usage.resources);
-
-    // Parse the actual Cloudinary response structure
-    // { plan: "...", last_updated: "...", transformations: {...}, objects: {...}, bandwidth: {...}, storage: {...}, requests: ..., resources: ..., derived_resources: ... }
-    
-    const plan = usage.plan || 'Free';
-    
-    // Storage limits by plan (in bytes)
-    const PLAN_LIMITS = {
-      'Free': 25 * 1024 * 1024 * 1024, // 25GB
-      'free': 25 * 1024 * 1024 * 1024,
-      'Plus': 100 * 1024 * 1024 * 1024, // 100GB
-      'plus': 100 * 1024 * 1024 * 1024,
-      'Advanced': 500 * 1024 * 1024 * 1024, // 500GB
-      'advanced': 500 * 1024 * 1024 * 1024
+    // List all objects in the bucket to calculate storage
+    const listParams = {
+      Bucket: S3_BUCKET,
+      Prefix: 'zennara/'
     };
+
+    let totalSize = 0;
+    let objectCount = 0;
+    let continuationToken = null;
     
-    const storageUsed = usage.storage?.usage || 0;
-    const storageLimit = usage.storage?.limit || PLAN_LIMITS[plan] || PLAN_LIMITS['Free'];
-    const storagePercentage = storageLimit > 0 ? ((storageUsed / storageLimit) * 100).toFixed(2) : 0;
-    
-    const bandwidthUsed = usage.bandwidth?.usage || 0;
-    const bandwidthLimit = usage.bandwidth?.limit || (plan.toLowerCase() === 'free' ? 50 * 1024 * 1024 * 1024 : 0); // 50GB for free
-    
-    const creditsUsed = usage.credits?.usage || 0;
-    const creditsLimit = usage.credits?.limit || (plan.toLowerCase() === 'free' ? 25000 : 0);
-    
-    const transformationsUsed = usage.transformations?.usage || 0;
-    const transformationsLimit = usage.transformations?.limit || (plan.toLowerCase() === 'free' ? 25000 : 0);
-    
-    const resourcesCount = usage.resources || 0;
-    const derivedResourcesCount = usage.derived_resources || 0;
-    const totalRequests = usage.requests || 0;
+    // Paginate through all objects
+    do {
+      if (continuationToken) {
+        listParams.ContinuationToken = continuationToken;
+      }
+      
+      const result = await s3Client.send(new ListObjectsV2Command(listParams));
+      
+      if (result.Contents) {
+        result.Contents.forEach(object => {
+          totalSize += object.Size || 0;
+          objectCount++;
+        });
+      }
+      
+      continuationToken = result.IsTruncated ? result.NextContinuationToken : null;
+    } while (continuationToken);
+
+    console.log('📊 Storage Usage:', totalSize, 'bytes');
+    console.log('📁 Object Count:', objectCount);
+
+    // AWS Free Tier: 5GB storage
+    // Assume standard usage limits
+    const storageLimit = 5 * 1024 * 1024 * 1024; // 5GB in bytes
+    const storagePercentage = storageLimit > 0 ? ((totalSize / storageLimit) * 100).toFixed(2) : 0;
 
     res.json({
       success: true,
       data: {
         // Storage
-        used: storageUsed,
+        used: totalSize,
         limit: storageLimit,
         percentage: storagePercentage,
         
-        // Bandwidth
-        bandwidth: bandwidthUsed,
-        bandwidthLimit: bandwidthLimit,
-        
-        // Credits
-        credits: creditsUsed,
-        creditsLimit: creditsLimit,
-        
-        // Transformations
-        transformations: transformationsUsed,
-        transformationsLimit: transformationsLimit,
-        
         // Resources
-        resourcesCount: resourcesCount,
-        derivedResourcesCount: derivedResourcesCount,
-        totalRequests: totalRequests,
+        resourcesCount: objectCount,
         
         // Plan info
-        plan: usage.plan || 'Free',
-        lastUpdated: usage.last_updated
+        plan: 'AWS S3',
+        provider: 'Amazon S3',
+        lastUpdated: new Date().toISOString()
       }
     });
   } catch (error) {

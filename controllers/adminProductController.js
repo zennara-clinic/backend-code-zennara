@@ -1,5 +1,6 @@
 const Product = require('../models/Product');
-const cloudinary = require('../config/cloudinary');
+const { DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const { s3Client, S3_BUCKET } = require('../config/s3');
 const NotificationHelper = require('../utils/notificationHelper');
 
 // @desc    Get all products (Admin)
@@ -272,13 +273,21 @@ exports.deleteProduct = async (req, res) => {
       });
     }
 
-    // Delete image from Cloudinary if it's a Cloudinary URL
-    if (product.image && product.image.includes('cloudinary.com')) {
+    // Delete image from S3 if it's an S3 URL
+    if (product.image && product.image.includes('.s3.')) {
       try {
-        const publicId = product.image.split('/').pop().split('.')[0];
-        await cloudinary.uploader.destroy(`zennara-products/${publicId}`);
-      } catch (cloudError) {
-        console.error('Cloudinary delete error:', cloudError);
+        // Extract the key from the S3 URL
+        const urlParts = product.image.split('.amazonaws.com/');
+        if (urlParts.length > 1) {
+          const fileKey = urlParts[1];
+          const deleteParams = {
+            Bucket: S3_BUCKET,
+            Key: fileKey
+          };
+          await s3Client.send(new DeleteObjectCommand(deleteParams));
+        }
+      } catch (s3Error) {
+        console.error('S3 delete error:', s3Error);
         // Continue with product deletion even if image deletion fails
       }
     }

@@ -1,7 +1,9 @@
 const multer = require('multer');
 const sharp = require('sharp');
-const cloudinary = require('../config/cloudinary');
+const { PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const { s3Client, S3_BUCKET } = require('../config/s3');
 const path = require('path');
+const crypto = require('crypto');
 
 // Configure multer to use memory storage
 const storage = multer.memoryStorage();
@@ -26,8 +28,8 @@ const upload = multer({
   }
 });
 
-// Process and upload image to Cloudinary
-const uploadToCloudinary = async (buffer, folder = 'zennara/profiles') => {
+// Process and upload image to S3
+const uploadToS3 = async (buffer, folder = 'profiles') => {
   try {
     // Process image with sharp (resize, optimize)
     const processedImage = await sharp(buffer)
@@ -38,44 +40,51 @@ const uploadToCloudinary = async (buffer, folder = 'zennara/profiles') => {
       .jpeg({ quality: 90 })
       .toBuffer();
 
-    // Upload to Cloudinary
-    return new Promise((resolve, reject) => {
-      const uploadStream = cloudinary.uploader.upload_stream(
-        {
-          folder: folder,
-          resource_type: 'image',
-          transformation: [
-            { width: 400, height: 400, crop: 'fill' },
-            { quality: 'auto' },
-            { fetch_format: 'auto' }
-          ]
-        },
-        (error, result) => {
-          if (error) {
-            reject(error);
-          } else {
-            resolve(result);
-          }
-        }
-      );
+    // Generate unique filename
+    const fileKey = `zennara/${folder}/${crypto.randomBytes(16).toString('hex')}.jpg`;
 
-      uploadStream.end(processedImage);
-    });
+    // Upload to S3
+    const uploadParams = {
+      Bucket: S3_BUCKET,
+      Key: fileKey,
+      Body: processedImage,
+      ContentType: 'image/jpeg'
+    };
+
+    await s3Client.send(new PutObjectCommand(uploadParams));
+
+    // Return S3 URL and key
+    const url = `https://${S3_BUCKET}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${fileKey}`;
+    
+    return {
+      secure_url: url,
+      url: url,
+      public_id: fileKey,
+      publicId: fileKey
+    };
   } catch (error) {
+    console.error('S3 upload error:', error);
     throw new Error('Image processing failed');
   }
 };
 
-// Delete image from Cloudinary
-const deleteFromCloudinary = async (publicId) => {
+// Delete image from S3
+const deleteFromS3 = async (fileKey) => {
   try {
-    await cloudinary.uploader.destroy(publicId);
+    if (!fileKey) return;
+    
+    const deleteParams = {
+      Bucket: S3_BUCKET,
+      Key: fileKey
+    };
+
+    await s3Client.send(new DeleteObjectCommand(deleteParams));
   } catch (error) {
-    console.error('Error deleting from Cloudinary:', error);
+    console.error('Error deleting from S3:', error);
   }
 };
 
-// Middleware to upload profile picture with Cloudinary
+// Middleware to upload profile picture with S3
 const uploadProfilePicture = async (req, res, next) => {
   // Use multer to handle file upload
   upload.single('profilePicture')(req, res, async (err) => {
@@ -98,21 +107,21 @@ const uploadProfilePicture = async (req, res, next) => {
       });
     }
 
-    // If there's a file, upload to Cloudinary
+    // If there's a file, upload to S3
     if (req.file) {
       try {
-        console.log('📤 Uploading file to Cloudinary...');
-        const result = await uploadToCloudinary(req.file.buffer, 'zennara/profiles');
+        console.log('📤 Uploading file to S3...');
+        const result = await uploadToS3(req.file.buffer, 'profiles');
         
-        // Attach Cloudinary result to request
+        // Attach S3 result to request (keeping same structure for backwards compatibility)
         req.cloudinaryResult = {
-          url: result.secure_url,
-          publicId: result.public_id
+          url: result.url,
+          publicId: result.publicId
         };
         
-        console.log('✅ File uploaded to Cloudinary:', result.secure_url);
+        console.log('✅ File uploaded to S3:', result.url);
       } catch (uploadError) {
-        console.error('❌ Cloudinary upload error:', uploadError);
+        console.error('❌ S3 upload error:', uploadError);
         return res.status(500).json({
           success: false,
           message: 'Failed to upload image to cloud storage'
@@ -126,7 +135,10 @@ const uploadProfilePicture = async (req, res, next) => {
 
 module.exports = {
   upload,
-  uploadToCloudinary,
-  deleteFromCloudinary,
-  uploadProfilePicture
+  uploadToS3,
+  deleteFromS3,
+  uploadProfilePicture,
+  // Keep old names for backwards compatibility
+  uploadToCloudinary: uploadToS3,
+  deleteFromCloudinary: deleteFromS3
 };

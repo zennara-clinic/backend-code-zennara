@@ -97,7 +97,7 @@ const productOrderSchema = new mongoose.Schema({
   paymentMethod: {
     type: String,
     required: true,
-    enum: ['COD'],
+    enum: ['COD', 'Razorpay', 'Online'],
     default: 'COD'
   },
   paymentStatus: {

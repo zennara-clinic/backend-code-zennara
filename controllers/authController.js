@@ -673,12 +673,12 @@ exports.uploadProfilePicture = async (req, res) => {
       });
     }
 
-    // Delete old profile picture from Cloudinary if exists
+    // Delete old profile picture from S3 if exists
     if (user.profilePicture?.publicId) {
       await deleteFromCloudinary(user.profilePicture.publicId);
     }
 
-    // Upload new image to Cloudinary
+    // Upload new image to S3
     const result = await uploadToCloudinary(req.file.buffer, 'zennara/profiles');
 
     // Update user profile picture
@@ -720,7 +720,7 @@ exports.deleteProfilePicture = async (req, res) => {
       });
     }
 
-    // Delete from Cloudinary
+    // Delete from S3
     if (user.profilePicture?.publicId) {
       await deleteFromCloudinary(user.profilePicture.publicId);
     }

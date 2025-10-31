@@ -1,7 +1,10 @@
 const PackageAssignment = require('../models/PackageAssignment');
 const User = require('../models/User');
 const Package = require('../models/Package');
-const cloudinary = require('../config/cloudinary');
+const { PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const { s3Client, S3_BUCKET } = require('../config/s3');
+const sharp = require('sharp');
+const crypto = require('crypto');
 const { sendOtpEmail } = require('../utils/emailService');
 
 // Get all package assignments with filters and sorting
@@ -212,23 +215,43 @@ exports.uploadPaymentProof = async (req, res) => {
       });
     }
 
-    // Delete old proof if exists
+    // Delete old proof from S3 if exists
     if (assignment.payment.proofPublicId) {
       try {
-        await cloudinary.uploader.destroy(assignment.payment.proofPublicId);
+        const deleteParams = {
+          Bucket: S3_BUCKET,
+          Key: assignment.payment.proofPublicId
+        };
+        await s3Client.send(new DeleteObjectCommand(deleteParams));
       } catch (err) {
         console.error('Error deleting old payment proof:', err);
       }
     }
 
-    // Upload to cloudinary
-    const result = await cloudinary.uploader.upload(req.file.path, {
-      folder: 'zennara/payment-proofs',
-      resource_type: 'auto'
-    });
+    // Process and upload to S3
+    const processedImage = await sharp(req.file.buffer)
+      .resize(1200, 1200, {
+        fit: 'inside',
+        withoutEnlargement: true
+      })
+      .jpeg({ quality: 90 })
+      .toBuffer();
 
-    assignment.payment.proofUrl = result.secure_url;
-    assignment.payment.proofPublicId = result.public_id;
+    const fileKey = `zennara/payment-proofs/${crypto.randomBytes(16).toString('hex')}.jpg`;
+    
+    const uploadParams = {
+      Bucket: S3_BUCKET,
+      Key: fileKey,
+      Body: processedImage,
+      ContentType: 'image/jpeg'
+    };
+
+    await s3Client.send(new PutObjectCommand(uploadParams));
+
+    const url = `https://${S3_BUCKET}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${fileKey}`;
+
+    assignment.payment.proofUrl = url;
+    assignment.payment.proofPublicId = fileKey;
     assignment.payment.isReceived = true;
     assignment.payment.receivedDate = new Date();
 
@@ -238,7 +261,7 @@ exports.uploadPaymentProof = async (req, res) => {
       success: true,
       message: 'Payment proof uploaded successfully',
       data: {
-        proofUrl: result.secure_url
+        proofUrl: url
       }
     });
   } catch (error) {
@@ -316,10 +339,14 @@ exports.deleteAssignment = async (req, res) => {
       });
     }
 
-    // Delete payment proof from cloudinary if exists
+    // Delete payment proof from S3 if exists
     if (assignment.payment.proofPublicId) {
       try {
-        await cloudinary.uploader.destroy(assignment.payment.proofPublicId);
+        const deleteParams = {
+          Bucket: S3_BUCKET,
+          Key: assignment.payment.proofPublicId
+        };
+        await s3Client.send(new DeleteObjectCommand(deleteParams));
       } catch (err) {
         console.error('Error deleting payment proof:', err);
       }

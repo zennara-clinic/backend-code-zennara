@@ -196,10 +196,10 @@ exports.updateUser = async (req, res) => {
 
     // Handle profile picture removal
     if (removeProfilePicture === 'true' || removeProfilePicture === true) {
-      // Delete old image from Cloudinary if it exists
+      // Delete old image from S3 if it exists
       if (oldPublicId) {
         await deleteFromCloudinary(oldPublicId);
-        console.log('🗑️ Deleted old profile picture from Cloudinary:', oldPublicId);
+        console.log('🗑️ Deleted old profile picture from S3:', oldPublicId);
       }
       
       user.profilePicture = {
@@ -209,20 +209,20 @@ exports.updateUser = async (req, res) => {
       console.log('✅ Profile picture removed for user:', user._id);
     }
 
-    // Handle profile picture upload from Cloudinary
+    // Handle profile picture upload from S3
     if (req.cloudinaryResult) {
-      // Delete old image from Cloudinary if it exists
+      // Delete old image from S3 if it exists
       if (oldPublicId && !removeProfilePicture) {
         await deleteFromCloudinary(oldPublicId);
-        console.log('🗑️ Deleted old profile picture from Cloudinary:', oldPublicId);
+        console.log('🗑️ Deleted old profile picture from S3:', oldPublicId);
       }
 
       user.profilePicture = {
         url: req.cloudinaryResult.url,
         publicId: req.cloudinaryResult.publicId
       };
-      console.log('✅ Profile picture uploaded to Cloudinary for user:', user._id);
-      console.log('📸 Cloudinary URL:', req.cloudinaryResult.url);
+      console.log('✅ Profile picture uploaded to S3 for user:', user._id);
+      console.log('📸 S3 URL:', req.cloudinaryResult.url);
     }
 
     await user.save();
