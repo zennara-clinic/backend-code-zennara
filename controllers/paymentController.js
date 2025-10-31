@@ -32,8 +32,10 @@ exports.createProductOrderPayment = async (req, res) => {
       });
     }
     
-    // Generate receipt
-    const receipt = `PROD_${Date.now()}_${req.user._id}`;
+    // Generate receipt (max 40 chars for Razorpay)
+    const timestamp = Date.now().toString().slice(-10);
+    const userIdSuffix = req.user._id.toString().slice(-10);
+    const receipt = `PROD_${timestamp}_${userIdSuffix}`;
     
     // Create Razorpay order
     const razorpayOrder = await razorpayService.createOrder(
@@ -276,8 +278,10 @@ exports.createMembershipPayment = async (req, res) => {
       }
     }
     
-    // Generate receipt
-    const receipt = `ZEN_${Date.now()}_${req.user._id}`;
+    // Generate receipt (max 40 chars for Razorpay)
+    const timestamp = Date.now().toString().slice(-10);
+    const userIdSuffix = req.user._id.toString().slice(-10);
+    const receipt = `ZEN_${timestamp}_${userIdSuffix}`;
     
     // Create Razorpay order
     const razorpayOrder = await razorpayService.createOrder(
