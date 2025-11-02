@@ -61,10 +61,11 @@ exports.createBooking = async (req, res) => {
     // Populate consultation details
     await booking.populate('consultationId', 'name category price image');
 
-    // Create notification for admin
+    // Create notification for admin and user
     try {
       await NotificationHelper.bookingCreated({
         _id: booking._id,
+        userId: booking.userId,
         patientName: booking.fullName,
         consultation: { name: consultation.name },
         branch: { name: branch.name },
@@ -262,6 +263,19 @@ exports.cancelBooking = async (req, res) => {
 
     // Populate consultation details for email
     await booking.populate('consultationId', 'name');
+
+    // Create cancellation notification
+    try {
+      await NotificationHelper.bookingCancelled({
+        _id: booking._id,
+        userId: booking.userId,
+        consultation: { name: booking.consultationId.name },
+        cancellationReason: reason
+      });
+      console.log('🔔 Booking cancellation notification created');
+    } catch (notifError) {
+      console.error('⚠️ Failed to create notification:', notifError.message);
+    }
 
     // Send cancellation email
     try {
@@ -664,11 +678,15 @@ exports.confirmBooking = async (req, res) => {
     // Populate consultation details for email
     await booking.populate('consultationId', 'name');
 
-    // Create notification for admin
+    // Create notification for user
     try {
       await NotificationHelper.bookingConfirmed({
         _id: booking._id,
-        patientName: booking.fullName
+        userId: booking.userId,
+        patientName: booking.fullName,
+        consultation: { name: booking.consultationId.name },
+        confirmedDate: booking.confirmedDate,
+        confirmedTime: booking.confirmedTime
       });
       console.log('🔔 Booking confirmation notification created');
     } catch (notifError) {
@@ -961,6 +979,19 @@ exports.cancelBookingAdmin = async (req, res) => {
 
     // Populate consultation details for email
     await booking.populate('consultationId', 'name');
+
+    // Create cancellation notification for user
+    try {
+      await NotificationHelper.bookingCancelled({
+        _id: booking._id,
+        userId: booking.userId,
+        consultation: { name: booking.consultationId.name },
+        cancellationReason: reason || 'Cancelled by admin'
+      });
+      console.log('🔔 Booking cancellation notification created by admin');
+    } catch (notifError) {
+      console.error('⚠️ Failed to create notification:', notifError.message);
+    }
 
     // Send cancellation email
     try {

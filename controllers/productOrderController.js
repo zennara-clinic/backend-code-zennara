@@ -130,10 +130,14 @@ exports.createOrder = async (req, res) => {
     
     console.log('✅ Order created successfully:', populatedOrder.orderNumber);
 
-    // Create notification for admin
+    // Create notification for admin and user
     try {
+      // Extract userId - it's populated so we need the _id
+      const userId = populatedOrder.userId?._id || populatedOrder.userId;
+      
       console.log('📢 Attempting to create notification for order:', {
         orderId: populatedOrder._id,
+        userId: userId,
         orderNumber: populatedOrder.orderNumber,
         totalAmount: populatedOrder.pricing.total,
         customerName: populatedOrder.shippingAddress.fullName
@@ -141,6 +145,7 @@ exports.createOrder = async (req, res) => {
       
       await NotificationHelper.orderCreated({
         _id: populatedOrder._id,
+        userId: userId,
         orderNumber: populatedOrder.orderNumber,
         totalAmount: populatedOrder.pricing.total,
         shippingAddress: { name: populatedOrder.shippingAddress.fullName }

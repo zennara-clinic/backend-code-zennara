@@ -179,9 +179,13 @@ exports.updateOrderStatus = async (req, res) => {
     
     // Create admin notification for status change
     try {
+      // Extract userId - it's populated so we need the _id
+      const userId = order.userId?._id || order.userId;
+      
       await NotificationHelper.orderStatusChanged(
         {
           _id: order._id,
+          userId: userId,
           orderNumber: order.orderNumber
         },
         oldStatus,
