@@ -85,7 +85,7 @@ app.use('/api/coupons', require('./routes/coupon'));
 app.use('/api/vendors', require('./routes/vendor'));
 app.use('/api/admin/inventory', require('./routes/inventory'));
 app.use('/api/admin/analytics', require('./routes/analytics'));
-app.use('/api/admin/notifications', require('./routes/notification'));
+app.use('/api/notifications', require('./routes/notification'));
 app.use('/api/payments', require('./routes/payment'));
 
 /* ------------------------------ Health Check -------------------------------- */

@@ -325,6 +325,184 @@ const getNotificationStats = async (req, res) => {
   }
 };
 
+// ==================== USER-FACING NOTIFICATION METHODS ====================
+
+// Get user's notifications with filters
+const getUserNotifications = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const {
+      type,
+      isRead,
+      priority,
+      page = 1,
+      limit = 20,
+      sortBy = 'createdAt',
+      sortOrder = 'desc'
+    } = req.query;
+
+    // Build filter object
+    const filter = { userId };
+    if (type) filter.type = type;
+    if (isRead !== undefined) filter.isRead = isRead === 'true';
+    if (priority) filter.priority = priority;
+
+    // Calculate pagination
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const sort = { [sortBy]: sortOrder === 'desc' ? -1 : 1 };
+
+    // Execute query
+    const notifications = await Notification.find(filter)
+      .sort(sort)
+      .limit(parseInt(limit))
+      .skip(skip)
+      .lean();
+
+    // Get total count for pagination
+    const total = await Notification.countDocuments(filter);
+
+    // Get unread count
+    const unreadCount = await Notification.countDocuments({ userId, isRead: false });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        notifications,
+        pagination: {
+          total,
+          page: parseInt(page),
+          limit: parseInt(limit),
+          pages: Math.ceil(total / parseInt(limit))
+        },
+        unreadCount
+      }
+    });
+  } catch (error) {
+    console.error('Error fetching user notifications:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching notifications',
+      error: error.message
+    });
+  }
+};
+
+// Get user's unread count
+const getUserUnreadCount = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const unreadCount = await Notification.countDocuments({ userId, isRead: false });
+
+    res.status(200).json({
+      success: true,
+      data: { unreadCount }
+    });
+  } catch (error) {
+    console.error('Error fetching user unread count:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error fetching unread count',
+      error: error.message
+    });
+  }
+};
+
+// Mark user's notification as read
+const markUserNotificationAsRead = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { id } = req.params;
+
+    const notification = await Notification.findOneAndUpdate(
+      { _id: id, userId },
+      {
+        isRead: true,
+        readAt: new Date()
+      },
+      { new: true }
+    );
+
+    if (!notification) {
+      return res.status(404).json({
+        success: false,
+        message: 'Notification not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Notification marked as read',
+      data: notification
+    });
+  } catch (error) {
+    console.error('Error marking notification as read:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error marking notification as read',
+      error: error.message
+    });
+  }
+};
+
+// Mark all user's notifications as read
+const markAllUserNotificationsAsRead = async (req, res) => {
+  try {
+    const userId = req.user._id;
+
+    const result = await Notification.updateMany(
+      { userId, isRead: false },
+      {
+        isRead: true,
+        readAt: new Date()
+      }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: 'All notifications marked as read',
+      data: {
+        modifiedCount: result.modifiedCount
+      }
+    });
+  } catch (error) {
+    console.error('Error marking all notifications as read:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error marking all notifications as read',
+      error: error.message
+    });
+  }
+};
+
+// Delete user's notification
+const deleteUserNotification = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { id } = req.params;
+
+    const notification = await Notification.findOneAndDelete({ _id: id, userId });
+
+    if (!notification) {
+      return res.status(404).json({
+        success: false,
+        message: 'Notification not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Notification deleted successfully'
+    });
+  } catch (error) {
+    console.error('Error deleting notification:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error deleting notification',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   createNotification,
   getAllNotifications,
@@ -335,5 +513,11 @@ module.exports = {
   markAllAsRead,
   deleteNotification,
   deleteAllRead,
-  getNotificationStats
+  getNotificationStats,
+  // User-facing methods
+  getUserNotifications,
+  getUserUnreadCount,
+  markUserNotificationAsRead,
+  markAllUserNotificationsAsRead,
+  deleteUserNotification
 };

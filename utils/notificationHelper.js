@@ -26,7 +26,8 @@ class NotificationHelper {
    */
   static async bookingCreated(booking) {
     try {
-      return await this.create({
+      // Create admin notification
+      await this.create({
         type: 'booking',
         title: 'New Booking Created',
         message: `New booking for ${booking.consultation?.name || 'consultation'} at ${booking.branch?.name || 'branch'} on ${new Date(booking.appointmentDate).toLocaleDateString()}`,
@@ -41,6 +42,25 @@ class NotificationHelper {
           appointmentDate: booking.appointmentDate
         }
       });
+      
+      // Create user notification
+      if (booking.userId) {
+        return await this.create({
+          userId: booking.userId,
+          type: 'booking',
+          title: 'Appointment Booking Confirmed',
+          message: `Your appointment for ${booking.consultation?.name || 'consultation'} has been received. We'll confirm your slot shortly.`,
+          relatedId: booking._id,
+          relatedModel: 'Booking',
+          priority: 'high',
+          metadata: {
+            bookingId: booking._id,
+            consultationName: booking.consultation?.name,
+            branchName: booking.branch?.name,
+            appointmentDate: booking.appointmentDate
+          }
+        });
+      }
     } catch (error) {
       console.error('Error creating booking notification:', error);
     }
@@ -48,18 +68,24 @@ class NotificationHelper {
 
   static async bookingConfirmed(booking) {
     try {
-      return await this.create({
-        type: 'booking',
-        title: 'Booking Confirmed',
-        message: `Booking for ${booking.patientName} has been confirmed`,
-        relatedId: booking._id,
-        relatedModel: 'Booking',
-        priority: 'medium',
-        metadata: {
-          bookingId: booking._id,
-          patientName: booking.patientName
-        }
-      });
+      // Create user notification
+      if (booking.userId) {
+        return await this.create({
+          userId: booking.userId,
+          type: 'booking',
+          title: 'Appointment Confirmed',
+          message: `Your appointment for ${booking.consultation?.name || 'consultation'} on ${booking.confirmedDate ? new Date(booking.confirmedDate).toLocaleDateString() : 'your selected date'} has been confirmed.`,
+          relatedId: booking._id,
+          relatedModel: 'Booking',
+          priority: 'high',
+          metadata: {
+            bookingId: booking._id,
+            consultationName: booking.consultation?.name,
+            confirmedDate: booking.confirmedDate,
+            confirmedTime: booking.confirmedTime
+          }
+        });
+      }
     } catch (error) {
       console.error('Error creating booking confirmation notification:', error);
     }
@@ -67,18 +93,23 @@ class NotificationHelper {
 
   static async bookingCancelled(booking) {
     try {
-      return await this.create({
-        type: 'booking',
-        title: 'Booking Cancelled',
-        message: `Booking for ${booking.patientName} has been cancelled`,
-        relatedId: booking._id,
-        relatedModel: 'Booking',
-        priority: 'medium',
-        metadata: {
-          bookingId: booking._id,
-          patientName: booking.patientName
-        }
-      });
+      // Create user notification
+      if (booking.userId) {
+        return await this.create({
+          userId: booking.userId,
+          type: 'booking',
+          title: 'Appointment Cancelled',
+          message: `Your appointment for ${booking.consultation?.name || 'consultation'} has been cancelled.`,
+          relatedId: booking._id,
+          relatedModel: 'Booking',
+          priority: 'medium',
+          metadata: {
+            bookingId: booking._id,
+            consultationName: booking.consultation?.name,
+            cancellationReason: booking.cancellationReason
+          }
+        });
+      }
     } catch (error) {
       console.error('Error creating booking cancellation notification:', error);
     }
@@ -96,7 +127,8 @@ class NotificationHelper {
         customerName: order.shippingAddress?.name
       });
       
-      return await this.create({
+      // Create admin notification
+      await this.create({
         type: 'order',
         title: 'New Order Placed',
         message: `New order #${order.orderNumber || order._id} for ₹${order.totalAmount?.toFixed(2) || '0.00'} from ${order.shippingAddress?.name || 'customer'}`,
@@ -110,6 +142,24 @@ class NotificationHelper {
           customerName: order.shippingAddress?.name
         }
       });
+      
+      // Create user notification
+      if (order.userId) {
+        return await this.create({
+          userId: order.userId,
+          type: 'order',
+          title: 'Order Placed Successfully',
+          message: `Your order #${order.orderNumber} has been placed successfully. Total: ₹${order.totalAmount?.toFixed(2)}`,
+          relatedId: order._id,
+          relatedModel: 'ProductOrder',
+          priority: 'high',
+          metadata: {
+            orderId: order._id,
+            orderNumber: order.orderNumber,
+            totalAmount: order.totalAmount
+          }
+        });
+      }
     } catch (error) {
       console.error('❌ Error creating order notification:', error);
       throw error; // Re-throw so the calling code knows there was an error
@@ -118,20 +168,51 @@ class NotificationHelper {
 
   static async orderStatusChanged(order, oldStatus, newStatus) {
     try {
-      return await this.create({
-        type: 'order',
-        title: 'Order Status Updated',
-        message: `Order #${order.orderNumber || order._id} status changed from ${oldStatus} to ${newStatus}`,
-        relatedId: order._id,
-        relatedModel: 'ProductOrder',
-        priority: 'medium',
-        metadata: {
-          orderId: order._id,
-          orderNumber: order.orderNumber,
-          oldStatus,
-          newStatus
+      // Create user notification
+      if (order.userId) {
+        let userMessage = '';
+        let priority = 'medium';
+        
+        // Customize message based on status
+        switch(newStatus) {
+          case 'Processing':
+            userMessage = `Your order #${order.orderNumber} is being processed.`;
+            break;
+          case 'Shipped':
+            userMessage = `Great news! Your order #${order.orderNumber} has been shipped and is on its way.`;
+            priority = 'high';
+            break;
+          case 'Out for Delivery':
+            userMessage = `Your order #${order.orderNumber} is out for delivery and will arrive soon.`;
+            priority = 'high';
+            break;
+          case 'Delivered':
+            userMessage = `Your order #${order.orderNumber} has been delivered. Enjoy your products!`;
+            priority = 'high';
+            break;
+          case 'Cancelled':
+            userMessage = `Your order #${order.orderNumber} has been cancelled.`;
+            break;
+          default:
+            userMessage = `Your order #${order.orderNumber} status has been updated to ${newStatus}.`;
         }
-      });
+        
+        return await this.create({
+          userId: order.userId,
+          type: 'order',
+          title: 'Order Status Updated',
+          message: userMessage,
+          relatedId: order._id,
+          relatedModel: 'ProductOrder',
+          priority,
+          metadata: {
+            orderId: order._id,
+            orderNumber: order.orderNumber,
+            oldStatus,
+            newStatus
+          }
+        });
+      }
     } catch (error) {
       console.error('Error creating order status notification:', error);
     }

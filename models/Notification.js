@@ -1,10 +1,16 @@
 const mongoose = require('mongoose');
 
 const notificationSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: false, // null for admin-only notifications
+    index: true
+  },
   type: {
     type: String,
     required: true,
-    enum: ['booking', 'order', 'consultation', 'product', 'inventory'],
+    enum: ['booking', 'order', 'consultation', 'product', 'inventory', 'promotion', 'reminder'],
     index: true
   },
   title: {
@@ -60,6 +66,8 @@ const notificationSchema = new mongoose.Schema({
 });
 
 // Index for efficient queries
+notificationSchema.index({ userId: 1, isRead: 1, createdAt: -1 });
+notificationSchema.index({ userId: 1, type: 1, createdAt: -1 });
 notificationSchema.index({ isRead: 1, createdAt: -1 });
 notificationSchema.index({ type: 1, createdAt: -1 });
 notificationSchema.index({ priority: 1, isRead: 1, createdAt: -1 });
