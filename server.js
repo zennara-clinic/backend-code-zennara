@@ -87,6 +87,9 @@ app.use('/api/admin/inventory', require('./routes/inventory'));
 app.use('/api/admin/analytics', require('./routes/analytics'));
 app.use('/api/notifications', require('./routes/notification'));
 app.use('/api/payments', require('./routes/payment'));
+app.use('/api/pre-consult-forms', require('./routes/preConsultForm'));
+app.use('/api/patient-consent-forms', require('./routes/patientConsentForm'));
+app.use('/api/service-cards', require('./routes/serviceCard'));
 
 /* ------------------------------ Health Check -------------------------------- */
 app.get('/', (req, res) => {
