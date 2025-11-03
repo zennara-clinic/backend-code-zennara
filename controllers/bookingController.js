@@ -364,6 +364,21 @@ exports.rescheduleBooking = async (req, res) => {
     // Populate consultation details for email
     await booking.populate('consultationId', 'name');
 
+    // Create notification for reschedule
+    try {
+      await NotificationHelper.bookingRescheduled({
+        _id: booking._id,
+        userId: booking.userId,
+        patientName: booking.fullName,
+        consultation: { name: booking.consultationId.name },
+        confirmedDate: booking.confirmedDate,
+        confirmedTime: booking.confirmedTime
+      });
+      console.log('🔔 Booking reschedule notification created');
+    } catch (notifError) {
+      console.error('⚠️ Failed to create notification:', notifError.message);
+    }
+
     // Send rescheduled email
     try {
       await emailService.sendAppointmentRescheduled(
@@ -432,6 +447,19 @@ exports.checkInBooking = async (req, res) => {
 
     // Populate consultation details for email
     await booking.populate('consultationId', 'name');
+
+    // Create notification for check-in
+    try {
+      await NotificationHelper.bookingCheckedIn({
+        _id: booking._id,
+        patientName: booking.fullName,
+        consultation: { name: booking.consultationId.name },
+        checkInTime: booking.checkInTime
+      });
+      console.log('🔔 Booking check-in notification created');
+    } catch (notifError) {
+      console.error('⚠️ Failed to create notification:', notifError.message);
+    }
 
     // Send check-in email
     try {
@@ -503,6 +531,21 @@ exports.checkOutBooking = async (req, res) => {
     // Populate consultation details for email
     await booking.populate('consultationId', 'name');
 
+    // Create notification for completion
+    try {
+      await NotificationHelper.bookingCompleted({
+        _id: booking._id,
+        userId: booking.userId,
+        patientName: booking.fullName,
+        consultation: { name: booking.consultationId.name },
+        checkOutTime: booking.checkOutTime,
+        sessionDuration: booking.sessionDuration
+      });
+      console.log('🔔 Booking completion notification created');
+    } catch (notifError) {
+      console.error('⚠️ Failed to create notification:', notifError.message);
+    }
+
     // Send appointment completed email
     try {
       await emailService.sendAppointmentCompleted(
@@ -571,8 +614,8 @@ exports.rateBooking = async (req, res) => {
     }
 
     booking.rating = rating;
-    booking.feedback = feedback;
-    booking.ratedAt = new Date();
+    booking.status = 'Completed';
+    booking.checkOutTime = new Date();
 
     await booking.save();
 
@@ -582,7 +625,7 @@ exports.rateBooking = async (req, res) => {
       data: booking
     });
   } catch (error) {
-    console.error('❌ Rate booking error:', error);
+    console.error('❌ Rating submission error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to submit rating'
@@ -756,6 +799,20 @@ exports.markNoShow = async (req, res) => {
     // Populate consultation details for email
     await booking.populate('consultationId', 'name');
 
+    // Create notification for no-show
+    try {
+      await NotificationHelper.bookingNoShow({
+        _id: booking._id,
+        patientName: booking.fullName,
+        consultation: { name: booking.consultationId.name },
+        confirmedDate: booking.confirmedDate,
+        confirmedTime: booking.confirmedTime
+      });
+      console.log('🔔 No-show notification created');
+    } catch (notifError) {
+      console.error('⚠️ Failed to create notification:', notifError.message);
+    }
+
     // Send no-show notification email
     try {
       await emailService.sendNoShowNotification(
@@ -850,6 +907,19 @@ exports.checkInBookingAdmin = async (req, res) => {
     // Populate consultation details for email
     await booking.populate('consultationId', 'name');
 
+    // Create notification for check-in (admin endpoint)
+    try {
+      await NotificationHelper.bookingCheckedIn({
+        _id: booking._id,
+        patientName: booking.fullName,
+        consultation: { name: booking.consultationId.name },
+        checkInTime: booking.checkInTime
+      });
+      console.log('🔔 Booking check-in notification created');
+    } catch (notifError) {
+      console.error('⚠️ Failed to create notification:', notifError.message);
+    }
+
     // Send check-in email
     try {
       await emailService.sendCheckInSuccessful(
@@ -910,6 +980,20 @@ exports.checkOutBookingAdmin = async (req, res) => {
 
     // Populate consultation details
     await booking.populate('consultationId', 'name');
+
+    // Create notification for completion (admin endpoint)
+    try {
+      await NotificationHelper.bookingCompleted({
+        _id: booking._id,
+        userId: booking.userId,
+        patientName: booking.fullName,
+        consultation: { name: booking.consultationId.name },
+        checkOutTime: booking.checkOutTime
+      });
+      console.log('🔔 Booking completion notification created');
+    } catch (notifError) {
+      console.error('⚠️ Failed to create notification:', notifError.message);
+    }
 
     // Send completion email
     try {

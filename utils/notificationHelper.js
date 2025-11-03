@@ -68,6 +68,23 @@ class NotificationHelper {
 
   static async bookingConfirmed(booking) {
     try {
+      // Create admin notification
+      await this.create({
+        type: 'booking',
+        title: 'Appointment Confirmed',
+        message: `Appointment for ${booking.patientName || 'patient'} - ${booking.consultation?.name || 'consultation'} confirmed for ${booking.confirmedDate ? new Date(booking.confirmedDate).toLocaleDateString() : 'selected date'}`,
+        relatedId: booking._id,
+        relatedModel: 'Booking',
+        priority: 'medium',
+        metadata: {
+          bookingId: booking._id,
+          patientName: booking.patientName,
+          consultationName: booking.consultation?.name,
+          confirmedDate: booking.confirmedDate,
+          confirmedTime: booking.confirmedTime
+        }
+      });
+      
       // Create user notification
       if (booking.userId) {
         return await this.create({
@@ -93,6 +110,22 @@ class NotificationHelper {
 
   static async bookingCancelled(booking) {
     try {
+      // Create admin notification
+      await this.create({
+        type: 'booking',
+        title: 'Appointment Cancelled',
+        message: `Appointment cancelled - ${booking.patientName || 'Patient'}: ${booking.consultation?.name || 'consultation'}${booking.cancellationReason ? ` (Reason: ${booking.cancellationReason})` : ''}`,
+        relatedId: booking._id,
+        relatedModel: 'Booking',
+        priority: 'medium',
+        metadata: {
+          bookingId: booking._id,
+          patientName: booking.patientName,
+          consultationName: booking.consultation?.name,
+          cancellationReason: booking.cancellationReason
+        }
+      });
+      
       // Create user notification
       if (booking.userId) {
         return await this.create({
@@ -112,6 +145,133 @@ class NotificationHelper {
       }
     } catch (error) {
       console.error('Error creating booking cancellation notification:', error);
+    }
+  }
+
+  static async bookingRescheduled(booking) {
+    try {
+      // Create admin notification
+      await this.create({
+        type: 'booking',
+        title: 'Appointment Rescheduled',
+        message: `${booking.patientName || 'Patient'} rescheduled appointment for ${booking.consultation?.name || 'consultation'} to ${booking.confirmedDate ? new Date(booking.confirmedDate).toLocaleDateString() : 'new date'}`,
+        relatedId: booking._id,
+        relatedModel: 'Booking',
+        priority: 'medium',
+        metadata: {
+          bookingId: booking._id,
+          patientName: booking.patientName,
+          consultationName: booking.consultation?.name,
+          newDate: booking.confirmedDate,
+          newTime: booking.confirmedTime
+        }
+      });
+      
+      // Create user notification
+      if (booking.userId) {
+        return await this.create({
+          userId: booking.userId,
+          type: 'booking',
+          title: 'Appointment Rescheduled',
+          message: `Your appointment has been rescheduled to ${booking.confirmedDate ? new Date(booking.confirmedDate).toLocaleDateString() : 'a new date'}. We'll confirm shortly.`,
+          relatedId: booking._id,
+          relatedModel: 'Booking',
+          priority: 'high',
+          metadata: {
+            bookingId: booking._id,
+            consultationName: booking.consultation?.name,
+            newDate: booking.confirmedDate,
+            newTime: booking.confirmedTime
+          }
+        });
+      }
+    } catch (error) {
+      console.error('Error creating booking reschedule notification:', error);
+    }
+  }
+
+  static async bookingCheckedIn(booking) {
+    try {
+      // Create admin notification
+      await this.create({
+        type: 'booking',
+        title: 'Patient Checked In',
+        message: `${booking.patientName || 'Patient'} checked in for ${booking.consultation?.name || 'consultation'}`,
+        relatedId: booking._id,
+        relatedModel: 'Booking',
+        priority: 'low',
+        metadata: {
+          bookingId: booking._id,
+          patientName: booking.patientName,
+          consultationName: booking.consultation?.name,
+          checkInTime: booking.checkInTime
+        }
+      });
+    } catch (error) {
+      console.error('Error creating check-in notification:', error);
+    }
+  }
+
+  static async bookingCompleted(booking) {
+    try {
+      // Create admin notification
+      await this.create({
+        type: 'booking',
+        title: 'Appointment Completed',
+        message: `Appointment completed - ${booking.patientName || 'Patient'}: ${booking.consultation?.name || 'consultation'}`,
+        relatedId: booking._id,
+        relatedModel: 'Booking',
+        priority: 'low',
+        metadata: {
+          bookingId: booking._id,
+          patientName: booking.patientName,
+          consultationName: booking.consultation?.name,
+          checkOutTime: booking.checkOutTime,
+          sessionDuration: booking.sessionDuration
+        }
+      });
+      
+      // Create user notification
+      if (booking.userId) {
+        return await this.create({
+          userId: booking.userId,
+          type: 'booking',
+          title: 'Appointment Completed',
+          message: `Your appointment for ${booking.consultation?.name || 'consultation'} has been completed. Thank you for visiting!`,
+          relatedId: booking._id,
+          relatedModel: 'Booking',
+          priority: 'medium',
+          metadata: {
+            bookingId: booking._id,
+            consultationName: booking.consultation?.name
+          }
+        });
+      }
+    } catch (error) {
+      console.error('Error creating booking completion notification:', error);
+    }
+  }
+
+  static async bookingNoShow(booking) {
+    try {
+      // Create admin notification
+      await this.create({
+        type: 'booking',
+        title: 'Patient No-Show',
+        message: `No-show: ${booking.patientName || 'Patient'} did not attend ${booking.consultation?.name || 'consultation'}`,
+        relatedId: booking._id,
+        relatedModel: 'Booking',
+        priority: 'medium',
+        metadata: {
+          bookingId: booking._id,
+          patientName: booking.patientName,
+          consultationName: booking.consultation?.name,
+          scheduledDate: booking.confirmedDate,
+          scheduledTime: booking.confirmedTime
+        }
+      });
+    } catch (error) {
+      console.error('Error creating no-show notification:', error);
     }
   }
 
@@ -168,6 +328,38 @@ class NotificationHelper {
 
   static async orderStatusChanged(order, oldStatus, newStatus) {
     try {
+      // Create admin notification for status changes
+      let adminMessage = '';
+      let adminPriority = 'medium';
+      
+      switch(newStatus) {
+        case 'Delivered':
+          adminMessage = `Order #${order.orderNumber} has been delivered successfully`;
+          adminPriority = 'medium';
+          break;
+        case 'Cancelled':
+          adminMessage = `Order #${order.orderNumber} has been cancelled`;
+          adminPriority = 'high';
+          break;
+        default:
+          adminMessage = `Order #${order.orderNumber} status changed: ${oldStatus} → ${newStatus}`;
+      }
+      
+      await this.create({
+        type: 'order',
+        title: 'Order Status Updated',
+        message: adminMessage,
+        relatedId: order._id,
+        relatedModel: 'ProductOrder',
+        priority: adminPriority,
+        metadata: {
+          orderId: order._id,
+          orderNumber: order.orderNumber,
+          oldStatus,
+          newStatus
+        }
+      });
+      
       // Create user notification
       if (order.userId) {
         let userMessage = '';
