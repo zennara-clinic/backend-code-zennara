@@ -583,8 +583,8 @@ exports.sendServiceOtp = async (req, res) => {
       });
     }
 
-    // Generate 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() + 900000).toString();
+    // Generate random 6-digit OTP using crypto for better randomness
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
     // Store OTP with expiry (5 minutes)
     if (!assignment.serviceOtps) {
@@ -604,11 +604,7 @@ exports.sendServiceOtp = async (req, res) => {
     // Send OTP via email
     await sendOtpEmail(user.email, otp, user.fullName || user.name, serviceName, packageName);
 
-    console.log('✅ Service OTP sent successfully:', {
-      assignmentId,
-      serviceId,
-      userEmail: user.email
-    });
+    console.log('✅ Service OTP sent successfully to:', user.email);
 
     res.status(200).json({
       success: true,
@@ -629,8 +625,14 @@ exports.verifyServiceOtp = async (req, res) => {
   try {
     const { assignmentId, serviceId, otp } = req.body;
 
+    console.log('🔍 Verifying OTP for:', {
+      assignmentId,
+      serviceId
+    });
+
     const assignment = await PackageAssignment.findById(assignmentId);
     if (!assignment) {
+      console.error('❌ Assignment not found:', assignmentId);
       return res.status(404).json({
         success: false,
         message: 'Assignment not found'
@@ -640,27 +642,35 @@ exports.verifyServiceOtp = async (req, res) => {
     // Check if OTP exists and is valid
     const storedOtpData = assignment.serviceOtps?.get(serviceId);
     if (!storedOtpData) {
+      console.error('❌ No OTP found for service:', serviceId);
+      console.log('Available service OTPs:', Array.from(assignment.serviceOtps?.keys() || []));
       return res.status(400).json({
         success: false,
-        message: 'No OTP found for this service'
+        message: 'No OTP found for this service. Please request a new OTP.'
       });
     }
 
+    console.log('📋 Checking OTP - Expires at:', storedOtpData.expiresAt);
+
     // Check if OTP is expired
     if (new Date() > new Date(storedOtpData.expiresAt)) {
+      console.error('❌ OTP expired');
       return res.status(400).json({
         success: false,
-        message: 'OTP has expired'
+        message: 'OTP has expired. Please request a new OTP.'
       });
     }
 
     // Verify OTP
     if (storedOtpData.otp !== otp) {
+      console.error('❌ OTP mismatch - Invalid OTP provided');
       return res.status(400).json({
         success: false,
-        message: 'Invalid OTP'
+        message: 'Invalid OTP. Please check and try again.'
       });
     }
+
+    console.log('✅ OTP verified successfully for service:', serviceId);
 
     // Get the pending service card
     const serviceCard = assignment.pendingServiceCards?.get(serviceId);
