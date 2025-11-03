@@ -146,7 +146,7 @@ exports.createProduct = async (req, res) => {
       description,
       formulation,
       OrgName,
-      code: code && code !== '' ? code : undefined, // Only save code if provided and not empty
+      code: code && code !== '' ? code : null, // Convert empty string to null
       price,
       gstPercentage: gstPercentage || 18,
       image,
@@ -220,7 +220,7 @@ exports.updateProduct = async (req, res) => {
     if (OrgName) product.OrgName = OrgName;
     if (code !== undefined) {
       // Convert empty string to null to avoid unique constraint issues
-      product.code = code === '' ? null : code;
+      product.code = (code === '' || code === null) ? null : code;
       console.log('Setting product code to:', product.code);
     }
     if (price !== undefined) product.price = price;
@@ -229,6 +229,11 @@ exports.updateProduct = async (req, res) => {
     if (stock !== undefined) product.stock = stock;
     if (isActive !== undefined) product.isActive = isActive;
     if (isPopular !== undefined) product.isPopular = isPopular;
+
+    // Additional safety check: ensure code is null if empty string before saving
+    if (product.code === '') {
+      product.code = null;
+    }
 
     await product.save();
     console.log('Product saved with code:', product.code);
@@ -251,6 +256,27 @@ exports.updateProduct = async (req, res) => {
     });
   } catch (error) {
     console.error('Update product error:', error);
+    
+    // Check for duplicate key error (MongoDB error code 11000)
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyPattern)[0];
+      return res.status(400).json({
+        success: false,
+        message: `A product with this ${field} already exists`,
+        error: `Duplicate ${field} value`
+      });
+    }
+    
+    // Check for validation errors
+    if (error.name === 'ValidationError') {
+      const messages = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({
+        success: false,
+        message: 'Validation error',
+        error: messages.join(', ')
+      });
+    }
+    
     res.status(500).json({
       success: false,
       message: 'Failed to update product',
