@@ -457,20 +457,120 @@ exports.getAssignmentStats = async (req, res) => {
   }
 };
 
-// Send OTP for service completion
-exports.sendServiceOtp = async (req, res) => {
+// Save service card before sending OTP
+exports.saveServiceCard = async (req, res) => {
   try {
-    const { assignmentId, serviceId, userId } = req.body;
+    const { assignmentId, serviceId, doctor, therapist, manager, grading, notes } = req.body;
 
-    // Generate 6-digit OTP
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    
-    // Store OTP in assignment (you may want to add this field to the model)
+    // Validate required fields
+    if (!assignmentId || !serviceId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Assignment ID and Service ID are required'
+      });
+    }
+
+    if (!doctor || !manager) {
+      return res.status(400).json({
+        success: false,
+        message: 'Doctor and Manager names are required'
+      });
+    }
+
+    if (grading === undefined || grading < 0 || grading > 10) {
+      return res.status(400).json({
+        success: false,
+        message: 'Grading must be between 0 and 10'
+      });
+    }
+
     const assignment = await PackageAssignment.findById(assignmentId);
     if (!assignment) {
       return res.status(404).json({
         success: false,
         message: 'Assignment not found'
+      });
+    }
+
+    // Check if service exists in package
+    const service = assignment.packageDetails.services.find(s => s.serviceId === serviceId);
+    if (!service) {
+      return res.status(404).json({
+        success: false,
+        message: 'Service not found in package'
+      });
+    }
+
+    // Check if service is already completed
+    const alreadyCompleted = assignment.completedServices.some(cs => cs.serviceId === serviceId);
+    if (alreadyCompleted) {
+      return res.status(400).json({
+        success: false,
+        message: 'Service is already completed'
+      });
+    }
+
+    // Store service card temporarily until OTP verification
+    if (!assignment.pendingServiceCards) {
+      assignment.pendingServiceCards = new Map();
+    }
+
+    assignment.pendingServiceCards.set(serviceId, {
+      doctor,
+      therapist: therapist || '',
+      manager,
+      grading: Number(grading),
+      notes: notes || '',
+      createdAt: new Date()
+    });
+
+    await assignment.save();
+
+    res.status(200).json({
+      success: true,
+      message: 'Service card saved successfully. You can now send OTP to complete the service.',
+      data: {
+        serviceId,
+        serviceName: service.serviceName
+      }
+    });
+  } catch (error) {
+    console.error('Save service card error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to save service card',
+      error: error.message
+    });
+  }
+};
+
+// Send OTP for service completion
+exports.sendServiceOtp = async (req, res) => {
+  try {
+    const { assignmentId, serviceId, userId } = req.body;
+
+    // Validate required fields
+    if (!assignmentId || !serviceId || !userId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Assignment ID, Service ID, and User ID are required'
+      });
+    }
+
+    const assignment = await PackageAssignment.findById(assignmentId);
+    if (!assignment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Assignment not found'
+      });
+    }
+
+    // Check if service card exists for this service
+    const serviceCard = assignment.pendingServiceCards?.get(serviceId);
+    if (!serviceCard) {
+      return res.status(400).json({
+        success: false,
+        message: 'Please fill the service card before sending OTP'
       });
     }
 
@@ -482,6 +582,9 @@ exports.sendServiceOtp = async (req, res) => {
         message: 'User not found'
       });
     }
+
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() + 900000).toString();
 
     // Store OTP with expiry (5 minutes)
     if (!assignment.serviceOtps) {
@@ -501,12 +604,18 @@ exports.sendServiceOtp = async (req, res) => {
     // Send OTP via email
     await sendOtpEmail(user.email, otp, user.fullName || user.name, serviceName, packageName);
 
+    console.log('✅ Service OTP sent successfully:', {
+      assignmentId,
+      serviceId,
+      userEmail: user.email
+    });
+
     res.status(200).json({
       success: true,
-      message: 'OTP sent successfully'
+      message: 'OTP sent successfully to user email'
     });
   } catch (error) {
-    console.error('Send OTP error:', error);
+    console.error('❌ Send OTP error:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to send OTP',
@@ -553,6 +662,15 @@ exports.verifyServiceOtp = async (req, res) => {
       });
     }
 
+    // Get the pending service card
+    const serviceCard = assignment.pendingServiceCards?.get(serviceId);
+    if (!serviceCard) {
+      return res.status(400).json({
+        success: false,
+        message: 'Service card not found. Please fill the service card first.'
+      });
+    }
+
     // Mark service as completed
     if (!assignment.completedServices) {
       assignment.completedServices = [];
@@ -567,16 +685,31 @@ exports.verifyServiceOtp = async (req, res) => {
       assignment.completedServices.push({
         serviceId: serviceId,
         completedAt: new Date(),
-        prescriptions: []
+        prescriptions: [],
+        serviceCard: {
+          doctor: serviceCard.doctor,
+          therapist: serviceCard.therapist,
+          manager: serviceCard.manager,
+          grading: serviceCard.grading,
+          notes: serviceCard.notes,
+          createdAt: serviceCard.createdAt
+        }
       });
     }
 
-    // Remove used OTP
+    // Remove used OTP and pending service card
     assignment.serviceOtps.delete(serviceId);
+    assignment.pendingServiceCards.delete(serviceId);
     
     // Check if all services are completed and update status
     assignment.checkCompletion();
     await assignment.save();
+
+    console.log('✅ Service completed successfully:', {
+      assignmentId,
+      serviceId,
+      serviceCard: serviceCard.doctor
+    });
 
     res.status(200).json({
       success: true,
@@ -834,6 +967,66 @@ exports.getUserPackageById = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to fetch treatment package details',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Get service cards for user's completed services
+// @route   GET /api/user/package-assignments/:id/service-cards
+// @access  Private (User)
+exports.getUserServiceCards = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const assignmentId = req.params.id;
+
+    const assignment = await PackageAssignment.findOne({ 
+      _id: assignmentId,
+      userId: userId 
+    });
+
+    if (!assignment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Treatment package not found'
+      });
+    }
+
+    // Extract service cards from completed services
+    const serviceCards = assignment.completedServices
+      .filter(cs => cs.serviceCard) // Only include services with cards
+      .map(cs => {
+        const service = assignment.packageDetails.services.find(s => s.serviceId === cs.serviceId);
+        return {
+          serviceId: cs.serviceId,
+          serviceName: service?.serviceName || 'Unknown Service',
+          completedAt: cs.completedAt,
+          serviceCard: {
+            clientName: assignment.userDetails.fullName,
+            clientId: assignment.userDetails.patientId,
+            doctor: cs.serviceCard.doctor,
+            therapist: cs.serviceCard.therapist,
+            manager: cs.serviceCard.manager,
+            grading: cs.serviceCard.grading,
+            notes: cs.serviceCard.notes,
+            date: cs.serviceCard.createdAt || cs.completedAt
+          }
+        };
+      });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        assignmentId: assignment.assignmentId,
+        packageName: assignment.packageDetails.packageName,
+        serviceCards
+      }
+    });
+  } catch (error) {
+    console.error('Get service cards error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch service cards',
       error: error.message
     });
   }

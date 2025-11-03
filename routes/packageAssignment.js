@@ -21,6 +21,7 @@ const upload = multer({
 // USER-FACING ROUTES (must be before admin routes to avoid conflicts)
 router.get('/user/my-packages', protect, packageAssignmentController.getUserPackages);
 router.get('/user/my-packages/:id', protect, packageAssignmentController.getUserPackageById);
+router.get('/user/my-packages/:id/service-cards', protect, packageAssignmentController.getUserServiceCards);
 
 // ADMIN ROUTES
 // Get all assignments with filters
@@ -37,6 +38,9 @@ router.post('/', protectAdmin, packageAssignmentController.createAssignment);
 
 // Upload payment proof
 router.post('/:id/payment-proof', protectAdmin, upload.single('proof'), packageAssignmentController.uploadPaymentProof);
+
+// Save service card before sending OTP
+router.post('/service-card', protectAdmin, packageAssignmentController.saveServiceCard);
 
 // Send OTP for service completion
 router.post('/send-otp', protectAdmin, packageAssignmentController.sendServiceOtp);

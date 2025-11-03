@@ -126,8 +126,35 @@ const packageAssignmentSchema = new mongoose.Schema({
   completedServices: [{
     serviceId: String,
     completedAt: Date,
-    prescriptions: [String]
+    prescriptions: [String],
+    serviceCard: {
+      doctor: String,
+      therapist: String,
+      manager: String,
+      grading: {
+        type: Number,
+        min: 0,
+        max: 10
+      },
+      notes: String,
+      createdAt: {
+        type: Date,
+        default: Date.now
+      }
+    }
   }],
+  pendingServiceCards: {
+    type: Map,
+    of: {
+      doctor: String,
+      therapist: String,
+      manager: String,
+      grading: Number,
+      notes: String,
+      createdAt: Date
+    },
+    default: new Map()
+  },
   serviceOtps: {
     type: Map,
     of: {
