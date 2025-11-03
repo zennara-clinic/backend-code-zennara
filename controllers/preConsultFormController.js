@@ -51,7 +51,7 @@ exports.createOrUpdateForm = async (req, res) => {
         form = new PreConsultForm({
           ...formData,
           userId,
-          clientId: user.patientId || formData.clientId
+          clientId: user.patientId || formData.clientId || `CLIENT-${Date.now()}`
         });
         await form.save();
       }
@@ -60,7 +60,7 @@ exports.createOrUpdateForm = async (req, res) => {
       form = new PreConsultForm({
         ...formData,
         userId,
-        clientId: user.patientId || formData.clientId
+        clientId: user.patientId || formData.clientId || `CLIENT-${Date.now()}`
       });
       await form.save();
     }
@@ -195,7 +195,7 @@ exports.submitForm = async (req, res) => {
       });
     }
 
-    if (form.status === 'Submitted' || form.status === 'Reviewed') {
+    if (['Submitted', 'Approved', 'Reviewed', 'Rejected'].includes(form.status)) {
       return res.status(400).json({
         success: false,
         message: 'Form has already been submitted'
@@ -267,7 +267,7 @@ exports.updateFormStatus = async (req, res) => {
     const { id } = req.params;
     const { status } = req.body;
 
-    if (!['Draft', 'Submitted', 'Reviewed'].includes(status)) {
+    if (!['Draft', 'Submitted', 'Approved', 'Reviewed', 'Rejected'].includes(status)) {
       return res.status(400).json({
         success: false,
         message: 'Invalid status'

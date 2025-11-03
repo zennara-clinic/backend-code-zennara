@@ -19,35 +19,41 @@ const preConsultFormSchema = new mongoose.Schema({
   // Personal Information
   clientId: {
     type: String,
-    required: true,
+    required: false,
+    default: null,
     index: true
   },
   name: {
     type: String,
-    required: true,
+    required: false,
+    default: null,
     trim: true
   },
   dateOfBirth: {
     type: Date,
-    required: true
+    required: false,
+    default: null
   },
   gender: {
     type: String,
-    required: true,
-    enum: ['Male', 'Female', 'Other']
+    required: false,
+    enum: ['Male', 'Female', 'Other'],
+    default: 'Male'
   },
   phoneNumber: {
     type: String,
-    required: true,
+    required: false,
+    default: null,
     trim: true
   },
   email: {
     type: String,
-    required: true,
+    required: false,
+    default: null,
     lowercase: true,
     trim: true
   },
-  status: {
+  maritalStatus: {
     type: String,
     enum: ['Single', 'Married', 'Other'],
     default: 'Single'
@@ -105,11 +111,12 @@ const preConsultFormSchema = new mongoose.Schema({
   medicalHistory: {
     hypertension: { type: Boolean, default: false },
     diabetes: { type: Boolean, default: false },
-    thyroidDisorder: { type: Boolean, default: false },
+    thyroid: { type: Boolean, default: false },
+    thyroidDisorder: { type: Boolean, default: false }, // Keep for backward compatibility
     menstrualHistory: { 
       type: String, 
       enum: ['Regular', 'Irregular', 'N/A'],
-      default: 'N/A'
+      default: 'Regular'
     }
   },
 
@@ -167,7 +174,8 @@ const preConsultFormSchema = new mongoose.Schema({
   },
   doctorName: {
     type: String,
-    required: true
+    required: false,
+    default: null
   },
   doctorSignature: {
     type: String, // base64 or URL
@@ -177,7 +185,7 @@ const preConsultFormSchema = new mongoose.Schema({
   // Form Status
   status: {
     type: String,
-    enum: ['Draft', 'Submitted', 'Reviewed'],
+    enum: ['Draft', 'Submitted', 'Approved', 'Reviewed', 'Rejected'],
     default: 'Draft',
     index: true
   },
