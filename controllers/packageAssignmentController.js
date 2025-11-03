@@ -200,10 +200,25 @@ exports.uploadPaymentProof = async (req, res) => {
   try {
     const { id } = req.params;
     
+    console.log('📤 Upload payment proof request:', {
+      assignmentId: id,
+      hasFile: !!req.file,
+      fileSize: req.file?.size,
+      fileType: req.file?.mimetype
+    });
+    
     if (!req.file) {
       return res.status(400).json({
         success: false,
         message: 'No file uploaded'
+      });
+    }
+
+    if (!req.file.buffer) {
+      console.error('❌ No file buffer available');
+      return res.status(400).json({
+        success: false,
+        message: 'File buffer not available. Please try again.'
       });
     }
 
@@ -229,6 +244,7 @@ exports.uploadPaymentProof = async (req, res) => {
     }
 
     // Process and upload to S3
+    console.log('🖼️ Processing image with sharp...');
     const processedImage = await sharp(req.file.buffer)
       .resize(1200, 1200, {
         fit: 'inside',
@@ -236,6 +252,8 @@ exports.uploadPaymentProof = async (req, res) => {
       })
       .jpeg({ quality: 90 })
       .toBuffer();
+
+    console.log('✅ Image processed, size:', processedImage.length, 'bytes');
 
     const fileKey = `zennara/payment-proofs/${crypto.randomBytes(16).toString('hex')}.jpg`;
     
@@ -246,9 +264,11 @@ exports.uploadPaymentProof = async (req, res) => {
       ContentType: 'image/jpeg'
     };
 
+    console.log('☁️ Uploading to S3:', { bucket: S3_BUCKET, key: fileKey });
     await s3Client.send(new PutObjectCommand(uploadParams));
 
     const url = `https://${S3_BUCKET}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${fileKey}`;
+    console.log('✅ Upload successful:', url);
 
     assignment.payment.proofUrl = url;
     assignment.payment.proofPublicId = fileKey;
@@ -265,11 +285,13 @@ exports.uploadPaymentProof = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Upload payment proof error:', error);
+    console.error('❌ Upload payment proof error:', error);
+    console.error('Error stack:', error.stack);
     res.status(500).json({
       success: false,
       message: 'Failed to upload payment proof',
-      error: error.message
+      error: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 };
