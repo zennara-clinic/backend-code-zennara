@@ -42,7 +42,7 @@ exports.getMyServiceCard = async (req, res) => {
   try {
     const serviceCard = await ServiceCard.findOne({ userId: req.user._id, isActive: true });
     if (!serviceCard) {
-      return res.status(404).json({ success: false, message: 'No active service card found' });
+      return res.status(200).json({ success: true, data: null, message: 'No active service card found' });
     }
     res.status(200).json({ success: true, data: serviceCard });
   } catch (error) {
