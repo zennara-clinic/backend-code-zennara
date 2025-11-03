@@ -590,7 +590,7 @@ exports.submitServiceConsent = async (req, res) => {
     }
 
     // Verify user owns this assignment
-    if (assignment.userId.toString() !== userId) {
+    if (assignment.userId.toString() !== userId.toString()) {
       return res.status(403).json({
         success: false,
         message: 'Unauthorized access'
@@ -665,7 +665,7 @@ exports.getServiceConsentStatus = async (req, res) => {
     }
 
     // Verify user owns this assignment
-    if (assignment.userId.toString() !== userId) {
+    if (assignment.userId.toString() !== userId.toString()) {
       return res.status(403).json({
         success: false,
         message: 'Unauthorized access'
