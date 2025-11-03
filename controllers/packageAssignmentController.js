@@ -549,7 +549,7 @@ exports.submitServiceConsent = async (req, res) => {
   try {
     const { assignmentId } = req.params;
     const { serviceId, serviceName, patientName, doctorName, termsAccepted, consentGiven, signature } = req.body;
-    const userId = req.user.userId;
+    const userId = req.user._id;
 
     console.log('📋 Submitting service consent:', {
       assignmentId,
@@ -654,7 +654,7 @@ exports.submitServiceConsent = async (req, res) => {
 exports.getServiceConsentStatus = async (req, res) => {
   try {
     const { assignmentId, serviceId } = req.params;
-    const userId = req.user.userId;
+    const userId = req.user._id;
 
     const assignment = await PackageAssignment.findById(assignmentId);
     if (!assignment) {
