@@ -163,6 +163,27 @@ const packageAssignmentSchema = new mongoose.Schema({
     },
     default: new Map()
   },
+  serviceConsents: {
+    type: Map,
+    of: {
+      serviceId: String,
+      serviceName: String,
+      patientName: String,
+      doctorName: String,
+      termsAccepted: {
+        noRefund: Boolean,
+        nonTransferable: Boolean,
+        expiryAccepted: Boolean,
+        noRefundOnChange: Boolean,
+        variableResults: Boolean,
+        noGuarantee: Boolean
+      },
+      consentGiven: Boolean,
+      signature: String,
+      submittedAt: Date
+    },
+    default: new Map()
+  },
   cancellation: {
     isCancelled: {
       type: Boolean,

@@ -23,6 +23,10 @@ router.get('/user/my-packages', protect, packageAssignmentController.getUserPack
 router.get('/user/my-packages/:id', protect, packageAssignmentController.getUserPackageById);
 router.get('/user/my-packages/:id/service-cards', protect, packageAssignmentController.getUserServiceCards);
 
+// Service consent routes (user submits before service)
+router.post('/:assignmentId/service-consent', protect, packageAssignmentController.submitServiceConsent);
+router.get('/:assignmentId/service-consent/:serviceId', protect, packageAssignmentController.getServiceConsentStatus);
+
 // ADMIN ROUTES
 // Get all assignments with filters
 router.get('/', protectAdmin, packageAssignmentController.getAllAssignments);

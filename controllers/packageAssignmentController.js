@@ -544,6 +544,151 @@ exports.saveServiceCard = async (req, res) => {
   }
 };
 
+// Submit service consent form (user-side)
+exports.submitServiceConsent = async (req, res) => {
+  try {
+    const { assignmentId } = req.params;
+    const { serviceId, serviceName, patientName, doctorName, termsAccepted, consentGiven, signature } = req.body;
+    const userId = req.user.userId;
+
+    console.log('📋 Submitting service consent:', {
+      assignmentId,
+      serviceId,
+      userId
+    });
+
+    // Validate required fields
+    if (!serviceId || !doctorName || !signature || !consentGiven) {
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required fields'
+      });
+    }
+
+    // Validate all terms are accepted
+    const allTermsAccepted = termsAccepted && 
+      termsAccepted.noRefund &&
+      termsAccepted.nonTransferable &&
+      termsAccepted.expiryAccepted &&
+      termsAccepted.noRefundOnChange &&
+      termsAccepted.variableResults &&
+      termsAccepted.noGuarantee;
+
+    if (!allTermsAccepted) {
+      return res.status(400).json({
+        success: false,
+        message: 'All terms and conditions must be accepted'
+      });
+    }
+
+    const assignment = await PackageAssignment.findById(assignmentId);
+    if (!assignment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Assignment not found'
+      });
+    }
+
+    // Verify user owns this assignment
+    if (assignment.userId.toString() !== userId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Unauthorized access'
+      });
+    }
+
+    // Check if service exists in package
+    const serviceExists = assignment.packageDetails.services.some(
+      s => s.serviceId === serviceId
+    );
+    if (!serviceExists) {
+      return res.status(400).json({
+        success: false,
+        message: 'Service not found in package'
+      });
+    }
+
+    // Check if consent already exists
+    if (assignment.serviceConsents.has(serviceId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Consent form already submitted for this service'
+      });
+    }
+
+    // Store consent
+    if (!assignment.serviceConsents) {
+      assignment.serviceConsents = new Map();
+    }
+
+    assignment.serviceConsents.set(serviceId, {
+      serviceId,
+      serviceName,
+      patientName,
+      doctorName,
+      termsAccepted,
+      consentGiven,
+      signature,
+      submittedAt: new Date()
+    });
+
+    await assignment.save();
+
+    console.log('✅ Service consent submitted successfully');
+
+    res.status(200).json({
+      success: true,
+      message: 'Consent form submitted successfully'
+    });
+  } catch (error) {
+    console.error('❌ Submit consent error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to submit consent form',
+      error: error.message
+    });
+  }
+};
+
+// Get service consent status
+exports.getServiceConsentStatus = async (req, res) => {
+  try {
+    const { assignmentId, serviceId } = req.params;
+    const userId = req.user.userId;
+
+    const assignment = await PackageAssignment.findById(assignmentId);
+    if (!assignment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Assignment not found'
+      });
+    }
+
+    // Verify user owns this assignment
+    if (assignment.userId.toString() !== userId) {
+      return res.status(403).json({
+        success: false,
+        message: 'Unauthorized access'
+      });
+    }
+
+    const consent = assignment.serviceConsents?.get(serviceId);
+
+    res.status(200).json({
+      success: true,
+      hasConsent: !!consent,
+      consent: consent || null
+    });
+  } catch (error) {
+    console.error('Get consent status error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to get consent status',
+      error: error.message
+    });
+  }
+};
+
 // Send OTP for service completion
 exports.sendServiceOtp = async (req, res) => {
   try {
@@ -562,6 +707,16 @@ exports.sendServiceOtp = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'Assignment not found'
+      });
+    }
+
+    // Check if user has submitted consent form for this service
+    const serviceConsent = assignment.serviceConsents?.get(serviceId);
+    if (!serviceConsent) {
+      return res.status(400).json({
+        success: false,
+        message: 'Patient consent form required. Please complete the consent form first.',
+        requiresConsent: true
       });
     }
 
