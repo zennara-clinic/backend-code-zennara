@@ -25,8 +25,8 @@ const getAllNotifications = async (req, res) => {
       sortOrder = 'desc'
     } = req.query;
 
-    // Build filter object
-    const filter = {};
+    // Build filter object - admin notifications only (userId: null)
+    const filter = { userId: null };
     if (type) filter.type = type;
     if (isRead !== undefined) filter.isRead = isRead === 'true';
     if (priority) filter.priority = priority;
@@ -45,8 +45,8 @@ const getAllNotifications = async (req, res) => {
     // Get total count for pagination
     const total = await Notification.countDocuments(filter);
 
-    // Get unread count
-    const unreadCount = await Notification.countDocuments({ isRead: false });
+    // Get unread count for admin notifications only
+    const unreadCount = await Notification.countDocuments({ userId: null, isRead: false });
 
     res.status(200).json({
       success: true,
@@ -76,12 +76,13 @@ const getRecentNotifications = async (req, res) => {
   try {
     const limit = parseInt(req.query.limit) || 3;
 
-    const notifications = await Notification.find()
+    // Get admin notifications only (userId: null)
+    const notifications = await Notification.find({ userId: null })
       .sort({ createdAt: -1 })
       .limit(limit)
       .lean();
 
-    const unreadCount = await Notification.countDocuments({ isRead: false });
+    const unreadCount = await Notification.countDocuments({ userId: null, isRead: false });
 
     res.status(200).json({
       success: true,
@@ -103,7 +104,8 @@ const getRecentNotifications = async (req, res) => {
 // Get unread count
 const getUnreadCount = async (req, res) => {
   try {
-    const unreadCount = await Notification.countDocuments({ isRead: false });
+    // Get unread count for admin notifications only
+    const unreadCount = await Notification.countDocuments({ userId: null, isRead: false });
 
     res.status(200).json({
       success: true,
@@ -187,7 +189,7 @@ const markAsRead = async (req, res) => {
 const markAllAsRead = async (req, res) => {
   try {
     const result = await Notification.updateMany(
-      { isRead: false },
+      { userId: null, isRead: false },
       {
         isRead: true,
         readAt: new Date()
@@ -265,6 +267,9 @@ const deleteAllRead = async (req, res) => {
 const getNotificationStats = async (req, res) => {
   try {
     const stats = await Notification.aggregate([
+      {
+        $match: { userId: null } // Only admin notifications
+      },
       {
         $facet: {
           byType: [
