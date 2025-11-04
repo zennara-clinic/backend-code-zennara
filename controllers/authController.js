@@ -967,34 +967,41 @@ exports.deleteAccount = async (req, res) => {
     console.log(`🗑️ Account deletion requested by: ${user.email} (${user.fullName})`);
     console.log(`📋 Reason: ${reason || 'Not provided'}`);
 
-    // Check for active bookings
-    const activeBookings = await Booking.countDocuments({
-      userId: userId,
-      status: { $in: ['Confirmed', 'Pending', 'Awaiting Confirmation'] },
-      appointmentDate: { $gte: new Date() } // Future appointments only
-    });
+    // Automatically cancel all active bookings
+    const activeBookingsResult = await Booking.updateMany(
+      {
+        userId: userId,
+        status: { $in: ['Confirmed', 'Pending', 'Awaiting Confirmation'] },
+        appointmentDate: { $gte: new Date() }
+      },
+      {
+        $set: {
+          status: 'Cancelled',
+          cancellationReason: 'Account deleted by user',
+          cancelledAt: new Date()
+        }
+      }
+    );
+    console.log(`✅ Cancelled ${activeBookingsResult.modifiedCount} active bookings`);
 
-    if (activeBookings > 0) {
-      return res.status(400).json({
-        success: false,
-        message: `You have ${activeBookings} active appointment(s). Please cancel them before deleting your account.`,
-        activeBookings
-      });
-    }
+    // Automatically cancel all pending orders
+    const pendingOrdersResult = await ProductOrder.updateMany(
+      {
+        userId: userId,
+        orderStatus: { $in: ['Pending', 'Processing'] }
+      },
+      {
+        $set: {
+          orderStatus: 'Cancelled',
+          cancellationReason: 'Account deleted by user',
+          cancelledAt: new Date()
+        }
+      }
+    );
+    console.log(`✅ Cancelled ${pendingOrdersResult.modifiedCount} pending orders`);
 
-    // Check for pending orders
-    const pendingOrders = await ProductOrder.countDocuments({
-      userId: userId,
-      orderStatus: { $in: ['Pending', 'Processing', 'Shipped', 'Out for Delivery'] }
-    });
-
-    if (pendingOrders > 0) {
-      return res.status(400).json({
-        success: false,
-        message: `You have ${pendingOrders} pending order(s). Please wait for delivery or cancel them before deleting your account.`,
-        pendingOrders
-      });
-    }
+    // Note: Orders that are "Shipped" or "Out for Delivery" will be anonymized but not cancelled
+    // as they are already in transit and cannot be stopped
 
     // Log security event
     await SecurityLog.create({
@@ -1021,10 +1028,20 @@ exports.deleteAccount = async (req, res) => {
       }
     }
 
-    // Delete or anonymize related data (GDPR compliance)
-    // Note: We keep historical records for legal/accounting purposes but anonymize them
+    // Delete ALL user-related data
+    console.log('🗑️ Deleting all user data...');
 
-    // Anonymize bookings (keep for records but remove PII)
+    // Delete user tokens
+    await Token.deleteMany({ userId: userId });
+    console.log('✅ Deleted user tokens');
+
+    // Delete user addresses
+    const Address = require('../models/Address');
+    await Address.deleteMany({ userId: userId });
+    console.log('✅ Deleted user addresses');
+
+    // Delete or anonymize bookings
+    // Note: For legal/accounting, we anonymize instead of delete
     await Booking.updateMany(
       { userId: userId },
       { 
@@ -1035,8 +1052,9 @@ exports.deleteAccount = async (req, res) => {
         }
       }
     );
+    console.log('✅ Anonymized user bookings');
 
-    // Anonymize orders
+    // Delete or anonymize orders
     await ProductOrder.updateMany(
       { userId: userId },
       {
@@ -1048,9 +1066,11 @@ exports.deleteAccount = async (req, res) => {
         }
       }
     );
+    console.log('✅ Anonymized user orders');
 
-    // Delete all user tokens
-    await Token.deleteMany({ userId: userId });
+    // Delete package assignments if any
+    await PackageAssignment.deleteMany({ userId: userId });
+    console.log('✅ Deleted package assignments');
 
     // Finally, delete the user account
     await User.findByIdAndDelete(userId);
