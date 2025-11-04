@@ -1006,16 +1006,17 @@ exports.deleteAccount = async (req, res) => {
     // Log security event
     await SecurityLog.create({
       userId: userId,
-      action: 'account_deletion',
+      eventType: 'account_deletion',
       ipAddress: req.ip,
       userAgent: req.headers['user-agent'],
-      status: 'success',
-      details: {
+      success: true,
+      metadata: {
         reason: reason || 'Not provided',
         email: user.email,
         phone: user.phone,
         memberType: user.memberType
-      }
+      },
+      severity: 'high'
     });
 
     // Delete user's profile picture from Cloudinary

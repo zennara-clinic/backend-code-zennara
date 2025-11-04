@@ -27,7 +27,8 @@ const SecurityLogSchema = new mongoose.Schema({
       'admin_otp_requested',
       'admin_otp_verified',
       'admin_otp_failed',
-      'admin_login_success'
+      'admin_login_success',
+      'account_deletion'
     ],
     required: true,
     index: true
