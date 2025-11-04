@@ -16,7 +16,8 @@ const {
   getSecurityLog,
   getSecurityStatus,
   upgradeMembership,
-  getUserStats
+  getUserStats,
+  deleteAccount
 } = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
 const { upload } = require('../middleware/upload');
@@ -77,5 +78,8 @@ router.delete('/sessions/:tokenId', protect, revokeSession);
 // Security routes
 router.get('/security-log', protect, getSecurityLog);
 router.get('/security-status', protect, getSecurityStatus);
+
+// Account deletion route (GDPR compliance)
+router.delete('/account', protect, deleteAccount);
 
 module.exports = router;

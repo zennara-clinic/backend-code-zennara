@@ -938,3 +938,135 @@ exports.getUserStats = async (req, res) => {
     });
   }
 };
+
+// @desc    Delete user account (GDPR Compliance)
+// @route   DELETE /api/auth/account
+// @access  Private
+exports.deleteAccount = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    const { confirmationText, reason } = req.body;
+
+    // Verify confirmation text
+    if (confirmationText !== 'DELETE MY ACCOUNT') {
+      return res.status(400).json({
+        success: false,
+        message: 'Please type "DELETE MY ACCOUNT" to confirm'
+      });
+    }
+
+    // Find user
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    console.log(`🗑️ Account deletion requested by: ${user.email} (${user.fullName})`);
+    console.log(`📋 Reason: ${reason || 'Not provided'}`);
+
+    // Check for active bookings
+    const activeBookings = await Booking.countDocuments({
+      userId: userId,
+      status: { $in: ['Confirmed', 'Pending', 'Awaiting Confirmation'] },
+      appointmentDate: { $gte: new Date() } // Future appointments only
+    });
+
+    if (activeBookings > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `You have ${activeBookings} active appointment(s). Please cancel them before deleting your account.`,
+        activeBookings
+      });
+    }
+
+    // Check for pending orders
+    const pendingOrders = await ProductOrder.countDocuments({
+      userId: userId,
+      orderStatus: { $in: ['Pending', 'Processing', 'Shipped', 'Out for Delivery'] }
+    });
+
+    if (pendingOrders > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `You have ${pendingOrders} pending order(s). Please wait for delivery or cancel them before deleting your account.`,
+        pendingOrders
+      });
+    }
+
+    // Log security event
+    await SecurityLog.create({
+      userId: userId,
+      action: 'account_deletion',
+      ipAddress: req.ip,
+      userAgent: req.headers['user-agent'],
+      status: 'success',
+      details: {
+        reason: reason || 'Not provided',
+        email: user.email,
+        phone: user.phone,
+        memberType: user.memberType
+      }
+    });
+
+    // Delete user's profile picture from Cloudinary
+    if (user.profilePicture?.publicId) {
+      try {
+        await deleteFromCloudinary(user.profilePicture.publicId);
+        console.log('✅ Profile picture deleted from Cloudinary');
+      } catch (error) {
+        console.error('⚠️ Failed to delete profile picture:', error);
+      }
+    }
+
+    // Delete or anonymize related data (GDPR compliance)
+    // Note: We keep historical records for legal/accounting purposes but anonymize them
+
+    // Anonymize bookings (keep for records but remove PII)
+    await Booking.updateMany(
+      { userId: userId },
+      { 
+        $set: { 
+          'contact.email': '[deleted]',
+          'contact.phone': '[deleted]',
+          notes: '[User account deleted]'
+        }
+      }
+    );
+
+    // Anonymize orders
+    await ProductOrder.updateMany(
+      { userId: userId },
+      {
+        $set: {
+          'shippingAddress.fullName': '[deleted]',
+          'shippingAddress.phone': '[deleted]',
+          'shippingAddress.addressLine1': '[deleted]',
+          'shippingAddress.addressLine2': '[deleted]',
+        }
+      }
+    );
+
+    // Delete all user tokens
+    await Token.deleteMany({ userId: userId });
+
+    // Finally, delete the user account
+    await User.findByIdAndDelete(userId);
+
+    console.log(`✅ Account deleted successfully: ${user.email}`);
+
+    res.status(200).json({
+      success: true,
+      message: 'Your account has been permanently deleted. We\'re sorry to see you go.'
+    });
+
+  } catch (error) {
+    console.error('❌ Account deletion failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to delete account. Please try again or contact support.'
+    });
+  }
+};
