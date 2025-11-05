@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const encrypt = require('mongoose-field-encryption').fieldEncryption;
 
 const preConsultFormSchema = new mongoose.Schema({
   // User Reference
@@ -182,6 +183,27 @@ const preConsultFormSchema = new mongoose.Schema({
     default: null
   },
 
+  // Health Data Consent (DPDPA 2023 Compliance)
+  healthDataConsent: {
+    accepted: {
+      type: Boolean,
+      required: [true, 'Health data consent is required'],
+      default: false
+    },
+    acceptedAt: {
+      type: Date,
+      default: null
+    },
+    ipAddress: {
+      type: String,
+      default: null
+    },
+    consentText: {
+      type: String,
+      default: 'I consent to the collection, storage, and processing of my health information for medical treatment purposes as per DPDPA 2023 and Clinical Establishments Act.'
+    }
+  },
+
   // Form Status
   status: {
     type: String,
@@ -199,6 +221,26 @@ const preConsultFormSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+// Field-level encryption for sensitive health data (DPDPA 2023 compliance)
+// Only encrypt if encryption keys are provided
+if (process.env.ENCRYPTION_SECRET && process.env.ENCRYPTION_SALT) {
+  preConsultFormSchema.plugin(encrypt, {
+    fields: [
+      'drugAllergies',
+      'otherAllergies', 
+      'medicalHistory',
+      'additionalInfo',
+      'lastMenstrualPeriod'
+    ],
+    secret: process.env.ENCRYPTION_SECRET,
+    saltGenerator: () => process.env.ENCRYPTION_SALT,
+    useAes256Gcm: true
+  });
+  console.log('🔒 Health data encryption enabled for PreConsultForm');
+} else {
+  console.warn('⚠️  Encryption keys not found. Health data will NOT be encrypted at rest.');
+}
 
 // Indexes for efficient queries
 preConsultFormSchema.index({ userId: 1, createdAt: -1 });

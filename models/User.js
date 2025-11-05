@@ -123,6 +123,60 @@ const UserSchema = new mongoose.Schema({
     default: false
   },
   
+  // Privacy & Data Protection Compliance (DPDPA 2023, IT Act 2000)
+  privacyPolicyConsent: {
+    accepted: {
+      type: Boolean,
+      required: [true, 'Privacy policy acceptance is required'],
+      default: false
+    },
+    version: {
+      type: String,
+      default: '1.0'
+    },
+    acceptedAt: {
+      type: Date,
+      default: null
+    },
+    ipAddress: {
+      type: String,
+      default: null
+    }
+  },
+  termsOfServiceConsent: {
+    accepted: {
+      type: Boolean,
+      required: [true, 'Terms of service acceptance is required'],
+      default: false
+    },
+    version: {
+      type: String,
+      default: '1.0'
+    },
+    acceptedAt: {
+      type: Date,
+      default: null
+    },
+    ipAddress: {
+      type: String,
+      default: null
+    }
+  },
+  dataRetentionConsent: {
+    accepted: {
+      type: Boolean,
+      default: true // Implied by using service
+    },
+    retentionPeriodYears: {
+      type: Number,
+      default: 3 // Clinical Establishments Act requirement
+    },
+    acceptedAt: {
+      type: Date,
+      default: Date.now
+    }
+  },
+  
   // Failed login tracking
   failedLoginAttempts: {
     type: Number,

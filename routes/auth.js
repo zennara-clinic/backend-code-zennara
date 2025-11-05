@@ -17,7 +17,8 @@ const {
   getSecurityStatus,
   upgradeMembership,
   getUserStats,
-  deleteAccount
+  deleteAccount,
+  exportUserData
 } = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
 const { upload } = require('../middleware/upload');
@@ -79,7 +80,8 @@ router.delete('/sessions/:tokenId', protect, revokeSession);
 router.get('/security-log', protect, getSecurityLog);
 router.get('/security-status', protect, getSecurityStatus);
 
-// Account deletion route (GDPR compliance)
+// Data privacy routes (DPDPA 2023 compliance)
+router.get('/export-data', protect, exportUserData);
 router.delete('/account', protect, deleteAccount);
 
 module.exports = router;

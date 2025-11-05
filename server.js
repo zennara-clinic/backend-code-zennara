@@ -62,6 +62,7 @@ app.use('/api/bookings', checkBookingStatus);
 
 /* --------------------------------- Routes ---------------------------------- */
 app.use('/api/auth', require('./routes/auth'));
+app.use('/api/privacy', require('./routes/privacy'));
 app.use('/api/admin/auth', require('./routes/adminAuth'));
 app.use('/api/admin/users', require('./routes/user'));
 app.use('/api/admin/products', require('./routes/adminProducts'));

@@ -13,13 +13,30 @@ const { uploadToCloudinary, deleteFromCloudinary } = require('../middleware/uplo
 // @access  Public
 exports.signup = async (req, res) => {
   try {
-    const { email, fullName, phone, location, dateOfBirth, gender } = req.body;
+    const { 
+      email, 
+      fullName, 
+      phone, 
+      location, 
+      dateOfBirth, 
+      gender,
+      privacyPolicyAccepted,
+      termsAccepted 
+    } = req.body;
 
     // Check if all required fields are present
     if (!email || !fullName || !phone || !location || !dateOfBirth || !gender) {
       return res.status(400).json({
         success: false,
         message: 'Please provide all required fields'
+      });
+    }
+
+    // DPDPA 2023 Compliance: Require explicit consent
+    if (!privacyPolicyAccepted || !termsAccepted) {
+      return res.status(400).json({
+        success: false,
+        message: 'You must accept the Privacy Policy and Terms of Service to continue'
       });
     }
 
@@ -37,6 +54,9 @@ exports.signup = async (req, res) => {
       });
     }
 
+    // Get user's IP address
+    const ipAddress = req.ip || req.connection.remoteAddress || req.headers['x-forwarded-for'];
+
     // Create new user with Regular Member as default
     const user = await User.create({
       email,
@@ -45,7 +65,24 @@ exports.signup = async (req, res) => {
       location,
       dateOfBirth,
       gender,
-      memberType: 'Regular Member' // All new users start as Regular Members
+      memberType: 'Regular Member', // All new users start as Regular Members
+      privacyPolicyConsent: {
+        accepted: true,
+        version: '1.0',
+        acceptedAt: new Date(),
+        ipAddress: ipAddress
+      },
+      termsOfServiceConsent: {
+        accepted: true,
+        version: '1.0',
+        acceptedAt: new Date(),
+        ipAddress: ipAddress
+      },
+      dataRetentionConsent: {
+        accepted: true,
+        retentionPeriodYears: 3,
+        acceptedAt: new Date()
+      }
     });
 
     // Send welcome email (non-blocking)
@@ -1088,6 +1125,172 @@ exports.deleteAccount = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to delete account. Please try again or contact support.'
+    });
+  }
+};
+
+// @desc    Export all user data (DPDPA 2023 - Right to Data Portability)
+// @route   GET /api/auth/export-data
+// @access  Private
+exports.exportUserData = async (req, res) => {
+  try {
+    const userId = req.user._id;
+    
+    console.log(`📦 Data export requested by user: ${userId}`);
+    
+    // Gather all user-related data
+    const user = await User.findById(userId)
+      .select('-otp -otpExpiry -__v')
+      .lean();
+    
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Get all related data
+    const Address = require('../models/Address');
+    const PreConsultForm = require('../models/PreConsultForm');
+    const Review = require('../models/Review');
+    
+    const [addresses, bookings, orders, packageAssignments, healthForms, securityLogs, reviews] = await Promise.all([
+      Address.find({ userId }).lean(),
+      Booking.find({ userId }).lean(),
+      ProductOrder.find({ userId }).lean(),
+      PackageAssignment.find({ userId }).lean(),
+      PreConsultForm.find({ userId }).lean(),
+      SecurityLog.find({ userId }).sort({ createdAt: -1 }).limit(50).lean(),
+      Review.find({ userId }).lean()
+    ]);
+
+    // Compile export data
+    const exportData = {
+      exportInfo: {
+        exportedAt: new Date().toISOString(),
+        exportedBy: user.email,
+        dataProtectionNotice: 'This data export is provided under DPDPA 2023 (Digital Personal Data Protection Act, 2023) and IT Act 2000.',
+        retentionPolicy: 'Data is retained for 3 years as per Clinical Establishments Act requirements.'
+      },
+      personalInformation: {
+        patientId: user.patientId,
+        fullName: user.fullName,
+        email: user.email,
+        phone: user.phone,
+        dateOfBirth: user.dateOfBirth,
+        gender: user.gender,
+        location: user.location,
+        profilePicture: user.profilePicture?.url || null,
+        memberType: user.memberType,
+        zenMembership: {
+          startDate: user.zenMembershipStartDate,
+          expiryDate: user.zenMembershipExpiryDate,
+          autoRenew: user.zenMembershipAutoRenew
+        },
+        accountCreated: user.createdAt,
+        lastLogin: user.lastLogin
+      },
+      consentRecords: {
+        privacyPolicy: user.privacyPolicyConsent,
+        termsOfService: user.termsOfServiceConsent,
+        dataRetention: user.dataRetentionConsent
+      },
+      addresses: addresses.map(addr => ({
+        label: addr.label,
+        fullName: addr.fullName,
+        phone: addr.phone,
+        addressLine1: addr.addressLine1,
+        addressLine2: addr.addressLine2,
+        city: addr.city,
+        state: addr.state,
+        postalCode: addr.postalCode,
+        country: addr.country,
+        isDefault: addr.isDefault,
+        createdAt: addr.createdAt
+      })),
+      appointments: bookings.map(booking => ({
+        referenceNumber: booking.referenceNumber,
+        consultationType: booking.consultationId,
+        status: booking.status,
+        location: booking.preferredLocation,
+        date: booking.preferredDate,
+        confirmedDate: booking.confirmedDate,
+        confirmedTime: booking.confirmedTime,
+        rating: booking.rating,
+        feedback: booking.feedback,
+        createdAt: booking.createdAt
+      })),
+      orders: orders.map(order => ({
+        orderNumber: order.orderNumber,
+        items: order.items.map(item => ({
+          productName: item.productName,
+          quantity: item.quantity,
+          price: item.price
+        })),
+        total: order.pricing?.total,
+        status: order.orderStatus,
+        paymentMethod: order.paymentMethod,
+        paymentStatus: order.paymentStatus,
+        deliveryDate: order.deliveryDate,
+        createdAt: order.createdAt
+      })),
+      treatmentPackages: packageAssignments.map(pkg => ({
+        packageName: pkg.packageId,
+        status: pkg.status,
+        sessionsTotal: pkg.sessions?.total,
+        sessionsCompleted: pkg.sessions?.completed,
+        pricing: pkg.pricing,
+        assignedAt: pkg.createdAt
+      })),
+      healthInformation: healthForms.map(form => ({
+        dateOfVisit: form.dateOfVisit,
+        reasonForVisit: form.reasonForVisit,
+        skinConcerns: form.skinConcerns,
+        hairConcerns: form.hairConcerns,
+        medicalHistory: form.medicalHistory,
+        allergies: {
+          drugAllergies: form.drugAllergies,
+          otherAllergies: form.otherAllergies
+        },
+        diet: form.diet,
+        maritalStatus: form.maritalStatus,
+        status: form.status,
+        submittedAt: form.createdAt
+      })),
+      reviews: reviews.map(review => ({
+        rating: review.rating,
+        comment: review.comment,
+        createdAt: review.createdAt
+      })),
+      securityActivity: securityLogs.map(log => ({
+        eventType: log.eventType,
+        ipAddress: log.ipAddress,
+        deviceInfo: log.deviceInfo?.platform,
+        success: log.success,
+        timestamp: log.createdAt
+      })),
+      statistics: {
+        totalAppointments: bookings.length,
+        totalOrders: orders.length,
+        totalSpent: user.totalSpent,
+        appOpenCount: user.appOpenCount
+      }
+    };
+
+    console.log('✅ Data export compiled successfully');
+
+    res.status(200).json({
+      success: true,
+      message: 'Your data has been exported successfully',
+      data: exportData
+    });
+
+  } catch (error) {
+    console.error('❌ Data export failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to export data. Please try again or contact support.'
     });
   }
 };
