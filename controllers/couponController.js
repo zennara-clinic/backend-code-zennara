@@ -391,9 +391,20 @@ exports.getAvailableCoupons = async (req, res) => {
     .select('-usageCount -perUserLimit -applicableProducts -applicableCategories')
     .sort({ discountValue: -1, createdAt: -1 });
     
+    // Filter out any coupons with missing required fields
+    const validCoupons = coupons.filter(coupon => {
+      return (
+        coupon._id &&
+        coupon.code &&
+        coupon.discountType &&
+        typeof coupon.discountValue === 'number' &&
+        coupon.validUntil
+      );
+    });
+    
     res.json({
       success: true,
-      data: coupons
+      data: validCoupons
     });
   } catch (error) {
     console.error('Error fetching available coupons:', error);
