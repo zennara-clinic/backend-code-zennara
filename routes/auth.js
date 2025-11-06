@@ -18,7 +18,9 @@ const {
   upgradeMembership,
   getUserStats,
   deleteAccount,
-  exportUserData
+  exportUserData,
+  checkPhoneExists,
+  verifyFirebaseOTP
 } = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
 const { upload } = require('../middleware/upload');
@@ -28,6 +30,10 @@ router.post('/signup', signup);
 router.post('/login', login); 
 router.post('/verify-otp', verifyOTP);
 router.post('/resend-otp', resendOTP);
+
+// Firebase SMS authentication routes
+router.post('/check-phone', checkPhoneExists);
+router.post('/verify-firebase-otp', verifyFirebaseOTP);
 
 // Protected routes
 router.post('/logout', protect, logout);

@@ -1294,3 +1294,171 @@ exports.exportUserData = async (req, res) => {
     });
   }
 };
+
+// @desc    Check if phone number exists in database
+// @route   POST /api/auth/check-phone
+// @access  Public
+exports.checkPhoneExists = async (req, res) => {
+  try {
+    const { phone } = req.body;
+
+    if (!phone) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone number is required'
+      });
+    }
+
+    // Clean phone number (remove spaces, dashes, etc.)
+    const cleanPhone = phone.replace(/[\s()-]/g, '');
+
+    console.log('🔍 Checking if phone exists:', cleanPhone);
+
+    // Check if user exists with this phone
+    const user = await User.findOne({ phone: cleanPhone });
+
+    if (!user) {
+      console.log('❌ Phone not found in database');
+      return res.status(404).json({
+        success: false,
+        message: 'This phone number is not registered',
+        data: { exists: false }
+      });
+    }
+
+    console.log('✅ Phone found in database');
+    res.json({
+      success: true,
+      message: 'Phone number found',
+      data: { 
+        exists: true,
+        userId: user._id
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Check phone error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error. Please try again later'
+    });
+  }
+};
+
+// @desc    Verify Firebase OTP and login
+// @route   POST /api/auth/verify-firebase-otp
+// @access  Public
+exports.verifyFirebaseOTP = async (req, res) => {
+  try {
+    const { phone, firebaseIdToken } = req.body;
+
+    if (!phone || !firebaseIdToken) {
+      return res.status(400).json({
+        success: false,
+        message: 'Phone and Firebase token are required'
+      });
+    }
+
+    console.log('🔐 Verifying Firebase token for phone:', phone);
+
+    // Import Firebase Admin SDK
+    const admin = require('firebase-admin');
+
+    // Initialize Firebase Admin if not already initialized
+    if (!admin.apps.length) {
+      const serviceAccount = require('../firebase-service-account.json');
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount)
+      });
+    }
+
+    // Verify Firebase ID token
+    let decodedToken;
+    try {
+      decodedToken = await admin.auth().verifyIdToken(firebaseIdToken);
+      console.log('✅ Firebase token verified');
+    } catch (error) {
+      console.error('❌ Firebase token verification failed:', error);
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid or expired verification code'
+      });
+    }
+
+    // Get phone number from Firebase token
+    const firebasePhone = decodedToken.phone_number;
+    
+    // Verify it matches the provided phone
+    const cleanPhone = phone.replace(/[\s()-]/g, '');
+    const cleanFirebasePhone = firebasePhone?.replace(/[\s()+]/g, '').slice(-10);
+    
+    if (!cleanFirebasePhone || !cleanFirebasePhone.includes(cleanPhone.slice(-10))) {
+      console.log('❌ Phone number mismatch');
+      return res.status(401).json({
+        success: false,
+        message: 'Phone number mismatch'
+      });
+    }
+
+    // Find user by phone number
+    const user = await User.findOne({ phone: cleanPhone });
+
+    if (!user) {
+      console.log('❌ User not found with phone:', cleanPhone);
+      return res.status(404).json({
+        success: false,
+        message: 'User not found with this phone number'
+      });
+    }
+
+    // Generate app JWT token
+    const token = jwt.sign(
+      { 
+        userId: user._id,
+        email: user.email,
+        phone: user.phone
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+
+    // Calculate token expiry
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 7);
+
+    console.log('✅ Login successful for user:', user.email);
+
+    // Return success with token and user data
+    res.json({
+      success: true,
+      message: 'Login successful',
+      data: {
+        token,
+        expiresAt: expiresAt.toISOString(),
+        user: {
+          _id: user._id,
+          fullName: user.fullName,
+          email: user.email,
+          phone: user.phone,
+          dateOfBirth: user.dateOfBirth,
+          gender: user.gender,
+          location: user.location,
+          profilePicture: user.profilePicture,
+          medicalHistory: user.medicalHistory,
+          drugAllergies: user.drugAllergies,
+          dietaryPreferences: user.dietaryPreferences,
+          smoking: user.smoking,
+          drinking: user.drinking,
+          additionalInfo: user.additionalInfo
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Firebase OTP verification error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Server error. Please try again later'
+    });
+  }
+};

@@ -6,3 +6,6 @@ seeders/
 data/
 scripts/
 data/
+google-services.json
+FIREBASE_SMS_IMPLEMENTATION.md
+
