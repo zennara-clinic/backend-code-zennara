@@ -458,6 +458,257 @@ If you didn't request this code, please ignore this message.`;
     return await this.sendMessage(phoneNumber, message);
   }
 
+  // ==================== PRODUCT ORDER NOTIFICATIONS ====================
+
+  /**
+   * Send order confirmation (when user places order)
+   */
+  async sendOrderConfirmation(phoneNumber, data) {
+    const itemsList = data.items.map(item => `${item.quantity}x ${item.name}`).join('\n');
+    
+    const message = `*Zennara Clinic - Order Confirmed*
+
+Hello ${data.customerName}!
+
+Thank you for your order!
+
+*Order Details:*
+Order Number: ${data.orderNumber}
+
+*Items:*
+${itemsList}
+
+*Order Summary:*
+Subtotal: Rs.${data.subtotal}
+Delivery Fee: Rs.${data.deliveryFee}
+Total: Rs.${data.total}
+
+*Delivery Address:*
+${data.shippingAddress}
+
+*Payment Method:* ${data.paymentMethod}
+
+You can track your order in the Zennara App.
+
+Thank you for shopping with us!`;
+
+    return await this.sendMessage(phoneNumber, message);
+  }
+
+  /**
+   * Send order confirmed by admin
+   */
+  async sendOrderProcessing(phoneNumber, data) {
+    const message = `*Zennara Clinic - Order Processing*
+
+Hello ${data.customerName}!
+
+Your order is being processed.
+
+Order Number: ${data.orderNumber}
+Status: Processing
+
+We're preparing your items for shipment. You'll receive another update once your order is packed.
+
+Track your order in the Zennara App.`;
+
+    return await this.sendMessage(phoneNumber, message);
+  }
+
+  /**
+   * Send order packed notification
+   */
+  async sendOrderPacked(phoneNumber, data) {
+    const message = `*Zennara Clinic - Order Packed*
+
+Hello ${data.customerName}!
+
+Your order has been packed and is ready for shipment.
+
+Order Number: ${data.orderNumber}
+Status: Packed
+
+Your order will be handed over to our delivery partner soon.
+
+Track your order in the Zennara App.`;
+
+    return await this.sendMessage(phoneNumber, message);
+  }
+
+  /**
+   * Send order shipped notification
+   */
+  async sendOrderShipped(phoneNumber, data) {
+    const message = `*Zennara Clinic - Order Shipped*
+
+Hello ${data.customerName}!
+
+Great news! Your order has been shipped.
+
+Order Number: ${data.orderNumber}
+Tracking ID: ${data.trackingId || 'Will be updated soon'}
+Status: Shipped
+
+Estimated Delivery: ${data.estimatedDelivery || '2-3 business days'}
+
+Your order is on its way!
+
+Track your order in the Zennara App.`;
+
+    return await this.sendMessage(phoneNumber, message);
+  }
+
+  /**
+   * Send order out for delivery notification
+   */
+  async sendOrderOutForDelivery(phoneNumber, data) {
+    const message = `*Zennara Clinic - Out for Delivery*
+
+Hello ${data.customerName}!
+
+Your order is out for delivery today!
+
+Order Number: ${data.orderNumber}
+Delivery Partner: ${data.deliveryPartner || 'Local Courier'}
+Expected By: ${data.expectedTime || 'End of day'}
+
+Please keep your phone handy. Our delivery partner may call you.
+
+Track your order in the Zennara App.`;
+
+    return await this.sendMessage(phoneNumber, message);
+  }
+
+  /**
+   * Send order delivered notification
+   */
+  async sendOrderDelivered(phoneNumber, data) {
+    const message = `*Zennara Clinic - Order Delivered*
+
+Hello ${data.customerName}!
+
+Your order has been delivered successfully!
+
+Order Number: ${data.orderNumber}
+Delivered At: ${data.deliveredAt}
+
+Thank you for shopping with Zennara Clinic!
+
+We hope you love your products. Please rate your experience in the Zennara App.
+
+Need help? Contact us through the app.`;
+
+    return await this.sendMessage(phoneNumber, message);
+  }
+
+  /**
+   * Send order cancelled notification
+   */
+  async sendOrderCancelled(phoneNumber, data) {
+    const message = `*Zennara Clinic - Order Cancelled*
+
+Hello ${data.customerName},
+
+Your order has been cancelled.
+
+Order Number: ${data.orderNumber}
+Reason: ${data.reason || 'As per your request'}
+
+If payment was made, refund will be processed within 5-7 business days.
+
+Need to place a new order? Visit the Zennara App.
+
+Thank you!`;
+
+    return await this.sendMessage(phoneNumber, message);
+  }
+
+  /**
+   * Send return request received notification
+   */
+  async sendReturnRequestReceived(phoneNumber, data) {
+    const message = `*Zennara Clinic - Return Request Received*
+
+Hello ${data.customerName},
+
+We've received your return request.
+
+Order Number: ${data.orderNumber}
+Return Reason: ${data.reason}
+
+Our team will review your request and contact you within 24 hours.
+
+You can track the return status in the Zennara App.
+
+Thank you for your patience.`;
+
+    return await this.sendMessage(phoneNumber, message);
+  }
+
+  /**
+   * Send return approved notification
+   */
+  async sendReturnApproved(phoneNumber, data) {
+    const message = `*Zennara Clinic - Return Approved*
+
+Hello ${data.customerName}!
+
+Your return request has been approved.
+
+Order Number: ${data.orderNumber}
+
+Our logistics partner will contact you within 24-48 hours to schedule a pickup.
+
+Please keep the items ready in their original packaging.
+
+Refund will be processed after we receive and verify the returned items.
+
+Track return status in the Zennara App.`;
+
+    return await this.sendMessage(phoneNumber, message);
+  }
+
+  /**
+   * Send return rejected notification
+   */
+  async sendReturnRejected(phoneNumber, data) {
+    const message = `*Zennara Clinic - Return Request Declined*
+
+Hello ${data.customerName},
+
+We're unable to process your return request.
+
+Order Number: ${data.orderNumber}
+Reason: ${data.rejectionReason}
+
+If you have questions, please contact our support team through the Zennara App.
+
+Thank you for understanding.`;
+
+    return await this.sendMessage(phoneNumber, message);
+  }
+
+  /**
+   * Send refund processed notification
+   */
+  async sendRefundProcessed(phoneNumber, data) {
+    const message = `*Zennara Clinic - Refund Processed*
+
+Hello ${data.customerName}!
+
+Your refund has been processed.
+
+Order Number: ${data.orderNumber}
+Refund Amount: Rs.${data.refundAmount}
+Refund Method: ${data.refundMethod}
+
+The amount will be credited to your account within 5-7 business days.
+
+Thank you for your patience!`;
+
+    return await this.sendMessage(phoneNumber, message);
+  }
+
   /**
    * Check service health
    */

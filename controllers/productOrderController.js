@@ -1,7 +1,9 @@
 const ProductOrder = require('../models/ProductOrder');
 const Product = require('../models/Product');
 const Address = require('../models/Address');
+const User = require('../models/User');
 const NotificationHelper = require('../utils/notificationHelper');
+const whatsappService = require('../services/whatsappService');
 
 // @desc    Create new product order
 // @route   POST /api/product-orders
@@ -135,7 +137,7 @@ exports.createOrder = async (req, res) => {
       // Extract userId - it's populated so we need the _id
       const userId = populatedOrder.userId?._id || populatedOrder.userId;
       
-      console.log('📢 Attempting to create notification for order:', {
+      console.log('Attempting to create notification for order:', {
         orderId: populatedOrder._id,
         userId: userId,
         orderNumber: populatedOrder.orderNumber,
@@ -150,10 +152,38 @@ exports.createOrder = async (req, res) => {
         totalAmount: populatedOrder.pricing.total,
         shippingAddress: { name: populatedOrder.shippingAddress.fullName }
       });
-      console.log('✅ Order notification created successfully');
+      console.log('Order notification created successfully');
     } catch (notifError) {
-      console.error('❌ Failed to create notification:', notifError);
+      console.error('Failed to create notification:', notifError);
       console.error('Error stack:', notifError.stack);
+    }
+
+    // Send WhatsApp order confirmation
+    try {
+      const user = await User.findById(req.user._id);
+      if (user && user.phone) {
+        const formattedAddress = `${populatedOrder.shippingAddress.addressLine1}, ${populatedOrder.shippingAddress.city}, ${populatedOrder.shippingAddress.state} - ${populatedOrder.shippingAddress.postalCode}`;
+        
+        await whatsappService.sendOrderConfirmation(
+          user.phone,
+          {
+            customerName: populatedOrder.shippingAddress.fullName,
+            orderNumber: populatedOrder.orderNumber,
+            items: populatedOrder.items.map(item => ({
+              name: item.productName,
+              quantity: item.quantity
+            })),
+            subtotal: populatedOrder.pricing.subtotal,
+            deliveryFee: populatedOrder.pricing.deliveryFee,
+            total: populatedOrder.pricing.total,
+            shippingAddress: formattedAddress,
+            paymentMethod: populatedOrder.paymentMethod
+          }
+        );
+        console.log('WhatsApp order confirmation sent');
+      }
+    } catch (whatsappError) {
+      console.error('WhatsApp sending failed:', whatsappError.message);
     }
     
     res.status(201).json({
@@ -275,68 +305,6 @@ exports.getOrderByNumber = async (req, res) => {
   }
 };
 
-// @desc    Cancel order
-// @route   PUT /api/product-orders/:id/cancel
-// @access  Private
-exports.cancelOrder = async (req, res) => {
-  try {
-    const { reason } = req.body;
-    
-    const order = await ProductOrder.findOne({
-      _id: req.params.id,
-      userId: req.user._id
-    });
-    
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
-    }
-    
-    // Check if order can be cancelled
-    if (['Shipped', 'Out for Delivery', 'Delivered', 'Cancelled'].includes(order.orderStatus)) {
-      return res.status(400).json({
-        success: false,
-        message: `Cannot cancel order with status: ${order.orderStatus}`
-      });
-    }
-    
-    // Restore stock
-    for (const item of order.items) {
-      const product = await Product.findById(item.productId);
-      if (product) {
-        product.stock += item.quantity;
-        await product.save();
-      }
-    }
-    
-    order.orderStatus = 'Cancelled';
-    order.cancelReason = reason || 'Cancelled by user';
-    order.cancelledAt = new Date();
-    order.statusHistory.push({
-      status: 'Cancelled',
-      timestamp: new Date(),
-      note: reason || 'Cancelled by user'
-    });
-    
-    await order.save();
-    
-    res.json({
-      success: true,
-      message: 'Order cancelled successfully',
-      data: order
-    });
-  } catch (error) {
-    console.error('Cancel order error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to cancel order',
-      error: error.message
-    });
-  }
-};
-
 // @desc    Update order status (Admin only - for testing, can be called by user)
 // @route   PUT /api/product-orders/:id/status
 // @access  Private
@@ -362,6 +330,7 @@ exports.updateOrderStatus = async (req, res) => {
       });
     }
     
+    const oldStatus = order.orderStatus;
     order.orderStatus = status;
     
     if (status === 'Delivered') {
@@ -376,6 +345,48 @@ exports.updateOrderStatus = async (req, res) => {
     });
     
     await order.save();
+
+    // Send WhatsApp notification based on status
+    try {
+      const populatedOrder = await ProductOrder.findById(order._id).populate('userId', 'fullName email phone');
+      const user = populatedOrder.userId;
+      
+      if (user && user.phone) {
+        const data = {
+          customerName: populatedOrder.shippingAddress.fullName,
+          orderNumber: populatedOrder.orderNumber
+        };
+
+        switch (status) {
+          case 'Processing':
+            await whatsappService.sendOrderProcessing(user.phone, data);
+            break;
+          case 'Packed':
+            await whatsappService.sendOrderPacked(user.phone, data);
+            break;
+          case 'Shipped':
+            data.trackingId = order.trackingId;
+            data.estimatedDelivery = order.estimatedDelivery;
+            await whatsappService.sendOrderShipped(user.phone, data);
+            break;
+          case 'Out for Delivery':
+            data.deliveryPartner = order.deliveryPartner;
+            data.expectedTime = order.expectedDeliveryTime;
+            await whatsappService.sendOrderOutForDelivery(user.phone, data);
+            break;
+          case 'Delivered':
+            data.deliveredAt = order.deliveredAt.toLocaleString('en-IN', {
+              dateStyle: 'medium',
+              timeStyle: 'short'
+            });
+            await whatsappService.sendOrderDelivered(user.phone, data);
+            break;
+        }
+        console.log(`WhatsApp notification sent for status: ${status}`);
+      }
+    } catch (whatsappError) {
+      console.error('WhatsApp sending failed:', whatsappError.message);
+    }
     
     res.json({
       success: true,
@@ -459,6 +470,24 @@ exports.cancelOrder = async (req, res) => {
     const populatedOrder = await ProductOrder.findById(order._id)
       .populate('userId', 'fullName email phone')
       .populate('items.productId');
+
+    // Send WhatsApp cancellation notification
+    try {
+      const user = populatedOrder.userId;
+      if (user && user.phone) {
+        await whatsappService.sendOrderCancelled(
+          user.phone,
+          {
+            customerName: populatedOrder.shippingAddress.fullName,
+            orderNumber: populatedOrder.orderNumber,
+            reason: reason || 'As per your request'
+          }
+        );
+        console.log('WhatsApp order cancellation notification sent');
+      }
+    } catch (whatsappError) {
+      console.error('WhatsApp sending failed:', whatsappError.message);
+    }
     
     res.json({
       success: true,
@@ -544,6 +573,24 @@ exports.returnOrder = async (req, res) => {
     const populatedOrder = await ProductOrder.findById(order._id)
       .populate('userId', 'fullName email phone')
       .populate('items.productId');
+
+    // Send WhatsApp return request notification
+    try {
+      const user = populatedOrder.userId;
+      if (user && user.phone) {
+        await whatsappService.sendReturnRequestReceived(
+          user.phone,
+          {
+            customerName: populatedOrder.shippingAddress.fullName,
+            orderNumber: populatedOrder.orderNumber,
+            reason: reason || 'No reason provided'
+          }
+        );
+        console.log('WhatsApp return request notification sent');
+      }
+    } catch (whatsappError) {
+      console.error('WhatsApp sending failed:', whatsappError.message);
+    }
     
     res.json({
       success: true,
@@ -595,12 +642,26 @@ exports.approveReturn = async (req, res) => {
     
     await order.save();
     
-    // TODO: Schedule pickup with logistics partner
-    // TODO: Send email notification to customer
-    
     const populatedOrder = await ProductOrder.findById(order._id)
       .populate('userId', 'fullName email phone')
       .populate('items.productId');
+
+    // Send WhatsApp return approved notification
+    try {
+      const user = populatedOrder.userId;
+      if (user && user.phone) {
+        await whatsappService.sendReturnApproved(
+          user.phone,
+          {
+            customerName: populatedOrder.shippingAddress.fullName,
+            orderNumber: populatedOrder.orderNumber
+          }
+        );
+        console.log('WhatsApp return approved notification sent');
+      }
+    } catch (whatsappError) {
+      console.error('WhatsApp sending failed:', whatsappError.message);
+    }
     
     res.json({
       success: true,
@@ -663,11 +724,27 @@ exports.rejectReturn = async (req, res) => {
     
     await order.save();
     
-    // TODO: Send email notification to customer with rejection reason
-    
     const populatedOrder = await ProductOrder.findById(order._id)
       .populate('userId', 'fullName email phone')
       .populate('items.productId');
+
+    // Send WhatsApp return rejected notification
+    try {
+      const user = populatedOrder.userId;
+      if (user && user.phone) {
+        await whatsappService.sendReturnRejected(
+          user.phone,
+          {
+            customerName: populatedOrder.shippingAddress.fullName,
+            orderNumber: populatedOrder.orderNumber,
+            rejectionReason: reason
+          }
+        );
+        console.log('WhatsApp return rejected notification sent');
+      }
+    } catch (whatsappError) {
+      console.error('WhatsApp sending failed:', whatsappError.message);
+    }
     
     res.json({
       success: true,
