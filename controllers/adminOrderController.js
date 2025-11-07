@@ -1,6 +1,8 @@
 const ProductOrder = require('../models/ProductOrder');
 const Product = require('../models/Product');
 const NotificationHelper = require('../utils/notificationHelper');
+const whatsappService = require('../services/whatsappService');
+const emailService = require('../utils/emailService');
 
 // @desc    Get all orders (Admin)
 // @route   GET /api/admin/product-orders
@@ -196,11 +198,94 @@ exports.updateOrderStatus = async (req, res) => {
       console.error('⚠️ Failed to create notification:', notifError.message);
     }
     
-    // Send notification if requested (placeholder for future email/SMS integration)
-    if (sendNotification && order.userId?.email) {
-      // TODO: Implement email notification
-      console.log(`📧 Notification would be sent to ${order.userId.email} about order ${order.orderNumber} status: ${status}`);
+    // Send WhatsApp and Email notifications
+    console.log('=== ADMIN ORDER STATUS UPDATE: SENDING NOTIFICATIONS ===');
+    console.log('Order:', order.orderNumber, '| Status:', status);
+    
+    try {
+      const user = order.userId;
+      
+      if (!user) {
+        console.error('User not populated for order:', order._id);
+      } else {
+        console.log('User:', user.fullName, '| Phone:', user.phone, '| Email:', user.email);
+        
+        const formattedAddress = `${order.shippingAddress.addressLine1}, ${order.shippingAddress.city}, ${order.shippingAddress.state} - ${order.shippingAddress.postalCode}`;
+        
+        const data = {
+          customerName: order.shippingAddress.fullName,
+          orderNumber: order.orderNumber,
+          shippingAddress: formattedAddress
+        };
+
+        let notificationsSent = false;
+
+        switch (status) {
+          case 'Confirmed':
+          case 'Processing':
+            console.log('Sending Processing notifications...');
+            if (user.phone) await whatsappService.sendOrderProcessing(user.phone, data);
+            if (user.email) await emailService.sendOrderProcessingEmail(user.email, data.customerName, data);
+            notificationsSent = true;
+            break;
+          case 'Packed':
+            console.log('Sending Packed notifications...');
+            if (user.phone) await whatsappService.sendOrderPacked(user.phone, data);
+            if (user.email) await emailService.sendOrderPackedEmail(user.email, data.customerName, data);
+            notificationsSent = true;
+            break;
+          case 'Shipped':
+            console.log('Sending Shipped notifications...');
+            data.trackingId = order.trackingId;
+            data.estimatedDelivery = order.estimatedDelivery;
+            data.courier = order.courier;
+            if (user.phone) await whatsappService.sendOrderShipped(user.phone, data);
+            if (user.email) await emailService.sendOrderShippedEmail(user.email, data.customerName, data);
+            notificationsSent = true;
+            break;
+          case 'Out for Delivery':
+            console.log('Sending Out for Delivery notifications...');
+            data.deliveryPartner = order.deliveryPartner;
+            data.expectedTime = order.expectedDeliveryTime;
+            if (user.phone) await whatsappService.sendOrderOutForDelivery(user.phone, data);
+            if (user.email) await emailService.sendOrderOutForDeliveryEmail(user.email, data.customerName, data);
+            notificationsSent = true;
+            break;
+          case 'Delivered':
+            console.log('Sending Delivered notifications...');
+            data.deliveredAt = order.deliveredAt.toLocaleString('en-IN', {
+              dateStyle: 'medium',
+              timeStyle: 'short'
+            });
+            if (user.phone) await whatsappService.sendOrderDelivered(user.phone, data);
+            if (user.email) await emailService.sendOrderDeliveredEmail(user.email, data.customerName, data);
+            notificationsSent = true;
+            break;
+          case 'Cancelled':
+            console.log('Sending Cancelled notifications...');
+            data.reason = order.cancelReason || 'Cancelled by admin';
+            data.cancelledAt = order.cancelledAt.toLocaleDateString('en-IN');
+            data.totalAmount = order.pricing.total;
+            data.refundInfo = order.paymentStatus === 'Paid';
+            if (user.phone) await whatsappService.sendOrderCancelled(user.phone, data);
+            if (user.email) await emailService.sendOrderCancelledEmail(user.email, data.customerName, data);
+            notificationsSent = true;
+            break;
+          default:
+            console.log('No notification configured for status:', status);
+        }
+        
+        if (notificationsSent) {
+          console.log('✅ Notifications sent successfully');
+        } else {
+          console.log('⚠️ No notifications were sent');
+        }
+      }
+    } catch (notificationError) {
+      console.error('❌ Failed to send notifications:', notificationError);
+      console.error('Error stack:', notificationError.stack);
     }
+    console.log('=== NOTIFICATION PROCESS COMPLETE ===\n');
     
     res.json({
       success: true,
