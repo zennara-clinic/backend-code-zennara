@@ -135,6 +135,25 @@ _Reply HELP for assistance_`;
    * Send appointment confirmation (when admin confirms)
    */
   async sendAppointmentConfirmed(phoneNumber, data) {
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_CONFIRMED_TEMPLATE_SID && 
+        !process.env.WHATSAPP_CONFIRMED_TEMPLATE_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_CONFIRMED_TEMPLATE_SID,
+        {
+          '1': data.patientName,
+          '2': data.referenceNumber,
+          '3': data.treatment,
+          '4': data.confirmedDate,
+          '5': data.confirmedTime,
+          '6': data.location
+        }
+      );
+    }
+    
+    // Fallback to direct message (sandbox mode)
     const message = `✅ *Zennara Clinic - Appointment Confirmed*
 
 Hello ${data.patientName}! 👋
@@ -148,19 +167,12 @@ Date: ${data.confirmedDate}
 Time: ${data.confirmedTime}
 Location: ${data.location}
 
-📍 *Address:*
-${data.address || 'Check our website for location details'}
+Please arrive 10 minutes early. Bring any relevant medical documents.
 
-⚠️ *Important:*
-• Arrive 10 minutes early
-• Bring any relevant medical documents
-• Wear comfortable clothing
+View details in your Zennara App.
 
-Need to reschedule? Visit: https://zennara.in/appointments
-
-See you soon! 💚
-
-_Reply CANCEL to cancel appointment_`;
+See you soon!
+Zennara Clinic`;
 
     return await this.sendMessage(phoneNumber, message);
   }
@@ -169,27 +181,45 @@ _Reply CANCEL to cancel appointment_`;
    * Send appointment rescheduled notification
    */
   async sendAppointmentRescheduled(phoneNumber, data) {
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_RESCHEDULED_TEMPLATE_SID && 
+        !process.env.WHATSAPP_RESCHEDULED_TEMPLATE_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_RESCHEDULED_TEMPLATE_SID,
+        {
+          '1': data.patientName,
+          '2': data.referenceNumber,
+          '3': data.treatment,
+          '4': data.oldDate,
+          '5': data.oldTime,
+          '6': data.newDate,
+          '7': data.newTime,
+          '8': data.location
+        }
+      );
+    }
+    
+    // Fallback to direct message (sandbox mode)
     const message = `📅 *Zennara Clinic - Appointment Rescheduled*
 
 Hello ${data.patientName}! 👋
 
 Your appointment has been rescheduled.
 
-🔄 *Previous Schedule:*
-Date: ${data.oldDate}
-Time: ${data.oldTime}
-
-✅ *New Schedule:*
-Date: ${data.newDate}
-Time: ${data.newTime}
-
 Reference: ${data.referenceNumber}
 Treatment: ${data.treatment}
+
+Previous: ${data.oldDate} at ${data.oldTime}
+New Schedule: ${data.newDate} at ${data.newTime}
+
 Location: ${data.location}
 
-We look forward to seeing you! 💚
+Check your Zennara App for updated details.
 
-_Reply CANCEL to cancel appointment_`;
+We look forward to seeing you!
+Zennara Clinic`;
 
     return await this.sendMessage(phoneNumber, message);
   }
@@ -198,21 +228,39 @@ _Reply CANCEL to cancel appointment_`;
    * Send appointment cancellation notification
    */
   async sendAppointmentCancelled(phoneNumber, data) {
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_CANCELLED_TEMPLATE_SID && 
+        !process.env.WHATSAPP_CANCELLED_TEMPLATE_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_CANCELLED_TEMPLATE_SID,
+        {
+          '1': data.patientName,
+          '2': data.referenceNumber,
+          '3': data.treatment,
+          '4': data.date,
+          '5': data.time
+        }
+      );
+    }
+    
+    // Fallback to direct message (sandbox mode)
     const message = `❌ *Zennara Clinic - Appointment Cancelled*
 
 Hello ${data.patientName},
 
 Your appointment has been cancelled.
 
-📋 *Cancelled Appointment:*
 Reference: ${data.referenceNumber}
 Treatment: ${data.treatment}
 Date: ${data.date}
 Time: ${data.time}
 
-${data.reason ? `Reason: ${data.reason}\n\n` : ''}Want to book again? Visit: https://zennara.in/appointments
+Want to rebook? Open the Zennara App and book a new appointment.
 
-We hope to see you soon! 💚`;
+We hope to see you soon!
+Zennara Clinic`;
 
     return await this.sendMessage(phoneNumber, message);
   }
@@ -221,22 +269,40 @@ We hope to see you soon! 💚`;
    * Send check-in successful notification
    */
   async sendCheckInSuccessful(phoneNumber, data) {
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_CHECKIN_TEMPLATE_SID && 
+        !process.env.WHATSAPP_CHECKIN_TEMPLATE_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_CHECKIN_TEMPLATE_SID,
+        {
+          '1': data.patientName,
+          '2': data.treatment,
+          '3': data.time,
+          '4': data.location,
+          '5': data.waitTime || '5-10'
+        }
+      );
+    }
+    
+    // Fallback to direct message (sandbox mode)
     const message = `✅ *Zennara Clinic - Checked In*
 
 Hello ${data.patientName}! 👋
 
-You've been checked in successfully!
+You have been checked in successfully!
 
-📋 *Session Details:*
 Treatment: ${data.treatment}
 Time: ${data.time}
 Location: ${data.location}
 
-⏱️ Estimated wait time: ${data.waitTime || '5-10'} minutes
+Estimated wait time: ${data.waitTime || '5-10'} minutes
 
 Please have a seat in the waiting area. Our staff will call you shortly.
 
-Thank you for your patience! 💚`;
+Thank you!
+Zennara Clinic`;
 
     return await this.sendMessage(phoneNumber, message);
   }
@@ -245,27 +311,41 @@ Thank you for your patience! 💚`;
    * Send appointment completed notification
    */
   async sendAppointmentCompleted(phoneNumber, data) {
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_COMPLETED_TEMPLATE_SID && 
+        !process.env.WHATSAPP_COMPLETED_TEMPLATE_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_COMPLETED_TEMPLATE_SID,
+        {
+          '1': data.patientName,
+          '2': data.treatment,
+          '3': data.date,
+          '4': data.location
+        }
+      );
+    }
+    
+    // Fallback to direct message (sandbox mode)
     const message = `🎉 *Zennara Clinic - Session Completed*
 
 Hello ${data.patientName}! 👋
 
 Thank you for visiting Zennara Clinic today!
 
-📋 *Session Summary:*
 Treatment: ${data.treatment}
 Date: ${data.date}
 Location: ${data.location}
-${data.sessionDuration ? `Duration: ${data.sessionDuration} minutes\n` : ''}
-💚 We hope you had a great experience!
 
-📝 *Rate Your Experience:*
-Help us improve by rating your visit:
-https://zennara.in/rate/${data.bookingId}
+We hope you had a great experience!
 
-🔄 *Book Your Next Visit:*
-https://zennara.in/appointments
+Rate your visit in the Zennara App.
 
-See you next time! 💚`;
+Book your next appointment anytime in the app.
+
+See you next time!
+Zennara Clinic`;
 
     return await this.sendMessage(phoneNumber, message);
   }
@@ -274,24 +354,41 @@ See you next time! 💚`;
    * Send no-show notification
    */
   async sendNoShowNotification(phoneNumber, data) {
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_NOSHOW_TEMPLATE_SID && 
+        !process.env.WHATSAPP_NOSHOW_TEMPLATE_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_NOSHOW_TEMPLATE_SID,
+        {
+          '1': data.patientName,
+          '2': data.treatment,
+          '3': data.date,
+          '4': data.time,
+          '5': data.location
+        }
+      );
+    }
+    
+    // Fallback to direct message (sandbox mode)
     const message = `⚠️ *Zennara Clinic - Missed Appointment*
 
 Hello ${data.patientName},
 
-We missed you today! You didn't show up for your scheduled appointment.
+We missed you today.
 
-📋 *Missed Appointment:*
+You did not show up for your scheduled appointment:
+
 Treatment: ${data.treatment}
 Date: ${data.date}
 Time: ${data.time}
 Location: ${data.location}
 
-🔄 *Want to Reschedule?*
-Book a new appointment: https://zennara.in/appointments
+We understand things happen. Want to reschedule? Open the Zennara App to book a new appointment.
 
-We understand things happen. We hope to see you soon! 💚
-
-_For any concerns, please contact us_`;
+Hope to see you soon!
+Zennara Clinic`;
 
     return await this.sendMessage(phoneNumber, message);
   }
