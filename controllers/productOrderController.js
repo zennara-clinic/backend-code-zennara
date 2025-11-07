@@ -4,6 +4,7 @@ const Address = require('../models/Address');
 const User = require('../models/User');
 const NotificationHelper = require('../utils/notificationHelper');
 const whatsappService = require('../services/whatsappService');
+const emailService = require('../utils/emailService');
 
 // @desc    Create new product order
 // @route   POST /api/product-orders
@@ -158,32 +159,43 @@ exports.createOrder = async (req, res) => {
       console.error('Error stack:', notifError.stack);
     }
 
-    // Send WhatsApp order confirmation
+    // Send WhatsApp and Email order confirmation
     try {
       const user = await User.findById(req.user._id);
+      const formattedAddress = `${populatedOrder.shippingAddress.addressLine1}, ${populatedOrder.shippingAddress.city}, ${populatedOrder.shippingAddress.state} - ${populatedOrder.shippingAddress.postalCode}`;
+      
+      const orderData = {
+        customerName: populatedOrder.shippingAddress.fullName,
+        orderNumber: populatedOrder.orderNumber,
+        orderDate: populatedOrder.createdAt.toLocaleDateString('en-IN'),
+        items: populatedOrder.items.map(item => ({
+          name: item.productName,
+          quantity: item.quantity,
+          price: item.price,
+          subtotal: item.subtotal
+        })),
+        subtotal: populatedOrder.pricing.subtotal,
+        gst: populatedOrder.pricing.gst,
+        deliveryFee: populatedOrder.pricing.deliveryFee,
+        discount: populatedOrder.pricing.discount,
+        total: populatedOrder.pricing.total,
+        shippingAddress: formattedAddress,
+        paymentMethod: populatedOrder.paymentMethod
+      };
+
+      // Send WhatsApp
       if (user && user.phone) {
-        const formattedAddress = `${populatedOrder.shippingAddress.addressLine1}, ${populatedOrder.shippingAddress.city}, ${populatedOrder.shippingAddress.state} - ${populatedOrder.shippingAddress.postalCode}`;
-        
-        await whatsappService.sendOrderConfirmation(
-          user.phone,
-          {
-            customerName: populatedOrder.shippingAddress.fullName,
-            orderNumber: populatedOrder.orderNumber,
-            items: populatedOrder.items.map(item => ({
-              name: item.productName,
-              quantity: item.quantity
-            })),
-            subtotal: populatedOrder.pricing.subtotal,
-            deliveryFee: populatedOrder.pricing.deliveryFee,
-            total: populatedOrder.pricing.total,
-            shippingAddress: formattedAddress,
-            paymentMethod: populatedOrder.paymentMethod
-          }
-        );
+        await whatsappService.sendOrderConfirmation(user.phone, orderData);
         console.log('WhatsApp order confirmation sent');
       }
-    } catch (whatsappError) {
-      console.error('WhatsApp sending failed:', whatsappError.message);
+
+      // Send Email
+      if (user && user.email) {
+        await emailService.sendOrderConfirmationEmail(user.email, orderData.customerName, orderData);
+        console.log('Email order confirmation sent');
+      }
+    } catch (error) {
+      console.error('Notification sending failed:', error.message);
     }
     
     res.status(201).json({
@@ -346,46 +358,101 @@ exports.updateOrderStatus = async (req, res) => {
     
     await order.save();
 
-    // Send WhatsApp notification based on status
+    // Send WhatsApp and Email notifications based on status
     try {
+      console.log('Fetching user data for notifications...');
       const populatedOrder = await ProductOrder.findById(order._id).populate('userId', 'fullName email phone');
       const user = populatedOrder.userId;
       
-      if (user && user.phone) {
-        const data = {
-          customerName: populatedOrder.shippingAddress.fullName,
-          orderNumber: populatedOrder.orderNumber
-        };
-
-        switch (status) {
-          case 'Processing':
-            await whatsappService.sendOrderProcessing(user.phone, data);
-            break;
-          case 'Packed':
-            await whatsappService.sendOrderPacked(user.phone, data);
-            break;
-          case 'Shipped':
-            data.trackingId = order.trackingId;
-            data.estimatedDelivery = order.estimatedDelivery;
-            await whatsappService.sendOrderShipped(user.phone, data);
-            break;
-          case 'Out for Delivery':
-            data.deliveryPartner = order.deliveryPartner;
-            data.expectedTime = order.expectedDeliveryTime;
-            await whatsappService.sendOrderOutForDelivery(user.phone, data);
-            break;
-          case 'Delivered':
-            data.deliveredAt = order.deliveredAt.toLocaleString('en-IN', {
-              dateStyle: 'medium',
-              timeStyle: 'short'
-            });
-            await whatsappService.sendOrderDelivered(user.phone, data);
-            break;
-        }
-        console.log(`WhatsApp notification sent for status: ${status}`);
+      console.log('User data:', {
+        userId: user?._id,
+        phone: user?.phone,
+        email: user?.email,
+        name: user?.fullName
+      });
+      
+      if (!user) {
+        console.error('User not found for order:', order._id);
+        return;
       }
-    } catch (whatsappError) {
-      console.error('WhatsApp sending failed:', whatsappError.message);
+      
+      const formattedAddress = `${populatedOrder.shippingAddress.addressLine1}, ${populatedOrder.shippingAddress.city}, ${populatedOrder.shippingAddress.state} - ${populatedOrder.shippingAddress.postalCode}`;
+      
+      const data = {
+        customerName: populatedOrder.shippingAddress.fullName,
+        orderNumber: populatedOrder.orderNumber,
+        shippingAddress: formattedAddress
+      };
+
+      console.log(`Sending notifications for status: ${status}`);
+
+      switch (status) {
+        case 'Processing':
+          if (user.phone) {
+            console.log('Sending WhatsApp Processing notification to:', user.phone);
+            await whatsappService.sendOrderProcessing(user.phone, data);
+          }
+          if (user.email) {
+            console.log('Sending Email Processing notification to:', user.email);
+            await emailService.sendOrderProcessingEmail(user.email, data.customerName, data);
+          }
+          break;
+        case 'Packed':
+          if (user.phone) {
+            console.log('Sending WhatsApp Packed notification to:', user.phone);
+            await whatsappService.sendOrderPacked(user.phone, data);
+          }
+          if (user.email) {
+            console.log('Sending Email Packed notification to:', user.email);
+            await emailService.sendOrderPackedEmail(user.email, data.customerName, data);
+          }
+          break;
+        case 'Shipped':
+          data.trackingId = order.trackingId;
+          data.estimatedDelivery = order.estimatedDelivery;
+          data.courier = order.courier;
+          if (user.phone) {
+            console.log('Sending WhatsApp Shipped notification to:', user.phone);
+            await whatsappService.sendOrderShipped(user.phone, data);
+          }
+          if (user.email) {
+            console.log('Sending Email Shipped notification to:', user.email);
+            await emailService.sendOrderShippedEmail(user.email, data.customerName, data);
+          }
+          break;
+        case 'Out for Delivery':
+          data.deliveryPartner = order.deliveryPartner;
+          data.expectedTime = order.expectedDeliveryTime;
+          if (user.phone) {
+            console.log('Sending WhatsApp Out for Delivery notification to:', user.phone);
+            await whatsappService.sendOrderOutForDelivery(user.phone, data);
+          }
+          if (user.email) {
+            console.log('Sending Email Out for Delivery notification to:', user.email);
+            await emailService.sendOrderOutForDeliveryEmail(user.email, data.customerName, data);
+          }
+          break;
+        case 'Delivered':
+          data.deliveredAt = order.deliveredAt.toLocaleString('en-IN', {
+            dateStyle: 'medium',
+            timeStyle: 'short'
+          });
+          if (user.phone) {
+            console.log('Sending WhatsApp Delivered notification to:', user.phone);
+            await whatsappService.sendOrderDelivered(user.phone, data);
+          }
+          if (user.email) {
+            console.log('Sending Email Delivered notification to:', user.email);
+            await emailService.sendOrderDeliveredEmail(user.email, data.customerName, data);
+          }
+          break;
+        default:
+          console.log(`No notification configured for status: ${status}`);
+      }
+      console.log(`Notifications completed for status: ${status}`);
+    } catch (error) {
+      console.error('Notification sending failed:', error);
+      console.error('Error stack:', error.stack);
     }
     
     res.json({
@@ -471,22 +538,30 @@ exports.cancelOrder = async (req, res) => {
       .populate('userId', 'fullName email phone')
       .populate('items.productId');
 
-    // Send WhatsApp cancellation notification
+    // Send WhatsApp and Email cancellation notification
     try {
       const user = populatedOrder.userId;
-      if (user && user.phone) {
-        await whatsappService.sendOrderCancelled(
-          user.phone,
-          {
-            customerName: populatedOrder.shippingAddress.fullName,
-            orderNumber: populatedOrder.orderNumber,
-            reason: reason || 'As per your request'
-          }
-        );
-        console.log('WhatsApp order cancellation notification sent');
+      const data = {
+        customerName: populatedOrder.shippingAddress.fullName,
+        orderNumber: populatedOrder.orderNumber,
+        reason: reason || 'As per your request',
+        cancelledAt: order.cancelledAt.toLocaleDateString('en-IN'),
+        totalAmount: populatedOrder.pricing.total,
+        refundInfo: populatedOrder.paymentStatus === 'Paid'
+      };
+      
+      if (user) {
+        if (user.phone) {
+          await whatsappService.sendOrderCancelled(user.phone, data);
+          console.log('WhatsApp order cancellation notification sent');
+        }
+        if (user.email) {
+          await emailService.sendOrderCancelledEmail(user.email, data.customerName, data);
+          console.log('Email order cancellation notification sent');
+        }
       }
-    } catch (whatsappError) {
-      console.error('WhatsApp sending failed:', whatsappError.message);
+    } catch (error) {
+      console.error('Notification sending failed:', error.message);
     }
     
     res.json({
@@ -574,22 +649,28 @@ exports.returnOrder = async (req, res) => {
       .populate('userId', 'fullName email phone')
       .populate('items.productId');
 
-    // Send WhatsApp return request notification
+    // Send WhatsApp and Email return request notification
     try {
       const user = populatedOrder.userId;
-      if (user && user.phone) {
-        await whatsappService.sendReturnRequestReceived(
-          user.phone,
-          {
-            customerName: populatedOrder.shippingAddress.fullName,
-            orderNumber: populatedOrder.orderNumber,
-            reason: reason || 'No reason provided'
-          }
-        );
-        console.log('WhatsApp return request notification sent');
+      const data = {
+        customerName: populatedOrder.shippingAddress.fullName,
+        orderNumber: populatedOrder.orderNumber,
+        reason: reason || 'No reason provided',
+        returnDate: order.returnedAt.toLocaleDateString('en-IN')
+      };
+      
+      if (user) {
+        if (user.phone) {
+          await whatsappService.sendReturnRequestReceived(user.phone, data);
+          console.log('WhatsApp return request notification sent');
+        }
+        if (user.email) {
+          await emailService.sendReturnRequestReceivedEmail(user.email, data.customerName, data);
+          console.log('Email return request notification sent');
+        }
       }
-    } catch (whatsappError) {
-      console.error('WhatsApp sending failed:', whatsappError.message);
+    } catch (error) {
+      console.error('Notification sending failed:', error.message);
     }
     
     res.json({
@@ -646,21 +727,26 @@ exports.approveReturn = async (req, res) => {
       .populate('userId', 'fullName email phone')
       .populate('items.productId');
 
-    // Send WhatsApp return approved notification
+    // Send WhatsApp and Email return approved notification
     try {
       const user = populatedOrder.userId;
-      if (user && user.phone) {
-        await whatsappService.sendReturnApproved(
-          user.phone,
-          {
-            customerName: populatedOrder.shippingAddress.fullName,
-            orderNumber: populatedOrder.orderNumber
-          }
-        );
-        console.log('WhatsApp return approved notification sent');
+      const data = {
+        customerName: populatedOrder.shippingAddress.fullName,
+        orderNumber: populatedOrder.orderNumber
+      };
+      
+      if (user) {
+        if (user.phone) {
+          await whatsappService.sendReturnApproved(user.phone, data);
+          console.log('WhatsApp return approved notification sent');
+        }
+        if (user.email) {
+          await emailService.sendReturnApprovedEmail(user.email, data.customerName, data);
+          console.log('Email return approved notification sent');
+        }
       }
-    } catch (whatsappError) {
-      console.error('WhatsApp sending failed:', whatsappError.message);
+    } catch (error) {
+      console.error('Notification sending failed:', error.message);
     }
     
     res.json({
@@ -728,22 +814,27 @@ exports.rejectReturn = async (req, res) => {
       .populate('userId', 'fullName email phone')
       .populate('items.productId');
 
-    // Send WhatsApp return rejected notification
+    // Send WhatsApp and Email return rejected notification
     try {
       const user = populatedOrder.userId;
-      if (user && user.phone) {
-        await whatsappService.sendReturnRejected(
-          user.phone,
-          {
-            customerName: populatedOrder.shippingAddress.fullName,
-            orderNumber: populatedOrder.orderNumber,
-            rejectionReason: reason
-          }
-        );
-        console.log('WhatsApp return rejected notification sent');
+      const data = {
+        customerName: populatedOrder.shippingAddress.fullName,
+        orderNumber: populatedOrder.orderNumber,
+        rejectionReason: reason
+      };
+      
+      if (user) {
+        if (user.phone) {
+          await whatsappService.sendReturnRejected(user.phone, data);
+          console.log('WhatsApp return rejected notification sent');
+        }
+        if (user.email) {
+          await emailService.sendReturnRejectedEmail(user.email, data.customerName, data);
+          console.log('Email return rejected notification sent');
+        }
       }
-    } catch (whatsappError) {
-      console.error('WhatsApp sending failed:', whatsappError.message);
+    } catch (error) {
+      console.error('Notification sending failed:', error.message);
     }
     
     res.json({

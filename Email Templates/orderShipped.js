@@ -1,0 +1,82 @@
+/**
+ * Order Shipped Email Template
+ * Sent when order is shipped with tracking information
+ */
+
+const getOrderShippedTemplate = (customerName, orderData) => {
+  return `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+      <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Poppins', sans-serif; background-color: #f5f5f5; padding: 20px; }
+        .email-wrapper { max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1); }
+        .header { background: linear-gradient(135deg, #47d77d 0%, #0a6049 100%); padding: 40px 30px; text-align: center; }
+        .header h1 { color: #ffffff; font-size: 28px; font-weight: 600; margin-bottom: 10px; }
+        .header p { color: #ffffff; font-size: 16px; opacity: 0.95; }
+        .content { padding: 40px 30px; }
+        .status-badge { display: inline-block; background: #dbeafe; color: #1e40af; padding: 8px 16px; border-radius: 20px; font-size: 14px; font-weight: 600; margin: 20px 0; }
+        .greeting { font-size: 18px; color: #2d3748; margin-bottom: 20px; font-weight: 500; }
+        .message { font-size: 15px; color: #4a5568; line-height: 1.7; margin-bottom: 20px; }
+        .order-number { font-size: 20px; color: #0a6049; font-weight: 600; margin: 20px 0; text-align: center; }
+        .tracking-box { background: #f7fafc; border-radius: 8px; padding: 25px; margin: 25px 0; border-left: 4px solid #0a6049; }
+        .tracking-label { font-size: 14px; color: #718096; margin-bottom: 8px; }
+        .tracking-id { font-size: 18px; color: #0a6049; font-weight: 600; letter-spacing: 0.5px; }
+        .info-row { display: flex; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #e2e8f0; }
+        .info-label { color: #718096; font-size: 14px; }
+        .info-value { color: #2d3748; font-weight: 500; font-size: 14px; }
+        .cta-button { display: inline-block; background: linear-gradient(135deg, #47d77d 0%, #0a6049 100%); color: #ffffff; text-decoration: none; padding: 14px 32px; border-radius: 8px; font-weight: 600; margin: 20px 0; }
+        .footer { background: #f7fafc; padding: 30px; text-align: center; border-top: 1px solid #e2e8f0; }
+        .footer-text { font-size: 14px; color: #718096; line-height: 1.6; }
+      </style>
+    </head>
+    <body>
+      <div class="email-wrapper">
+        <div class="header">
+          <h1>Order Shipped!</h1>
+          <p>Your order is on the way</p>
+        </div>
+        <div class="content">
+          <div class="greeting">Hello ${customerName},</div>
+          <center><span class="status-badge">SHIPPED</span></center>
+          <div class="order-number">Order #${orderData.orderNumber}</div>
+          <div class="message">
+            Great news! Your order has been shipped and is on its way to you.
+          </div>
+          ${orderData.trackingId ? `
+          <div class="tracking-box">
+            <div class="tracking-label">Tracking ID</div>
+            <div class="tracking-id">${orderData.trackingId}</div>
+          </div>
+          ` : ''}
+          <div style="background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 20px; margin: 20px 0;">
+            <div class="info-row">
+              <span class="info-label">Estimated Delivery</span>
+              <span class="info-value">${orderData.estimatedDelivery || '2-3 business days'}</span>
+            </div>
+            ${orderData.courier ? `
+            <div class="info-row">
+              <span class="info-label">Courier Partner</span>
+              <span class="info-value">${orderData.courier}</span>
+            </div>
+            ` : ''}
+          </div>
+          <div class="message">
+            Track your order in real-time through the Zennara App. You'll receive another notification when it's out for delivery.
+          </div>
+          <center><a href="zennara://orders/${orderData.orderNumber}" class="cta-button">Track Order</a></center>
+        </div>
+        <div class="footer">
+          <div class="footer-text"><strong>Zennara Clinic</strong><br>Your Wellness Partner</div>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+};
+
+module.exports = getOrderShippedTemplate;

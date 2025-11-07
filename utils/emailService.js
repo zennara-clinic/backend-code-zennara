@@ -18,6 +18,19 @@ const getPackageCancellationOtpTemplate = require('../Email Templates/packageCan
 const getBookingExpiredNotificationTemplate = require('../Email Templates/bookingExpiredNotification');
 const getBirthdayWishTemplate = require('../Email Templates/birthdayWishTemplate');
 
+// Product Order Templates
+const getOrderConfirmationTemplate = require('../Email Templates/orderConfirmation');
+const getOrderProcessingTemplate = require('../Email Templates/orderProcessing');
+const getOrderPackedTemplate = require('../Email Templates/orderPacked');
+const getOrderShippedTemplate = require('../Email Templates/orderShipped');
+const getOrderOutForDeliveryTemplate = require('../Email Templates/orderOutForDelivery');
+const getOrderDeliveredTemplate = require('../Email Templates/orderDelivered');
+const getOrderCancelledTemplate = require('../Email Templates/orderCancelled');
+const getReturnRequestReceivedTemplate = require('../Email Templates/returnRequestReceived');
+const getReturnApprovedTemplate = require('../Email Templates/returnApproved');
+const getReturnRejectedTemplate = require('../Email Templates/returnRejected');
+const getRefundProcessedTemplate = require('../Email Templates/refundProcessed');
+
 // Validate AWS credentials on module load
 const validateAWSCredentials = () => {
   const required = ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_REGION', 'FROM_EMAIL'];
@@ -353,6 +366,153 @@ exports.sendBirthdayWish = async (email, fullName) => {
     return response;
   } catch (error) {
     console.error('❌ Birthday wish email sending failed');
+    throw error;
+  }
+};
+
+// ========================================
+// PRODUCT ORDER EMAILS
+// ========================================
+
+// Send Order Confirmation Email
+exports.sendOrderConfirmationEmail = async (email, customerName, orderData) => {
+  try {
+    const htmlContent = getOrderConfirmationTemplate(customerName, orderData);
+    const response = await sendEmail(email, `Order Confirmed - ${orderData.orderNumber}`, htmlContent);
+    console.log('Order confirmation email sent successfully');
+    return response;
+  } catch (error) {
+    console.error('Order confirmation email sending failed');
+    throw error;
+  }
+};
+
+// Send Order Processing Email
+exports.sendOrderProcessingEmail = async (email, customerName, orderData) => {
+  try {
+    const htmlContent = getOrderProcessingTemplate(customerName, orderData);
+    const response = await sendEmail(email, `Order Processing - ${orderData.orderNumber}`, htmlContent);
+    console.log('Order processing email sent successfully');
+    return response;
+  } catch (error) {
+    console.error('Order processing email sending failed');
+    throw error;
+  }
+};
+
+// Send Order Packed Email
+exports.sendOrderPackedEmail = async (email, customerName, orderData) => {
+  try {
+    const htmlContent = getOrderPackedTemplate(customerName, orderData);
+    const response = await sendEmail(email, `Order Packed - ${orderData.orderNumber}`, htmlContent);
+    console.log('Order packed email sent successfully');
+    return response;
+  } catch (error) {
+    console.error('Order packed email sending failed');
+    throw error;
+  }
+};
+
+// Send Order Shipped Email
+exports.sendOrderShippedEmail = async (email, customerName, orderData) => {
+  try {
+    const htmlContent = getOrderShippedTemplate(customerName, orderData);
+    const response = await sendEmail(email, `Order Shipped - ${orderData.orderNumber}`, htmlContent);
+    console.log('Order shipped email sent successfully');
+    return response;
+  } catch (error) {
+    console.error('Order shipped email sending failed');
+    throw error;
+  }
+};
+
+// Send Order Out for Delivery Email
+exports.sendOrderOutForDeliveryEmail = async (email, customerName, orderData) => {
+  try {
+    const htmlContent = getOrderOutForDeliveryTemplate(customerName, orderData);
+    const response = await sendEmail(email, `Out for Delivery - ${orderData.orderNumber}`, htmlContent);
+    console.log('Order out for delivery email sent successfully');
+    return response;
+  } catch (error) {
+    console.error('Order out for delivery email sending failed');
+    throw error;
+  }
+};
+
+// Send Order Delivered Email
+exports.sendOrderDeliveredEmail = async (email, customerName, orderData) => {
+  try {
+    const htmlContent = getOrderDeliveredTemplate(customerName, orderData);
+    const response = await sendEmail(email, `Order Delivered - ${orderData.orderNumber}`, htmlContent);
+    console.log('Order delivered email sent successfully');
+    return response;
+  } catch (error) {
+    console.error('Order delivered email sending failed');
+    throw error;
+  }
+};
+
+// Send Order Cancelled Email
+exports.sendOrderCancelledEmail = async (email, customerName, orderData) => {
+  try {
+    const htmlContent = getOrderCancelledTemplate(customerName, orderData);
+    const response = await sendEmail(email, `Order Cancelled - ${orderData.orderNumber}`, htmlContent);
+    console.log('Order cancelled email sent successfully');
+    return response;
+  } catch (error) {
+    console.error('Order cancelled email sending failed');
+    throw error;
+  }
+};
+
+// Send Return Request Received Email
+exports.sendReturnRequestReceivedEmail = async (email, customerName, orderData) => {
+  try {
+    const htmlContent = getReturnRequestReceivedTemplate(customerName, orderData);
+    const response = await sendEmail(email, `Return Request Received - ${orderData.orderNumber}`, htmlContent);
+    console.log('Return request email sent successfully');
+    return response;
+  } catch (error) {
+    console.error('Return request email sending failed');
+    throw error;
+  }
+};
+
+// Send Return Approved Email
+exports.sendReturnApprovedEmail = async (email, customerName, orderData) => {
+  try {
+    const htmlContent = getReturnApprovedTemplate(customerName, orderData);
+    const response = await sendEmail(email, `Return Approved - ${orderData.orderNumber}`, htmlContent);
+    console.log('Return approved email sent successfully');
+    return response;
+  } catch (error) {
+    console.error('Return approved email sending failed');
+    throw error;
+  }
+};
+
+// Send Return Rejected Email
+exports.sendReturnRejectedEmail = async (email, customerName, orderData) => {
+  try {
+    const htmlContent = getReturnRejectedTemplate(customerName, orderData);
+    const response = await sendEmail(email, `Return Request Update - ${orderData.orderNumber}`, htmlContent);
+    console.log('Return rejected email sent successfully');
+    return response;
+  } catch (error) {
+    console.error('Return rejected email sending failed');
+    throw error;
+  }
+};
+
+// Send Refund Processed Email
+exports.sendRefundProcessedEmail = async (email, customerName, orderData) => {
+  try {
+    const htmlContent = getRefundProcessedTemplate(customerName, orderData);
+    const response = await sendEmail(email, `Refund Processed - ${orderData.orderNumber}`, htmlContent);
+    console.log('Refund processed email sent successfully');
+    return response;
+  } catch (error) {
+    console.error('Refund processed email sending failed');
     throw error;
   }
 };
