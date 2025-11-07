@@ -216,7 +216,7 @@ const getOrderConfirmationTemplate = (customerName, orderData) => {
               </div>
               <div class="detail-row">
                 <span class="detail-label">Order Status</span>
-                <span class="detail-value" style="color: #0a6049; font-weight: 600;">Pending</span>
+                <span class="detail-value" style="color: #0a6049; font-weight: 600;">Order Placed</span>
               </div>
             </div>
 

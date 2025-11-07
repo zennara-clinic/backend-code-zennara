@@ -98,7 +98,7 @@ exports.updateOrderStatus = async (req, res) => {
     }
     
     const validStatuses = [
-      'Pending', 'Confirmed', 'Processing', 'Packed', 
+      'Order Placed', 'Confirmed', 'Processing', 'Packed', 
       'Shipped', 'Out for Delivery', 'Delivered', 'Cancelled', 'Returned'
     ];
     
@@ -111,7 +111,7 @@ exports.updateOrderStatus = async (req, res) => {
     
     // Define status sequence
     const statusSequence = [
-      'Pending', 'Confirmed', 'Processing', 'Packed', 
+      'Order Placed', 'Confirmed', 'Processing', 'Packed', 
       'Shipped', 'Out for Delivery', 'Delivered'
     ];
     
@@ -222,6 +222,25 @@ exports.updateOrderStatus = async (req, res) => {
 
         switch (status) {
           case 'Confirmed':
+            console.log('Sending Order Confirmed notifications...');
+            // Use the order confirmation template for "Confirmed" status
+            data.orderDate = order.createdAt.toLocaleDateString('en-IN');
+            data.items = order.items.map(item => ({
+              name: item.productName,
+              quantity: item.quantity,
+              price: item.price,
+              subtotal: item.subtotal
+            }));
+            data.subtotal = order.pricing.subtotal;
+            data.gst = order.pricing.gst;
+            data.deliveryFee = order.pricing.deliveryFee;
+            data.discount = order.pricing.discount;
+            data.total = order.pricing.total;
+            data.paymentMethod = order.paymentMethod;
+            if (user.phone) await whatsappService.sendOrderConfirmation(user.phone, data);
+            if (user.email) await emailService.sendOrderConfirmationEmail(user.email, data.customerName, data);
+            notificationsSent = true;
+            break;
           case 'Processing':
             console.log('Sending Processing notifications...');
             if (user.phone) await whatsappService.sendOrderProcessing(user.phone, data);
@@ -309,9 +328,10 @@ exports.updateOrderStatus = async (req, res) => {
 exports.getOrderStats = async (req, res) => {
   try {
     const totalOrders = await ProductOrder.countDocuments();
-    const pendingOrders = await ProductOrder.countDocuments({ orderStatus: 'Pending' });
+    const newOrders = await ProductOrder.countDocuments({ orderStatus: 'Order Placed' });
+    const confirmedOrders = await ProductOrder.countDocuments({ orderStatus: 'Confirmed' });
     const processingOrders = await ProductOrder.countDocuments({ 
-      orderStatus: { $in: ['Confirmed', 'Processing', 'Packed'] } 
+      orderStatus: { $in: ['Processing', 'Packed'] } 
     });
     const shippedOrders = await ProductOrder.countDocuments({ 
       orderStatus: { $in: ['Shipped', 'Out for Delivery'] } 
@@ -330,7 +350,8 @@ exports.getOrderStats = async (req, res) => {
       success: true,
       data: {
         totalOrders,
-        pendingOrders,
+        newOrders,
+        confirmedOrders,
         processingOrders,
         shippedOrders,
         deliveredOrders,

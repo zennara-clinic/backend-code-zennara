@@ -1058,7 +1058,7 @@ exports.deleteAccount = async (req, res) => {
     const pendingOrdersResult = await ProductOrder.updateMany(
       {
         userId: userId,
-        orderStatus: { $in: ['Pending', 'Processing'] }
+        orderStatus: { $in: ['Order Placed', 'Confirmed', 'Processing'] }
       },
       {
         $set: {
