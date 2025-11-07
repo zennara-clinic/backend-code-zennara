@@ -4,6 +4,7 @@ const User = require('../models/User');
 const Branch = require('../models/Branch');
 const emailService = require('../utils/emailService');
 const NotificationHelper = require('../utils/notificationHelper');
+const whatsappService = require('../services/whatsappService');
 
 // @desc    Create new booking
 // @route   POST /api/bookings
@@ -96,6 +97,26 @@ exports.createBooking = async (req, res) => {
       console.log('📧 Booking confirmation email sent');
     } catch (emailError) {
       console.error('⚠️ Email sending failed, but booking was created:', emailError.message);
+    }
+
+    // Send WhatsApp booking confirmation
+    try {
+      await whatsappService.sendBookingConfirmation(
+        booking.mobileNumber,
+        {
+          patientName: booking.fullName,
+          referenceNumber: booking.referenceNumber,
+          treatment: consultation.name,
+          date: booking.preferredDate.toLocaleDateString('en-US', { 
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+          }),
+          timeSlots: booking.preferredTimeSlots.join(', '),
+          location: booking.preferredLocation
+        }
+      );
+      console.log('📱 WhatsApp booking confirmation sent');
+    } catch (whatsappError) {
+      console.error('⚠️ WhatsApp sending failed, but booking was created:', whatsappError.message);
     }
 
     res.status(201).json({
@@ -298,6 +319,27 @@ exports.cancelBooking = async (req, res) => {
       console.error('⚠️ Email sending failed:', emailError.message);
     }
 
+    // Send WhatsApp cancellation notification
+    try {
+      await whatsappService.sendAppointmentCancelled(
+        booking.mobileNumber,
+        {
+          patientName: booking.fullName,
+          referenceNumber: booking.referenceNumber,
+          treatment: booking.consultationId.name,
+          date: booking.preferredDate.toLocaleDateString('en-US', { 
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+          }),
+          time: booking.preferredTimeSlots[0],
+          location: booking.preferredLocation,
+          reason: reason
+        }
+      );
+      console.log('📱 WhatsApp cancellation notification sent');
+    } catch (whatsappError) {
+      console.error('⚠️ WhatsApp sending failed:', whatsappError.message);
+    }
+
     res.status(200).json({
       success: true,
       message: 'Booking cancelled successfully',
@@ -402,6 +444,28 @@ exports.rescheduleBooking = async (req, res) => {
       console.error('⚠️ Email sending failed:', emailError.message);
     }
 
+    // Send WhatsApp rescheduled notification
+    try {
+      await whatsappService.sendAppointmentRescheduled(
+        booking.mobileNumber,
+        {
+          patientName: booking.fullName,
+          referenceNumber: booking.referenceNumber,
+          treatment: booking.consultationId.name,
+          oldDate: oldDate,
+          oldTime: oldTime,
+          newDate: booking.preferredDate.toLocaleDateString('en-US', { 
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+          }),
+          newTime: booking.preferredTimeSlots[0],
+          location: booking.preferredLocation
+        }
+      );
+      console.log('📱 WhatsApp reschedule notification sent');
+    } catch (whatsappError) {
+      console.error('⚠️ WhatsApp sending failed:', whatsappError.message);
+    }
+
     res.status(200).json({
       success: true,
       message: 'Booking rescheduled successfully',
@@ -477,6 +541,23 @@ exports.checkInBooking = async (req, res) => {
       console.log('📧 Check-in email sent');
     } catch (emailError) {
       console.error('⚠️ Email sending failed:', emailError.message);
+    }
+
+    // Send WhatsApp check-in notification
+    try {
+      await whatsappService.sendCheckInSuccessful(
+        booking.mobileNumber,
+        {
+          patientName: booking.fullName,
+          treatment: booking.consultationId.name,
+          time: booking.preferredTimeSlots[0],
+          location: booking.preferredLocation,
+          waitTime: '5-10'
+        }
+      );
+      console.log('📱 WhatsApp check-in notification sent');
+    } catch (whatsappError) {
+      console.error('⚠️ WhatsApp sending failed:', whatsappError.message);
     }
 
     res.status(200).json({
@@ -564,6 +645,26 @@ exports.checkOutBooking = async (req, res) => {
       console.log('📧 Appointment completed email sent');
     } catch (emailError) {
       console.error('⚠️ Email sending failed:', emailError.message);
+    }
+
+    // Send WhatsApp completion notification
+    try {
+      await whatsappService.sendAppointmentCompleted(
+        booking.mobileNumber,
+        {
+          patientName: booking.fullName,
+          treatment: booking.consultationId.name,
+          date: booking.preferredDate.toLocaleDateString('en-US', { 
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+          }),
+          location: booking.preferredLocation,
+          sessionDuration: booking.sessionDuration,
+          bookingId: booking._id
+        }
+      );
+      console.log('📱 WhatsApp completion notification sent');
+    } catch (whatsappError) {
+      console.error('⚠️ WhatsApp sending failed:', whatsappError.message);
     }
 
     res.status(200).json({
@@ -758,6 +859,27 @@ exports.confirmBooking = async (req, res) => {
       console.error('⚠️ Email sending failed:', emailError.message);
     }
 
+    // Send WhatsApp confirmation notification
+    try {
+      await whatsappService.sendAppointmentConfirmed(
+        booking.mobileNumber,
+        {
+          patientName: booking.fullName,
+          referenceNumber: booking.referenceNumber,
+          treatment: booking.consultationId.name,
+          confirmedDate: booking.confirmedDate.toLocaleDateString('en-US', { 
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+          }),
+          confirmedTime: booking.confirmedTime,
+          location: booking.preferredLocation,
+          address: 'Clinic Address' // You can get this from branchId
+        }
+      );
+      console.log('📱 WhatsApp confirmation notification sent');
+    } catch (whatsappError) {
+      console.error('⚠️ WhatsApp sending failed:', whatsappError.message);
+    }
+
     res.status(200).json({
       success: true,
       message: 'Booking confirmed successfully',
@@ -833,6 +955,27 @@ exports.markNoShow = async (req, res) => {
       console.log('📧 No-show notification email sent');
     } catch (emailError) {
       console.error('⚠️ Email sending failed:', emailError.message);
+    }
+
+    // Send WhatsApp no-show notification
+    try {
+      await whatsappService.sendNoShowNotification(
+        booking.mobileNumber,
+        {
+          patientName: booking.fullName,
+          treatment: booking.consultationId.name,
+          date: booking.confirmedDate?.toLocaleDateString('en-US', { 
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+          }) || booking.preferredDate.toLocaleDateString('en-US', { 
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+          }),
+          time: booking.confirmedTime || booking.preferredTimeSlots[0],
+          location: booking.preferredLocation
+        }
+      );
+      console.log('📱 WhatsApp no-show notification sent');
+    } catch (whatsappError) {
+      console.error('⚠️ WhatsApp sending failed:', whatsappError.message);
     }
 
     res.status(200).json({
@@ -938,6 +1081,23 @@ exports.checkInBookingAdmin = async (req, res) => {
       console.error('⚠️ Email sending failed:', emailError.message);
     }
 
+    // Send WhatsApp check-in notification (admin)
+    try {
+      await whatsappService.sendCheckInSuccessful(
+        booking.mobileNumber,
+        {
+          patientName: booking.fullName,
+          treatment: booking.consultationId.name,
+          time: booking.confirmedTime || booking.preferredTimeSlots[0],
+          location: booking.preferredLocation,
+          waitTime: '5-10'
+        }
+      );
+      console.log('📱 WhatsApp check-in notification sent');
+    } catch (whatsappError) {
+      console.error('⚠️ WhatsApp sending failed:', whatsappError.message);
+    }
+
     res.status(200).json({
       success: true,
       message: 'Patient checked in successfully',
@@ -1014,6 +1174,28 @@ exports.checkOutBookingAdmin = async (req, res) => {
       console.log('📧 Completion email sent');
     } catch (emailError) {
       console.error('⚠️ Email sending failed:', emailError.message);
+    }
+
+    // Send WhatsApp completion notification (admin)
+    try {
+      await whatsappService.sendAppointmentCompleted(
+        booking.mobileNumber,
+        {
+          patientName: booking.fullName,
+          treatment: booking.consultationId.name,
+          date: booking.confirmedDate?.toLocaleDateString('en-US', { 
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+          }) || booking.preferredDate.toLocaleDateString('en-US', { 
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+          }),
+          location: booking.preferredLocation,
+          sessionDuration: booking.sessionDuration,
+          bookingId: booking._id
+        }
+      );
+      console.log('📱 WhatsApp completion notification sent');
+    } catch (whatsappError) {
+      console.error('⚠️ WhatsApp sending failed:', whatsappError.message);
     }
 
     res.status(200).json({
@@ -1096,6 +1278,27 @@ exports.cancelBookingAdmin = async (req, res) => {
       console.log('📧 Cancellation email sent by admin');
     } catch (emailError) {
       console.error('⚠️ Email sending failed:', emailError.message);
+    }
+
+    // Send WhatsApp cancellation notification (admin)
+    try {
+      await whatsappService.sendAppointmentCancelled(
+        booking.mobileNumber,
+        {
+          patientName: booking.fullName,
+          referenceNumber: booking.referenceNumber,
+          treatment: booking.consultationId.name,
+          date: (booking.confirmedDate || booking.preferredDate).toLocaleDateString('en-US', { 
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+          }),
+          time: booking.confirmedTime || booking.preferredTimeSlots[0],
+          location: booking.preferredLocation,
+          reason: reason || 'Cancelled by admin'
+        }
+      );
+      console.log('📱 WhatsApp cancellation notification sent by admin');
+    } catch (whatsappError) {
+      console.error('⚠️ WhatsApp sending failed:', whatsappError.message);
     }
 
     res.status(200).json({
