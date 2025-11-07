@@ -191,7 +191,7 @@ const getOrderConfirmationTemplate = (customerName, orderData) => {
     <body>
       <div class="email-wrapper">
         <div class="header">
-          <h1>Order Confirmed!</h1>
+          <h1>Order Placed Successfully!</h1>
           <p>Thank you for your order</p>
         </div>
         
@@ -199,7 +199,7 @@ const getOrderConfirmationTemplate = (customerName, orderData) => {
           <div class="greeting">Hello ${customerName},</div>
           
           <div class="message">
-            Thank you for shopping with Zennara Clinic! We've received your order and it's being processed.
+            Thank you for shopping with Zennara Clinic! We've received your order and it's awaiting confirmation from our team.
           </div>
           
           <div class="order-box">

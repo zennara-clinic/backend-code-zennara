@@ -20,6 +20,7 @@ const getBirthdayWishTemplate = require('../Email Templates/birthdayWishTemplate
 
 // Product Order Templates
 const getOrderConfirmationTemplate = require('../Email Templates/orderConfirmation');
+const getOrderConfirmedEmail = require('../Email Templates/orderConfirmedByAdmin');
 const getOrderProcessingTemplate = require('../Email Templates/orderProcessing');
 const getOrderPackedTemplate = require('../Email Templates/orderPacked');
 const getOrderShippedTemplate = require('../Email Templates/orderShipped');
@@ -374,15 +375,28 @@ exports.sendBirthdayWish = async (email, fullName) => {
 // PRODUCT ORDER EMAILS
 // ========================================
 
-// Send Order Confirmation Email
+// Send Order Placed Email (when user places order)
 exports.sendOrderConfirmationEmail = async (email, customerName, orderData) => {
   try {
     const htmlContent = getOrderConfirmationTemplate(customerName, orderData);
-    const response = await sendEmail(email, `Order Confirmed - ${orderData.orderNumber}`, htmlContent);
-    console.log('Order confirmation email sent successfully');
+    const response = await sendEmail(email, `Order Placed - ${orderData.orderNumber}`, htmlContent);
+    console.log('Order placed email sent successfully');
     return response;
   } catch (error) {
-    console.error('Order confirmation email sending failed');
+    console.error('Order placed email sending failed');
+    throw error;
+  }
+};
+
+// Send Order Confirmed Email (when admin confirms order)
+exports.sendOrderConfirmedEmail = async (email, customerName, orderData) => {
+  try {
+    const htmlContent = getOrderConfirmedEmail(customerName, orderData);
+    const response = await sendEmail(email, `Order Confirmed - ${orderData.orderNumber}`, htmlContent);
+    console.log('Order confirmed email sent successfully');
+    return response;
+  } catch (error) {
+    console.error('Order confirmed email sending failed');
     throw error;
   }
 };

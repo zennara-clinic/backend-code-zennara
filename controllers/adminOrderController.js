@@ -223,22 +223,14 @@ exports.updateOrderStatus = async (req, res) => {
         switch (status) {
           case 'Confirmed':
             console.log('Sending Order Confirmed notifications...');
-            // Use the order confirmation template for "Confirmed" status
-            data.orderDate = order.createdAt.toLocaleDateString('en-IN');
+            // Send "Order Confirmed" notification
             data.items = order.items.map(item => ({
               name: item.productName,
-              quantity: item.quantity,
-              price: item.price,
-              subtotal: item.subtotal
+              quantity: item.quantity
             }));
-            data.subtotal = order.pricing.subtotal;
-            data.gst = order.pricing.gst;
-            data.deliveryFee = order.pricing.deliveryFee;
-            data.discount = order.pricing.discount;
             data.total = order.pricing.total;
-            data.paymentMethod = order.paymentMethod;
-            if (user.phone) await whatsappService.sendOrderConfirmation(user.phone, data);
-            if (user.email) await emailService.sendOrderConfirmationEmail(user.email, data.customerName, data);
+            if (user.phone) await whatsappService.sendOrderConfirmed(user.phone, data);
+            if (user.email) await emailService.sendOrderConfirmedEmail(user.email, data.customerName, data);
             notificationsSent = true;
             break;
           case 'Processing':

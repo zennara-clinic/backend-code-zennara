@@ -461,19 +461,20 @@ If you didn't request this code, please ignore this message.`;
   // ==================== PRODUCT ORDER NOTIFICATIONS ====================
 
   /**
-   * Send order confirmation (when user places order)
+   * Send order placed notification (when user places order)
    */
   async sendOrderConfirmation(phoneNumber, data) {
     const itemsList = data.items.map(item => `${item.quantity}x ${item.name}`).join('\n');
     
-    const message = `*Zennara Clinic - Order Confirmed*
+    const message = `*Zennara Clinic - Order Placed*
 
 Hello ${data.customerName}!
 
-Thank you for your order!
+Thank you for placing your order with us!
 
 *Order Details:*
 Order Number: ${data.orderNumber}
+Status: Order Placed
 
 *Items:*
 ${itemsList}
@@ -488,7 +489,9 @@ ${data.shippingAddress}
 
 *Payment Method:* ${data.paymentMethod}
 
-You can track your order in the Zennara App.
+Your order is awaiting confirmation from our team. You'll receive another notification once your order is confirmed.
+
+Track your order in the Zennara App.
 
 Thank you for shopping with us!`;
 
@@ -496,14 +499,41 @@ Thank you for shopping with us!`;
   }
 
   /**
-   * Send order confirmed by admin
+   * Send order confirmed notification (when admin confirms)
+   */
+  async sendOrderConfirmed(phoneNumber, data) {
+    const itemsList = data.items ? data.items.map(item => `${item.quantity}x ${item.name}`).join('\n') : '';
+    
+    const message = `*Zennara Clinic - Order Confirmed*
+
+Hello ${data.customerName}!
+
+Great news! Your order has been confirmed by our team.
+
+*Order Details:*
+Order Number: ${data.orderNumber}
+Status: Confirmed
+
+${itemsList ? `*Items:*\n${itemsList}\n\n` : ''}*Total Amount:* Rs.${data.total}
+
+We'll start processing your order shortly. You'll receive updates as your order progresses.
+
+Track your order in the Zennara App.
+
+Thank you for your patience!`;
+
+    return await this.sendMessage(phoneNumber, message);
+  }
+
+  /**
+   * Send order processing notification
    */
   async sendOrderProcessing(phoneNumber, data) {
     const message = `*Zennara Clinic - Order Processing*
 
 Hello ${data.customerName}!
 
-Your order is being processed.
+Your order is now being processed.
 
 Order Number: ${data.orderNumber}
 Status: Processing
