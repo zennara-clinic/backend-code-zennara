@@ -373,8 +373,7 @@ exports.updateOrderStatus = async (req, res) => {
       
       if (!user) {
         console.error('User not found for order:', order._id);
-        return;
-      }
+      } else {
       
       const formattedAddress = `${populatedOrder.shippingAddress.addressLine1}, ${populatedOrder.shippingAddress.city}, ${populatedOrder.shippingAddress.state} - ${populatedOrder.shippingAddress.postalCode}`;
       
@@ -387,6 +386,7 @@ exports.updateOrderStatus = async (req, res) => {
       console.log(`Sending notifications for status: ${status}`);
 
       switch (status) {
+        case 'Confirmed':
         case 'Processing':
           if (user.phone) {
             console.log('Sending WhatsApp Processing notification to:', user.phone);
@@ -450,6 +450,7 @@ exports.updateOrderStatus = async (req, res) => {
           console.log(`No notification configured for status: ${status}`);
       }
       console.log(`Notifications completed for status: ${status}`);
+      }
     } catch (error) {
       console.error('Notification sending failed:', error);
       console.error('Error stack:', error.stack);
