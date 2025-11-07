@@ -430,6 +430,21 @@ _Reply CANCEL to cancel appointment_`;
    * Send OTP for verification
    */
   async sendOTP(phoneNumber, otp, expiryMinutes = 5) {
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_OTP_TEMPLATE_SID && 
+        !process.env.WHATSAPP_OTP_TEMPLATE_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_OTP_TEMPLATE_SID,
+        {
+          '1': otp.toString(),
+          '2': expiryMinutes.toString()
+        }
+      );
+    }
+    
+    // Fallback to direct message (sandbox mode)
     const message = `🔐 *Zennara Clinic - Verification Code*
 
 Your verification code is: *${otp}*

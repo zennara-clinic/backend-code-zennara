@@ -7,6 +7,7 @@ const PackageAssignment = require('../models/PackageAssignment');
 const jwt = require('jsonwebtoken');
 const { sendOTPEmail, sendWelcomeEmail } = require('../utils/emailService');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../middleware/upload');
+const whatsappService = require('../services/whatsappService');
 
 // @desc    Register new user
 // @route   POST /api/auth/signup
@@ -217,15 +218,31 @@ exports.login = async (req, res) => {
       }
     });
 
-    // Send OTP via email
+    // Send OTP via email and WhatsApp
     try {
+      // Send OTP via email
       await sendOTPEmail(user.email, user.fullName, otp, user.location);
+      console.log('📧 OTP email sent to:', user.email);
+      
+      // Send OTP via WhatsApp (non-blocking)
+      if (user.phone) {
+        try {
+          await whatsappService.sendOTP(user.phone, otp, 5);
+          console.log('📱 OTP WhatsApp sent to:', user.phone);
+        } catch (whatsappError) {
+          console.error('⚠️ WhatsApp OTP failed (non-blocking):', whatsappError.message);
+          // Don't fail the login if WhatsApp fails - email OTP is primary
+        }
+      } else {
+        console.log('⚠️ No phone number available for WhatsApp OTP');
+      }
       
       res.status(200).json({
         success: true,
-        message: 'OTP sent successfully to your email',
+        message: 'OTP sent successfully to your email and WhatsApp',
         data: {
           email: user.email,
+          phone: user.phone ? `******${user.phone.slice(-4)}` : null,
           expiresIn: '5 minutes'
         }
       });
@@ -417,15 +434,31 @@ exports.resendOTP = async (req, res) => {
     const otp = user.generateOTP();
     await user.save({ validateModifiedOnly: true });
 
-    // Send OTP via email
+    // Send OTP via email and WhatsApp
     try {
+      // Send OTP via email
       await sendOTPEmail(user.email, user.fullName, otp, user.location);
+      console.log('📧 OTP email resent to:', user.email);
+      
+      // Send OTP via WhatsApp (non-blocking)
+      if (user.phone) {
+        try {
+          await whatsappService.sendOTP(user.phone, otp, 5);
+          console.log('📱 OTP WhatsApp resent to:', user.phone);
+        } catch (whatsappError) {
+          console.error('⚠️ WhatsApp OTP failed (non-blocking):', whatsappError.message);
+          // Don't fail the request if WhatsApp fails - email OTP is primary
+        }
+      } else {
+        console.log('⚠️ No phone number available for WhatsApp OTP');
+      }
       
       res.status(200).json({
         success: true,
-        message: 'OTP resent successfully',
+        message: 'OTP resent successfully to your email and WhatsApp',
         data: {
           email: user.email,
+          phone: user.phone ? `******${user.phone.slice(-4)}` : null,
           expiresIn: '5 minutes'
         }
       });
