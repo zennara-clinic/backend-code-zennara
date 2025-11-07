@@ -114,9 +114,9 @@ exports.createBooking = async (req, res) => {
           location: booking.preferredLocation
         }
       );
-      console.log('📱 WhatsApp booking confirmation sent');
+      console.log('WhatsApp booking confirmation sent');
     } catch (whatsappError) {
-      console.error('⚠️ WhatsApp sending failed, but booking was created:', whatsappError.message);
+      console.error('WhatsApp sending failed, but booking was created:', whatsappError.message);
     }
 
     res.status(201).json({
@@ -335,9 +335,9 @@ exports.cancelBooking = async (req, res) => {
           reason: reason
         }
       );
-      console.log('📱 WhatsApp cancellation notification sent');
+      console.log('WhatsApp cancellation notification sent');
     } catch (whatsappError) {
-      console.error('⚠️ WhatsApp sending failed:', whatsappError.message);
+      console.error('WhatsApp sending failed:', whatsappError.message);
     }
 
     res.status(200).json({
@@ -461,9 +461,9 @@ exports.rescheduleBooking = async (req, res) => {
           location: booking.preferredLocation
         }
       );
-      console.log('📱 WhatsApp reschedule notification sent');
+      console.log('WhatsApp reschedule notification sent');
     } catch (whatsappError) {
-      console.error('⚠️ WhatsApp sending failed:', whatsappError.message);
+      console.error('WhatsApp sending failed:', whatsappError.message);
     }
 
     res.status(200).json({
@@ -555,9 +555,9 @@ exports.checkInBooking = async (req, res) => {
           waitTime: '5-10'
         }
       );
-      console.log('📱 WhatsApp check-in notification sent');
+      console.log('WhatsApp check-in notification sent');
     } catch (whatsappError) {
-      console.error('⚠️ WhatsApp sending failed:', whatsappError.message);
+      console.error('WhatsApp sending failed:', whatsappError.message);
     }
 
     res.status(200).json({
@@ -662,9 +662,9 @@ exports.checkOutBooking = async (req, res) => {
           bookingId: booking._id
         }
       );
-      console.log('📱 WhatsApp completion notification sent');
+      console.log('WhatsApp completion notification sent');
     } catch (whatsappError) {
-      console.error('⚠️ WhatsApp sending failed:', whatsappError.message);
+      console.error('WhatsApp sending failed:', whatsappError.message);
     }
 
     res.status(200).json({
@@ -875,9 +875,9 @@ exports.confirmBooking = async (req, res) => {
           address: 'Clinic Address' // You can get this from branchId
         }
       );
-      console.log('📱 WhatsApp confirmation notification sent');
+      console.log('WhatsApp confirmation notification sent');
     } catch (whatsappError) {
-      console.error('⚠️ WhatsApp sending failed:', whatsappError.message);
+      console.error('WhatsApp sending failed:', whatsappError.message);
     }
 
     res.status(200).json({
@@ -973,9 +973,9 @@ exports.markNoShow = async (req, res) => {
           location: booking.preferredLocation
         }
       );
-      console.log('📱 WhatsApp no-show notification sent');
+      console.log('WhatsApp no-show notification sent');
     } catch (whatsappError) {
-      console.error('⚠️ WhatsApp sending failed:', whatsappError.message);
+      console.error('WhatsApp sending failed:', whatsappError.message);
     }
 
     res.status(200).json({
@@ -1093,9 +1093,9 @@ exports.checkInBookingAdmin = async (req, res) => {
           waitTime: '5-10'
         }
       );
-      console.log('📱 WhatsApp check-in notification sent');
+      console.log('WhatsApp check-in notification sent');
     } catch (whatsappError) {
-      console.error('⚠️ WhatsApp sending failed:', whatsappError.message);
+      console.error('WhatsApp sending failed:', whatsappError.message);
     }
 
     res.status(200).json({
@@ -1193,9 +1193,9 @@ exports.checkOutBookingAdmin = async (req, res) => {
           bookingId: booking._id
         }
       );
-      console.log('📱 WhatsApp completion notification sent');
+      console.log('WhatsApp completion notification sent');
     } catch (whatsappError) {
-      console.error('⚠️ WhatsApp sending failed:', whatsappError.message);
+      console.error('WhatsApp sending failed:', whatsappError.message);
     }
 
     res.status(200).json({
@@ -1296,9 +1296,9 @@ exports.cancelBookingAdmin = async (req, res) => {
           reason: reason || 'Cancelled by admin'
         }
       );
-      console.log('📱 WhatsApp cancellation notification sent by admin');
+      console.log('WhatsApp cancellation notification sent by admin');
     } catch (whatsappError) {
-      console.error('⚠️ WhatsApp sending failed:', whatsappError.message);
+      console.error('WhatsApp sending failed:', whatsappError.message);
     }
 
     res.status(200).json({

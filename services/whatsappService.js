@@ -38,7 +38,7 @@ class WhatsAppService {
     try {
       const formattedTo = this.formatPhoneNumber(to);
       
-      console.log(`📱 Sending WhatsApp to: ${formattedTo}`);
+      console.log(`Sending WhatsApp to: ${formattedTo}`);
       
       const message = await this.client.messages.create({
         from: this.fromNumber,
@@ -46,7 +46,7 @@ class WhatsAppService {
         body: messageBody
       });
 
-      console.log(`✅ WhatsApp sent successfully. SID: ${message.sid}`);
+      console.log(`WhatsApp sent successfully. SID: ${message.sid}`);
       
       return {
         success: true,
@@ -54,7 +54,7 @@ class WhatsAppService {
         status: message.status
       };
     } catch (error) {
-      console.error('❌ WhatsApp sending failed:', error.message);
+      console.error('WhatsApp sending failed:', error.message);
       
       return {
         success: false,
@@ -72,7 +72,7 @@ class WhatsAppService {
     try {
       const formattedTo = this.formatPhoneNumber(to);
       
-      console.log(`📱 Sending WhatsApp template to: ${formattedTo}`);
+      console.log(`Sending WhatsApp template to: ${formattedTo}`);
       
       const message = await this.client.messages.create({
         from: this.fromNumber,
@@ -81,7 +81,7 @@ class WhatsAppService {
         contentVariables: JSON.stringify(contentVariables)
       });
 
-      console.log(`✅ WhatsApp template sent successfully. SID: ${message.sid}`);
+      console.log(`WhatsApp template sent successfully. SID: ${message.sid}`);
       
       return {
         success: true,
@@ -89,7 +89,7 @@ class WhatsAppService {
         status: message.status
       };
     } catch (error) {
-      console.error('❌ WhatsApp template sending failed:', error.message);
+      console.error('WhatsApp template sending failed:', error.message);
       
       return {
         success: false,
@@ -105,26 +105,26 @@ class WhatsAppService {
    * Send booking confirmation (when user creates appointment)
    */
   async sendBookingConfirmation(phoneNumber, data) {
-    const message = `🎉 *Zennara Clinic - Booking Confirmed*
+    const message = `*Zennara Clinic - Booking Confirmed*
 
-Hello ${data.patientName}! 👋
+Hello ${data.patientName}!
 
 Your appointment has been received successfully.
 
-📋 *Booking Details:*
+*Booking Details:*
 Reference: ${data.referenceNumber}
 Treatment: ${data.treatment}
 Date: ${data.date}
 Time: ${data.timeSlots}
 Location: ${data.location}
 
-⏳ Status: *Awaiting Confirmation*
+Status: *Awaiting Confirmation*
 
 We'll confirm your exact appointment time shortly. You'll receive a confirmation message once your appointment is scheduled.
 
-📱 Track your appointment: https://zennara.in/appointments
+Track your appointment: https://zennara.in/appointments
 
-Thank you for choosing Zennara! 💚
+Thank you for choosing Zennara!
 
 _Reply HELP for assistance_`;
 
@@ -154,13 +154,13 @@ _Reply HELP for assistance_`;
     }
     
     // Fallback to direct message (sandbox mode)
-    const message = `✅ *Zennara Clinic - Appointment Confirmed*
+    const message = `*Zennara Clinic - Appointment Confirmed*
 
-Hello ${data.patientName}! 👋
+Hello ${data.patientName}!
 
 Great news! Your appointment has been confirmed.
 
-📋 *Confirmed Details:*
+*Confirmed Details:*
 Reference: ${data.referenceNumber}
 Treatment: ${data.treatment}
 Date: ${data.confirmedDate}
@@ -202,9 +202,9 @@ Zennara Clinic`;
     }
     
     // Fallback to direct message (sandbox mode)
-    const message = `📅 *Zennara Clinic - Appointment Rescheduled*
+    const message = `*Zennara Clinic - Appointment Rescheduled*
 
-Hello ${data.patientName}! 👋
+Hello ${data.patientName}!
 
 Your appointment has been rescheduled.
 
@@ -246,7 +246,7 @@ Zennara Clinic`;
     }
     
     // Fallback to direct message (sandbox mode)
-    const message = `❌ *Zennara Clinic - Appointment Cancelled*
+    const message = `*Zennara Clinic - Appointment Cancelled*
 
 Hello ${data.patientName},
 
@@ -287,9 +287,9 @@ Zennara Clinic`;
     }
     
     // Fallback to direct message (sandbox mode)
-    const message = `✅ *Zennara Clinic - Checked In*
+    const message = `*Zennara Clinic - Checked In*
 
-Hello ${data.patientName}! 👋
+Hello ${data.patientName}!
 
 You have been checked in successfully!
 
@@ -328,9 +328,9 @@ Zennara Clinic`;
     }
     
     // Fallback to direct message (sandbox mode)
-    const message = `🎉 *Zennara Clinic - Session Completed*
+    const message = `*Zennara Clinic - Session Completed*
 
-Hello ${data.patientName}! 👋
+Hello ${data.patientName}!
 
 Thank you for visiting Zennara Clinic today!
 
@@ -372,7 +372,7 @@ Zennara Clinic`;
     }
     
     // Fallback to direct message (sandbox mode)
-    const message = `⚠️ *Zennara Clinic - Missed Appointment*
+    const message = `*Zennara Clinic - Missed Appointment*
 
 Hello ${data.patientName},
 
@@ -397,29 +397,29 @@ Zennara Clinic`;
    * Send appointment reminder (24 hours before)
    */
   async sendAppointmentReminder(phoneNumber, data) {
-    const message = `⏰ *Zennara Clinic - Appointment Reminder*
+    const message = `*Zennara Clinic - Appointment Reminder*
 
-Hello ${data.patientName}! 👋
+Hello ${data.patientName}!
 
 This is a reminder about your upcoming appointment.
 
-📋 *Appointment Details:*
+*Appointment Details:*
 Treatment: ${data.treatment}
 Date: ${data.date} (Tomorrow)
 Time: ${data.time}
 Location: ${data.location}
 
-📍 *Address:*
+*Address:*
 ${data.address || 'Check our website for location details'}
 
-⚠️ *Remember to:*
+*Remember to:*
 • Arrive 10 minutes early
 • Bring any relevant documents
 • Reply CONFIRM to confirm your attendance
 
 Need to reschedule? Visit: https://zennara.in/appointments
 
-See you tomorrow! 💚
+See you tomorrow!
 
 _Reply CANCEL to cancel appointment_`;
 
@@ -445,13 +445,13 @@ _Reply CANCEL to cancel appointment_`;
     }
     
     // Fallback to direct message (sandbox mode)
-    const message = `🔐 *Zennara Clinic - Verification Code*
+    const message = `*Zennara Clinic - Verification Code*
 
 Your verification code is: *${otp}*
 
-⏱️ Valid for ${expiryMinutes} minutes
+Valid for ${expiryMinutes} minutes
 
-🔒 Do not share this code with anyone.
+Do not share this code with anyone.
 
 If you didn't request this code, please ignore this message.`;
 

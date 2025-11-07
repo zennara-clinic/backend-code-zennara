@@ -228,13 +228,13 @@ exports.login = async (req, res) => {
       if (user.phone) {
         try {
           await whatsappService.sendOTP(user.phone, otp, 5);
-          console.log('📱 OTP WhatsApp sent to:', user.phone);
+          console.log('OTP WhatsApp sent to:', user.phone);
         } catch (whatsappError) {
-          console.error('⚠️ WhatsApp OTP failed (non-blocking):', whatsappError.message);
+          console.error('WhatsApp OTP failed (non-blocking):', whatsappError.message);
           // Don't fail the login if WhatsApp fails - email OTP is primary
         }
       } else {
-        console.log('⚠️ No phone number available for WhatsApp OTP');
+        console.log('No phone number available for WhatsApp OTP');
       }
       
       res.status(200).json({
@@ -444,13 +444,13 @@ exports.resendOTP = async (req, res) => {
       if (user.phone) {
         try {
           await whatsappService.sendOTP(user.phone, otp, 5);
-          console.log('📱 OTP WhatsApp resent to:', user.phone);
+          console.log('OTP WhatsApp resent to:', user.phone);
         } catch (whatsappError) {
-          console.error('⚠️ WhatsApp OTP failed (non-blocking):', whatsappError.message);
+          console.error('WhatsApp OTP failed (non-blocking):', whatsappError.message);
           // Don't fail the request if WhatsApp fails - email OTP is primary
         }
       } else {
-        console.log('⚠️ No phone number available for WhatsApp OTP');
+        console.log('No phone number available for WhatsApp OTP');
       }
       
       res.status(200).json({
