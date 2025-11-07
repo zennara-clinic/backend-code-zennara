@@ -359,12 +359,22 @@ exports.updateOrderStatus = async (req, res) => {
     await order.save();
 
     // Send WhatsApp and Email notifications based on status
+    console.log('=== NOTIFICATION PROCESS STARTED ===');
+    console.log('Order ID:', order._id);
+    console.log('New Status:', status);
+    
     try {
-      console.log('Fetching user data for notifications...');
+      console.log('Step 1: Fetching user data...');
       const populatedOrder = await ProductOrder.findById(order._id).populate('userId', 'fullName email phone');
-      const user = populatedOrder.userId;
       
-      console.log('User data:', {
+      if (!populatedOrder) {
+        console.error('ERROR: Order not found after save!');
+        return;
+      }
+      
+      const user = populatedOrder.userId;
+      console.log('Step 2: User populated successfully');
+      console.log('User details:', {
         userId: user?._id,
         phone: user?.phone,
         email: user?.email,
@@ -372,9 +382,16 @@ exports.updateOrderStatus = async (req, res) => {
       });
       
       if (!user) {
-        console.error('User not found for order:', order._id);
-      } else {
+        console.error('ERROR: User not found for order:', order._id);
+        return;
+      }
       
+      if (!user.phone && !user.email) {
+        console.error('ERROR: User has no phone or email!');
+        return;
+      }
+      
+      console.log('Step 3: Building notification data...');
       const formattedAddress = `${populatedOrder.shippingAddress.addressLine1}, ${populatedOrder.shippingAddress.city}, ${populatedOrder.shippingAddress.state} - ${populatedOrder.shippingAddress.postalCode}`;
       
       const data = {
@@ -383,78 +400,125 @@ exports.updateOrderStatus = async (req, res) => {
         shippingAddress: formattedAddress
       };
 
-      console.log(`Sending notifications for status: ${status}`);
+      console.log('Step 4: Preparing to send notifications for status:', status);
+      console.log('User phone available?', !!user.phone);
+      console.log('User email available?', !!user.email);
+
+      let notificationSent = false;
 
       switch (status) {
         case 'Confirmed':
         case 'Processing':
-          if (user.phone) {
-            console.log('Sending WhatsApp Processing notification to:', user.phone);
-            await whatsappService.sendOrderProcessing(user.phone, data);
-          }
-          if (user.email) {
-            console.log('Sending Email Processing notification to:', user.email);
-            await emailService.sendOrderProcessingEmail(user.email, data.customerName, data);
+          console.log('>>> Matched status: Processing');
+          try {
+            if (user.phone) {
+              console.log('Attempting WhatsApp to:', user.phone);
+              const whatsappResult = await whatsappService.sendOrderProcessing(user.phone, data);
+              console.log('WhatsApp result:', whatsappResult);
+              notificationSent = true;
+            }
+            if (user.email) {
+              console.log('Attempting Email to:', user.email);
+              await emailService.sendOrderProcessingEmail(user.email, data.customerName, data);
+              console.log('Email sent successfully');
+              notificationSent = true;
+            }
+          } catch (err) {
+            console.error('ERROR in Processing notification:', err);
           }
           break;
         case 'Packed':
-          if (user.phone) {
-            console.log('Sending WhatsApp Packed notification to:', user.phone);
-            await whatsappService.sendOrderPacked(user.phone, data);
-          }
-          if (user.email) {
-            console.log('Sending Email Packed notification to:', user.email);
-            await emailService.sendOrderPackedEmail(user.email, data.customerName, data);
+          console.log('>>> Matched status: Packed');
+          try {
+            if (user.phone) {
+              console.log('Attempting WhatsApp Packed to:', user.phone);
+              await whatsappService.sendOrderPacked(user.phone, data);
+              notificationSent = true;
+            }
+            if (user.email) {
+              console.log('Attempting Email Packed to:', user.email);
+              await emailService.sendOrderPackedEmail(user.email, data.customerName, data);
+              notificationSent = true;
+            }
+          } catch (err) {
+            console.error('ERROR in Packed notification:', err);
           }
           break;
         case 'Shipped':
+          console.log('>>> Matched status: Shipped');
           data.trackingId = order.trackingId;
           data.estimatedDelivery = order.estimatedDelivery;
           data.courier = order.courier;
-          if (user.phone) {
-            console.log('Sending WhatsApp Shipped notification to:', user.phone);
-            await whatsappService.sendOrderShipped(user.phone, data);
-          }
-          if (user.email) {
-            console.log('Sending Email Shipped notification to:', user.email);
-            await emailService.sendOrderShippedEmail(user.email, data.customerName, data);
+          try {
+            if (user.phone) {
+              console.log('Attempting WhatsApp Shipped to:', user.phone);
+              await whatsappService.sendOrderShipped(user.phone, data);
+              notificationSent = true;
+            }
+            if (user.email) {
+              console.log('Attempting Email Shipped to:', user.email);
+              await emailService.sendOrderShippedEmail(user.email, data.customerName, data);
+              notificationSent = true;
+            }
+          } catch (err) {
+            console.error('ERROR in Shipped notification:', err);
           }
           break;
         case 'Out for Delivery':
+          console.log('>>> Matched status: Out for Delivery');
           data.deliveryPartner = order.deliveryPartner;
           data.expectedTime = order.expectedDeliveryTime;
-          if (user.phone) {
-            console.log('Sending WhatsApp Out for Delivery notification to:', user.phone);
-            await whatsappService.sendOrderOutForDelivery(user.phone, data);
-          }
-          if (user.email) {
-            console.log('Sending Email Out for Delivery notification to:', user.email);
-            await emailService.sendOrderOutForDeliveryEmail(user.email, data.customerName, data);
+          try {
+            if (user.phone) {
+              console.log('Attempting WhatsApp Out for Delivery to:', user.phone);
+              await whatsappService.sendOrderOutForDelivery(user.phone, data);
+              notificationSent = true;
+            }
+            if (user.email) {
+              console.log('Attempting Email Out for Delivery to:', user.email);
+              await emailService.sendOrderOutForDeliveryEmail(user.email, data.customerName, data);
+              notificationSent = true;
+            }
+          } catch (err) {
+            console.error('ERROR in Out for Delivery notification:', err);
           }
           break;
         case 'Delivered':
+          console.log('>>> Matched status: Delivered');
           data.deliveredAt = order.deliveredAt.toLocaleString('en-IN', {
             dateStyle: 'medium',
             timeStyle: 'short'
           });
-          if (user.phone) {
-            console.log('Sending WhatsApp Delivered notification to:', user.phone);
-            await whatsappService.sendOrderDelivered(user.phone, data);
-          }
-          if (user.email) {
-            console.log('Sending Email Delivered notification to:', user.email);
-            await emailService.sendOrderDeliveredEmail(user.email, data.customerName, data);
+          try {
+            if (user.phone) {
+              console.log('Attempting WhatsApp Delivered to:', user.phone);
+              await whatsappService.sendOrderDelivered(user.phone, data);
+              notificationSent = true;
+            }
+            if (user.email) {
+              console.log('Attempting Email Delivered to:', user.email);
+              await emailService.sendOrderDeliveredEmail(user.email, data.customerName, data);
+              notificationSent = true;
+            }
+          } catch (err) {
+            console.error('ERROR in Delivered notification:', err);
           }
           break;
         default:
-          console.log(`No notification configured for status: ${status}`);
+          console.log('>>> WARNING: No notification configured for status:', status);
       }
-      console.log(`Notifications completed for status: ${status}`);
+      
+      if (notificationSent) {
+        console.log('=== NOTIFICATION SENT SUCCESSFULLY ===');
+      } else {
+        console.log('=== NO NOTIFICATION WAS SENT ===');
       }
     } catch (error) {
-      console.error('Notification sending failed:', error);
+      console.error('=== CRITICAL ERROR IN NOTIFICATION PROCESS ===');
+      console.error('Error message:', error.message);
       console.error('Error stack:', error.stack);
     }
+    console.log('=== NOTIFICATION PROCESS ENDED ===\n')
     
     res.json({
       success: true,
