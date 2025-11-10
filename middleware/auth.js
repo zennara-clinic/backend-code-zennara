@@ -116,20 +116,10 @@ exports.protect = async (req, res, next) => {
   }
 };
 
-// Protect admin routes - verify admin JWT token with enhanced security
+// Protect admin routes - verify admin JWT token
 exports.protectAdmin = async (req, res, next) => {
   try {
     let token;
-    const clientIP = req.ip || req.connection.remoteAddress;
-    const userAgent = req.get('user-agent');
-
-    // Log admin access attempt
-    console.log('🔐 Admin access attempt:', {
-      ip: clientIP,
-      url: req.url,
-      method: req.method,
-      timestamp: new Date().toISOString()
-    });
 
     // Check if token exists in Authorization header
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
@@ -137,7 +127,6 @@ exports.protectAdmin = async (req, res, next) => {
     }
 
     if (!token) {
-      console.warn('⚠️ Unauthorized admin access attempt from:', clientIP);
       return res.status(401).json({
         success: false,
         message: 'Not authorized. Admin access required.'
@@ -148,13 +137,8 @@ exports.protectAdmin = async (req, res, next) => {
       // Verify JWT token
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       
-      // Check if this is an admin token (check type field)
-      if (decoded.type !== 'admin') {
-        console.warn('⚠️ Non-admin token used for admin route:', {
-          type: decoded.type,
-          role: decoded.role,
-          ip: clientIP
-        });
+      // Check if this is an admin token
+      if (decoded.role !== 'admin') {
         return res.status(403).json({
           success: false,
           message: 'Access denied. Admin privileges required.'
@@ -180,38 +164,12 @@ exports.protectAdmin = async (req, res, next) => {
         });
       }
 
-      // Check for suspicious activity (optional: implement rate tracking per admin)
-      const Admin = require('../models/Admin');
-      
-      // Update last login
-      admin.lastLogin = Date.now();
-      await admin.save();
-
-      // Add admin info to request with IP tracking
+      // Add admin info to request
       req.admin = {
         _id: admin._id,
         email: admin.email,
-        role: admin.role,
-        ip: clientIP,
-        userAgent: userAgent
+        role: admin.role
       };
-      
-      // Log successful admin authentication
-      console.log('✅ Admin authenticated:', {
-        adminId: admin._id,
-        email: admin.email,
-        role: admin.role,
-        ip: clientIP
-      });
-      
-      // Log admin activity
-      console.log('📝 Admin Activity:', {
-        adminId: admin._id,
-        adminEmail: admin.email,
-        action: `${req.method} ${req.path}`,
-        ip: clientIP,
-        timestamp: new Date().toISOString()
-      });
       
       next();
     } catch (error) {

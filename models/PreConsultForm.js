@@ -13,14 +13,16 @@ const preConsultFormSchema = new mongoose.Schema({
   // Booking Reference (optional - can be filled without booking)
   bookingId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Booking'
+    ref: 'Booking',
+    index: true
   },
 
   // Personal Information
   clientId: {
     type: String,
     required: false,
-    default: null
+    default: null,
+    index: true
   },
   name: {
     type: String,

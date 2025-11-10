@@ -12,13 +12,15 @@ const patientConsentFormSchema = new mongoose.Schema({
   // Booking Reference
   bookingId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Booking'
+    ref: 'Booking',
+    index: true
   },
 
   // Pre-Consult Form Reference (optional)
   preConsultFormId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'PreConsultForm'
+    ref: 'PreConsultForm',
+    index: true
   },
 
   // Patient Information
@@ -134,7 +136,8 @@ const patientConsentFormSchema = new mongoose.Schema({
   status: {
     type: String,
     enum: ['Pending', 'Signed', 'Approved', 'Archived'],
-    default: 'Pending'
+    default: 'Pending',
+    index: true
   },
 
   // Additional Notes

@@ -8,18 +8,12 @@ const {
   handleWebhook
 } = require('../controllers/paymentController');
 const { protect } = require('../middleware/auth');
-const { paymentLimiter } = require('../middleware/rateLimiter');
 
 // Protected routes - require authentication
-router.use(protect);
-
-// Product order payment routes with rate limiting
-router.post('/product/create', paymentLimiter, createProductOrderPayment);
-router.post('/product/verify', paymentLimiter, verifyProductPayment);
-
-// Membership payment routes with rate limiting
-router.post('/membership/create', paymentLimiter, createMembershipPayment);
-router.post('/membership/verify', paymentLimiter, verifyMembershipPayment);
+router.post('/product/create', protect, createProductOrderPayment);
+router.post('/product/verify', protect, verifyProductPayment);
+router.post('/membership/create', protect, createMembershipPayment);
+router.post('/membership/verify', protect, verifyMembershipPayment);
 
 // Webhook route (public but signature verified)
 router.post('/webhook', handleWebhook);
