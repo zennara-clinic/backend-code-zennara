@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const { adminLoginLimiter, adminOTPLimiter } = require('../middleware/rateLimiter');
 const {
   adminLogin,
   adminVerifyOTP,
@@ -8,16 +9,16 @@ const {
   getAdminProfile,
   checkAuthorizedEmail
 } = require('../controllers/adminAuthController');
-const { protect } = require('../middleware/auth');
+const { protectAdmin } = require('../middleware/auth');
 
-// Public routes
-router.post('/login', adminLogin);
-router.post('/verify-otp', adminVerifyOTP);
-router.post('/resend-otp', adminResendOTP);
+// Public routes (with rate limiting)
+router.post('/login', adminLoginLimiter, adminLogin);
+router.post('/verify-otp', adminOTPLimiter, adminVerifyOTP);
+router.post('/resend-otp', adminLoginLimiter, adminResendOTP);
 router.post('/check-email', checkAuthorizedEmail);
 
 // Protected routes (require admin authentication)
-router.post('/logout', protect, adminLogout);
-router.get('/me', protect, getAdminProfile);
+router.post('/logout', protectAdmin, adminLogout);
+router.get('/me', protectAdmin, getAdminProfile);
 
 module.exports = router;

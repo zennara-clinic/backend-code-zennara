@@ -1,5 +1,6 @@
 const Admin = require('../models/Admin');
 const Token = require('../models/Token');
+const AdminAuditLog = require('../models/AdminAuditLog');
 const jwt = require('jsonwebtoken');
 const { sendAdminOTP } = require('../utils/emailService');
 
@@ -29,6 +30,26 @@ exports.adminLogin = async (req, res) => {
 
     // Check if email is authorized
     if (!Admin.isAuthorizedEmail(email)) {
+      // Log unauthorized access attempt
+      try {
+        const tempAdmin = await Admin.findOne({ email: email.toLowerCase() });
+        if (tempAdmin) {
+          await AdminAuditLog.logAction({
+            adminId: tempAdmin._id,
+            adminEmail: email,
+            action: 'UNAUTHORIZED_ACCESS_ATTEMPT',
+            resource: 'AUTH',
+            details: { reason: 'Email not in authorized list' },
+            ipAddress: req.ip || req.connection.remoteAddress,
+            userAgent: req.get('user-agent'),
+            status: 'FAILED',
+            errorMessage: 'Unauthorized email address'
+          });
+        }
+      } catch (logError) {
+        console.log('⚠️ Failed to log unauthorized attempt:', logError.message);
+      }
+      
       return res.status(403).json({
         success: false,
         message: 'Unauthorized email. Only authorized administrators can access the admin panel.'
@@ -71,6 +92,18 @@ exports.adminLogin = async (req, res) => {
     // Send OTP via email
     try {
       await sendAdminOTP(admin.email, admin.name, otp);
+      
+      // Log OTP request
+      await AdminAuditLog.logAction({
+        adminId: admin._id,
+        adminEmail: admin.email,
+        action: 'OTP_REQUESTED',
+        resource: 'AUTH',
+        details: { method: 'email' },
+        ipAddress: req.ip || req.connection.remoteAddress,
+        userAgent: req.get('user-agent'),
+        status: 'SUCCESS'
+      });
       
       res.status(200).json({
         success: true,
@@ -131,7 +164,24 @@ exports.adminVerifyOTP = async (req, res) => {
     if (!verificationResult.success) {
       await admin.save({ validateModifiedOnly: true }); // Save attempt counts
       
-      // Log failed verification (non-blocking)
+      // Log failed verification
+      await AdminAuditLog.logAction({
+        adminId: admin._id,
+        adminEmail: admin.email,
+        action: 'FAILED_LOGIN',
+        resource: 'AUTH',
+        details: { 
+          reason: verificationResult.message,
+          attempts: admin.otpAttempts,
+          failedLoginAttempts: admin.failedLoginAttempts
+        },
+        ipAddress: req.ip || req.connection.remoteAddress,
+        userAgent: req.get('user-agent'),
+        status: 'FAILED',
+        errorMessage: verificationResult.message
+      });
+      
+      // Log failed verification (non-blocking - legacy)
       if (SecurityLog) {
         try {
           await SecurityLog.logEvent(admin._id, 'admin_otp_failed', {
@@ -208,7 +258,22 @@ exports.adminVerifyOTP = async (req, res) => {
 
     await tokenDoc.save();
 
-    // Log successful login (non-blocking)
+    // Log successful login
+    await AdminAuditLog.logAction({
+      adminId: admin._id,
+      adminEmail: admin.email,
+      action: 'LOGIN',
+      resource: 'AUTH',
+      details: { 
+        role: admin.role,
+        deviceInfo
+      },
+      ipAddress: req.ip || req.connection.remoteAddress,
+      userAgent: req.get('user-agent'),
+      status: 'SUCCESS'
+    });
+
+    // Log successful login (non-blocking - legacy)
     if (SecurityLog) {
       try {
         await SecurityLog.logEvent(admin._id, 'admin_login_success', {

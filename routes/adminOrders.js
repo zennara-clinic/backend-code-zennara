@@ -11,7 +11,8 @@ const {
   approveReturn,
   rejectReturn
 } = require('../controllers/productOrderController');
-const { protectAdmin } = require('../middleware/auth');
+const { protectAdmin, requireRole, auditLog } = require('../middleware/auth');
+const { adminSensitiveOperationsLimiter } = require('../middleware/rateLimiter');
 
 // Admin authentication middleware
 router.use(protectAdmin);
@@ -20,9 +21,26 @@ router.use(protectAdmin);
 router.get('/', getAllOrders);
 router.get('/stats', getOrderStats);
 router.get('/:id', getOrderById);
-router.put('/:id/status', updateOrderStatus);
-router.put('/:id/approve-return', approveReturn);
-router.put('/:id/reject-return', rejectReturn);
-router.delete('/:id', deleteOrder);
+router.put('/:id/status',
+  requireRole('super_admin', 'admin'),
+  auditLog('ORDER_STATUS_UPDATED', 'ORDER'),
+  updateOrderStatus
+);
+router.put('/:id/approve-return',
+  requireRole('super_admin', 'admin'),
+  auditLog('RETURN_APPROVED', 'ORDER'),
+  approveReturn
+);
+router.put('/:id/reject-return',
+  requireRole('super_admin', 'admin'),
+  auditLog('RETURN_REJECTED', 'ORDER'),
+  rejectReturn
+);
+router.delete('/:id',
+  requireRole('super_admin'),
+  adminSensitiveOperationsLimiter,
+  auditLog('ORDER_DELETED', 'ORDER'),
+  deleteOrder
+);
 
 module.exports = router;

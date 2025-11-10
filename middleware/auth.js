@@ -2,6 +2,7 @@ const jwt = require('jsonwebtoken');
 const Token = require('../models/Token');
 const User = require('../models/User');
 const Admin = require('../models/Admin');
+const AdminAuditLog = require('../models/AdminAuditLog');
 
 // Protect routes - verify JWT token
 exports.protect = async (req, res, next) => {
@@ -164,12 +165,22 @@ exports.protectAdmin = async (req, res, next) => {
         });
       }
 
+      // Update last login
+      admin.lastLogin = Date.now();
+      await admin.save();
+
       // Add admin info to request
       req.admin = {
         _id: admin._id,
         email: admin.email,
-        role: admin.role
+        name: admin.name,
+        role: admin.role,
+        isActive: admin.isActive
       };
+      
+      // Extract IP and user agent for audit logging
+      req.adminIp = req.ip || req.connection.remoteAddress;
+      req.adminUserAgent = req.get('user-agent');
       
       next();
     } catch (error) {
@@ -194,3 +205,110 @@ exports.protectAdmin = async (req, res, next) => {
     });
   }
 };
+
+// Role-based access control middleware
+exports.requireRole = (...allowedRoles) => {
+  return async (req, res, next) => {
+    try {
+      if (!req.admin) {
+        return res.status(401).json({
+          success: false,
+          message: 'Admin authentication required'
+        });
+      }
+
+      if (!allowedRoles.includes(req.admin.role)) {
+        // Log unauthorized access attempt
+        await AdminAuditLog.logAction({
+          adminId: req.admin._id,
+          adminEmail: req.admin.email,
+          action: 'PERMISSION_DENIED',
+          resource: 'SECURITY',
+          details: {
+            attemptedRole: req.admin.role,
+            requiredRoles: allowedRoles,
+            endpoint: req.originalUrl,
+            method: req.method
+          },
+          ipAddress: req.adminIp || req.ip,
+          userAgent: req.adminUserAgent,
+          status: 'FAILED',
+          errorMessage: `Role '${req.admin.role}' not authorized for this operation`
+        });
+
+        return res.status(403).json({
+          success: false,
+          message: 'Insufficient permissions. This action requires elevated privileges.',
+          requiredRole: allowedRoles
+        });
+      }
+
+      next();
+    } catch (error) {
+      console.error('❌ Role verification error:', error);
+      res.status(500).json({
+        success: false,
+        message: 'Permission verification failed'
+      });
+    }
+  };
+};
+
+// Audit logging middleware - logs all admin actions
+exports.auditLog = (action, resource) => {
+  return async (req, res, next) => {
+    // Store original res.json to intercept response
+    const originalJson = res.json.bind(res);
+    
+    res.json = function(data) {
+      // Log action after response
+      setImmediate(async () => {
+        try {
+          if (req.admin) {
+            const status = res.statusCode >= 200 && res.statusCode < 300 ? 'SUCCESS' : 'FAILED';
+            
+            await AdminAuditLog.logAction({
+              adminId: req.admin._id,
+              adminEmail: req.admin.email,
+              action,
+              resource,
+              resourceId: req.params.id || req.body.id || null,
+              details: {
+                endpoint: req.originalUrl,
+                method: req.method,
+                body: sanitizeLogData(req.body),
+                query: req.query
+              },
+              ipAddress: req.adminIp || req.ip,
+              userAgent: req.adminUserAgent,
+              status,
+              errorMessage: status === 'FAILED' ? data.message : null
+            });
+          }
+        } catch (error) {
+          console.error('❌ Audit logging error:', error);
+        }
+      });
+      
+      return originalJson(data);
+    };
+    
+    next();
+  };
+};
+
+// Helper to sanitize sensitive data from logs
+function sanitizeLogData(data) {
+  if (!data || typeof data !== 'object') return data;
+  
+  const sanitized = { ...data };
+  const sensitiveFields = ['password', 'otp', 'token', 'secret', 'apiKey'];
+  
+  sensitiveFields.forEach(field => {
+    if (sanitized[field]) {
+      sanitized[field] = '[REDACTED]';
+    }
+  });
+  
+  return sanitized;
+}
