@@ -5,7 +5,6 @@ node_modules/
 seeders/
 data/
 scripts/
-data/
 google-services.json
 FIREBASE_SMS_IMPLEMENTATION.md
 WHATSAPP_IMPLEMENTATION_COMPLETE.md

@@ -235,8 +235,14 @@ exports.updateProduct = async (req, res) => {
       product.code = null;
     }
 
+    console.log('Attempting to save product with data:', {
+      code: product.code,
+      name: product.name,
+      formulation: product.formulation
+    });
+    
     await product.save();
-    console.log('Product saved with code:', product.code);
+    console.log('Product saved successfully with code:', product.code);
 
     // Create notification for product update
     try {
@@ -256,14 +262,25 @@ exports.updateProduct = async (req, res) => {
     });
   } catch (error) {
     console.error('Update product error:', error);
+    console.error('Error name:', error.name);
+    console.error('Error code:', error.code);
+    console.error('Error details:', {
+      name: error.name,
+      code: error.code,
+      keyPattern: error.keyPattern,
+      keyValue: error.keyValue
+    });
     
     // Check for duplicate key error (MongoDB error code 11000)
     if (error.code === 11000) {
       const field = Object.keys(error.keyPattern)[0];
+      const value = error.keyValue[field];
       return res.status(400).json({
         success: false,
-        message: `A product with this ${field} already exists`,
-        error: `Duplicate ${field} value`
+        message: `A product with ${field} "${value}" already exists. Please use a different ${field} or leave it empty.`,
+        error: `Duplicate ${field}`,
+        field: field,
+        value: value
       });
     }
     
@@ -272,8 +289,9 @@ exports.updateProduct = async (req, res) => {
       const messages = Object.values(error.errors).map(err => err.message);
       return res.status(400).json({
         success: false,
-        message: 'Validation error',
-        error: messages.join(', ')
+        message: 'Validation error: ' + messages.join(', '),
+        error: messages.join(', '),
+        validationErrors: messages
       });
     }
     

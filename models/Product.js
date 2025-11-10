@@ -14,10 +14,10 @@ const productSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Product formulation is required'],
     enum: [
-      'Serum', 'Hydrafacial Consumable', 'Cream', 'Facial Treatment', 
-      'Face Wash', 'Lipbalm', 'Sunscreen Stick', 'Sunscreen', 
-      'Moisturizer', 'Sachets', 'Anti Aging', 'Pigmentation', 
-      'Injection', 'Shampoo'
+      'Balm', 'Capsule', 'Conditioner', 'Cream', 'Face Wash', 
+      'Gel', 'Lotion', 'Micellar Water', 'Moisturizer', 'Oil', 
+      'Patch', 'Pigmentation', 'Serum', 'Shampoo', 'Solution', 
+      'Sunscreen', 'Supplement'
     ]
   },
   OrgName: {
