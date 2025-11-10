@@ -19,12 +19,10 @@ const paymentSchema = new mongoose.Schema({
   razorpayOrderId: {
     type: String,
     required: true,
-    unique: true,
-    index: true
+    unique: true
   },
   razorpayPaymentId: {
-    type: String,
-    index: true
+    type: String
   },
   razorpaySignature: {
     type: String
@@ -41,8 +39,7 @@ const paymentSchema = new mongoose.Schema({
   status: {
     type: String,
     enum: ['created', 'pending', 'authorized', 'captured', 'failed', 'refunded'],
-    default: 'created',
-    index: true
+    default: 'created'
   },
   method: {
     type: String // card, upi, netbanking, wallet, etc.

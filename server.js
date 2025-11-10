@@ -90,9 +90,7 @@ app.use('/api/privacy', require('./routes/privacy'));
 
 // Admin routes with enhanced security
 app.use('/api/admin', adminLimiter); // Apply stricter rate limit to all admin routes
-app.use('/api/admin', logAdminActivity); // Log all admin activity
-app.use('/api/admin', validateAdminSession); // Validate admin session on each request
-app.use('/api/admin/auth', require('./routes/adminAuth'));
+app.use('/api/admin/auth', require('./routes/adminAuth')); // Auth routes first (no session validation needed)
 app.use('/api/admin/users', require('./routes/user'));
 app.use('/api/admin/products', require('./routes/adminProducts'));
 app.use('/api/admin/product-orders', require('./routes/adminOrders'));

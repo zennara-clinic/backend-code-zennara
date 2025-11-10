@@ -56,8 +56,7 @@ const serviceCardSchema = new mongoose.Schema({
   },
   clientId: {
     type: String,
-    required: true,
-    index: true
+    required: true
   },
 
   // Primary Doctor and Manager
@@ -88,8 +87,7 @@ const serviceCardSchema = new mongoose.Schema({
   // Status
   isActive: {
     type: Boolean,
-    default: true,
-    index: true
+    default: true
   },
 
   // Card Creation Date

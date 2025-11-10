@@ -199,6 +199,15 @@ exports.protectAdmin = async (req, res, next) => {
         ip: clientIP
       });
       
+      // Log admin activity
+      console.log('📝 Admin Activity:', {
+        adminId: admin._id,
+        adminEmail: admin.email,
+        action: `${req.method} ${req.path}`,
+        ip: clientIP,
+        timestamp: new Date().toISOString()
+      });
+      
       next();
     } catch (error) {
       if (error.name === 'TokenExpiredError') {
