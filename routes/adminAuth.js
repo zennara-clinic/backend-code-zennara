@@ -8,16 +8,47 @@ const {
   getAdminProfile,
   checkAuthorizedEmail
 } = require('../controllers/adminAuthController');
-const { protect } = require('../middleware/auth');
+const { protect, protectAdmin } = require('../middleware/auth');
+const { authLimiter, otpLimiter } = require('../middleware/rateLimiter');
+const { validateEmail } = require('../middleware/sanitizer');
+const { 
+  preventAdminBruteForce, 
+  detectSuspiciousActivity,
+  adminIPWhitelist 
+} = require('../middleware/adminSecurity');
 
-// Public routes
-router.post('/login', adminLogin);
-router.post('/verify-otp', adminVerifyOTP);
-router.post('/resend-otp', adminResendOTP);
-router.post('/check-email', checkAuthorizedEmail);
+// Apply security middleware to all admin auth routes
+router.use(detectSuspiciousActivity);
+
+// Optional: Enable IP whitelist by uncommenting below
+// router.use(adminIPWhitelist);
+
+// Public routes with strict rate limiting and validation
+router.post('/login', 
+  authLimiter, 
+  preventAdminBruteForce, 
+  validateEmail, 
+  adminLogin
+);
+
+router.post('/verify-otp', 
+  authLimiter, 
+  adminVerifyOTP
+);
+
+router.post('/resend-otp', 
+  otpLimiter, 
+  adminResendOTP
+);
+
+router.post('/check-email', 
+  authLimiter, 
+  validateEmail, 
+  checkAuthorizedEmail
+);
 
 // Protected routes (require admin authentication)
-router.post('/logout', protect, adminLogout);
-router.get('/me', protect, getAdminProfile);
+router.post('/logout', protectAdmin, adminLogout);
+router.get('/me', protectAdmin, getAdminProfile);
 
 module.exports = router;

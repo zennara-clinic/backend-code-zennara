@@ -116,10 +116,20 @@ exports.protect = async (req, res, next) => {
   }
 };
 
-// Protect admin routes - verify admin JWT token
+// Protect admin routes - verify admin JWT token with enhanced security
 exports.protectAdmin = async (req, res, next) => {
   try {
     let token;
+    const clientIP = req.ip || req.connection.remoteAddress;
+    const userAgent = req.get('user-agent');
+
+    // Log admin access attempt
+    console.log('🔐 Admin access attempt:', {
+      ip: clientIP,
+      url: req.url,
+      method: req.method,
+      timestamp: new Date().toISOString()
+    });
 
     // Check if token exists in Authorization header
     if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
@@ -127,6 +137,7 @@ exports.protectAdmin = async (req, res, next) => {
     }
 
     if (!token) {
+      console.warn('⚠️ Unauthorized admin access attempt from:', clientIP);
       return res.status(401).json({
         success: false,
         message: 'Not authorized. Admin access required.'
@@ -164,12 +175,29 @@ exports.protectAdmin = async (req, res, next) => {
         });
       }
 
-      // Add admin info to request
+      // Check for suspicious activity (optional: implement rate tracking per admin)
+      const Admin = require('../models/Admin');
+      
+      // Update last login
+      admin.lastLogin = Date.now();
+      await admin.save();
+
+      // Add admin info to request with IP tracking
       req.admin = {
         _id: admin._id,
         email: admin.email,
-        role: admin.role
+        role: admin.role,
+        ip: clientIP,
+        userAgent: userAgent
       };
+      
+      // Log successful admin authentication
+      console.log('✅ Admin authenticated:', {
+        adminId: admin._id,
+        email: admin.email,
+        role: admin.role,
+        ip: clientIP
+      });
       
       next();
     } catch (error) {

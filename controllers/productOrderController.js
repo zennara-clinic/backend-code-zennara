@@ -33,12 +33,21 @@ exports.createOrder = async (req, res) => {
       });
     }
     
-    // Get address details
+    // Get address details and verify it belongs to the user
     const address = await Address.findOne({ _id: addressId, userId: req.user._id });
     if (!address) {
       return res.status(404).json({
         success: false,
-        message: 'Address not found'
+        message: 'Address not found or has been deleted. Please select a valid address.'
+      });
+    }
+
+    // Validate address has all required fields
+    if (!address.fullName || !address.phone || !address.addressLine1 || 
+        !address.city || !address.state || !address.postalCode) {
+      return res.status(400).json({
+        success: false,
+        message: 'Selected address is incomplete. Please update or select another address.'
       });
     }
     
@@ -46,7 +55,16 @@ exports.createOrder = async (req, res) => {
     const processedItems = [];
     let calculatedSubtotal = 0;
     
+    // First pass: validate all items before modifying stock
+    const itemsToProcess = [];
     for (const item of items) {
+      if (!item.productId || !item.quantity || item.quantity <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid item data in cart'
+        });
+      }
+      
       const product = await Product.findById(item.productId);
       
       if (!product) {
@@ -71,24 +89,56 @@ exports.createOrder = async (req, res) => {
         });
       }
       
+      itemsToProcess.push({ product, quantity: item.quantity });
+    }
+    
+    // Second pass: atomically reduce stock using findByIdAndUpdate to prevent race conditions
+    for (const { product, quantity } of itemsToProcess) {
+      // Use atomic update with $inc to prevent race conditions
+      const updated = await Product.findOneAndUpdate(
+        { 
+          _id: product._id, 
+          stock: { $gte: quantity }, // Ensure stock is still sufficient
+          isActive: true 
+        },
+        { 
+          $inc: { stock: -quantity } 
+        },
+        { 
+          new: true, // Return updated document
+          runValidators: true 
+        }
+      );
+      
+      if (!updated) {
+        // Stock changed between validation and update - rollback previous items
+        for (let i = 0; i < processedItems.length; i++) {
+          await Product.findByIdAndUpdate(
+            itemsToProcess[i].product._id,
+            { $inc: { stock: itemsToProcess[i].quantity } }
+          );
+        }
+        
+        return res.status(400).json({
+          success: false,
+          message: `Stock changed for ${product.name}. Please try again.`,
+          requiresRefresh: true
+        });
+      }
+      
       // Use product price
       const price = product.price;
-      
-      const subtotal = price * item.quantity;
+      const subtotal = price * quantity;
       calculatedSubtotal += subtotal;
       
       processedItems.push({
         productId: product._id,
         productName: product.name,
         productImage: product.image,
-        quantity: item.quantity,
+        quantity: quantity,
         price: price,
         subtotal: subtotal
       });
-      
-      // Reduce stock
-      product.stock -= item.quantity;
-      await product.save();
     }
     
     // Generate unique order number

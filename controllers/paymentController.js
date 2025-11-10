@@ -148,10 +148,18 @@ exports.verifyProductPayment = async (req, res) => {
     }
     
     // Validate and process items
-    const processedItems = [];
     let calculatedSubtotal = 0;
     
+    // First pass: validate all items
+    const itemsToProcess = [];
     for (const item of orderData.items) {
+      if (!item.productId || !item.quantity || item.quantity <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid item data in cart'
+        });
+      }
+      
       const product = await Product.findById(item.productId);
       
       if (!product) {
@@ -161,36 +169,64 @@ exports.verifyProductPayment = async (req, res) => {
         });
       }
       
-      if (!product.isActive) {
-        return res.status(400).json({
-          success: false,
-          message: `Product is not available: ${product.name}`
-        });
-      }
-      
       if (product.stock < item.quantity) {
         return res.status(400).json({
           success: false,
-          message: `Insufficient stock for ${product.name}. Available: ${product.stock}`
+          message: `Insufficient stock for ${product.name}. Available: ${product.stock}`,
+          availableStock: product.stock
         });
       }
       
+      calculatedSubtotal += product.price * item.quantity;
+      itemsToProcess.push({ product, quantity: item.quantity });
+    }
+    
+    // Second pass: atomically reduce stock
+    const processedItems = [];
+    for (const { product, quantity } of itemsToProcess) {
+      const updated = await Product.findOneAndUpdate(
+        { 
+          _id: product._id, 
+          stock: { $gte: quantity },
+          isActive: true 
+        },
+        { 
+          $inc: { stock: -quantity } 
+        },
+        { 
+          new: true,
+          runValidators: true 
+        }
+      );
+      
+      if (!updated) {
+        // Rollback previously processed items
+        for (const processed of processedItems) {
+          await Product.findByIdAndUpdate(
+            processed.productId,
+            { $inc: { stock: processed.quantity } }
+          );
+        }
+        
+        return res.status(400).json({
+          success: false,
+          message: `Stock changed for ${product.name}. Please try again.`,
+          requiresRefresh: true
+        });
+      }
+      
+      // Add processed item with complete information
       const price = product.price;
-      const subtotal = price * item.quantity;
-      calculatedSubtotal += subtotal;
+      const subtotal = price * quantity;
       
       processedItems.push({
         productId: product._id,
         productName: product.name,
         productImage: product.image,
-        quantity: item.quantity,
+        quantity: quantity,
         price: price,
         subtotal: subtotal
       });
-      
-      // Reduce stock
-      product.stock -= item.quantity;
-      await product.save();
     }
     
     // Generate order number

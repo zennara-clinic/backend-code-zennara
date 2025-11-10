@@ -87,13 +87,28 @@ addressSchema.index({ 'location.coordinates': '2dsphere' });
 
 // Ensure only one default address per user
 addressSchema.pre('save', async function(next) {
-  if (this.isDefault) {
-    await this.constructor.updateMany(
-      { userId: this.userId, _id: { $ne: this._id } },
-      { isDefault: false }
-    );
+  try {
+    if (this.isDefault) {
+      // Use findOneAndUpdate with proper options to prevent race conditions
+      await this.constructor.updateMany(
+        { 
+          userId: this.userId, 
+          _id: { $ne: this._id },
+          isDefault: true 
+        },
+        { 
+          $set: { isDefault: false } 
+        },
+        { 
+          new: false // Don't need to return the updated docs
+        }
+      );
+    }
+    next();
+  } catch (error) {
+    console.error('❌ Error in address pre-save hook:', error);
+    next(error);
   }
-  next();
 });
 
 const Address = mongoose.model('Address', addressSchema);

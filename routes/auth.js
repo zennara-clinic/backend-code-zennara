@@ -21,13 +21,15 @@ const {
   exportUserData
 } = require('../controllers/authController');
 const { protect } = require('../middleware/auth');
+const { authLimiter, otpLimiter } = require('../middleware/rateLimiter');
+const { validateEmail, validatePhone } = require('../middleware/sanitizer');
 const { upload } = require('../middleware/upload');
 
-// Public routes
-router.post('/signup', signup);
-router.post('/login', login); 
-router.post('/verify-otp', verifyOTP);
-router.post('/resend-otp', resendOTP);
+// Public routes with strict rate limiting
+router.post('/signup', otpLimiter, validateEmail, validatePhone, signup);
+router.post('/login', authLimiter, login); 
+router.post('/verify-otp', authLimiter, verifyOTP);
+router.post('/resend-otp', otpLimiter, resendOTP);
 
 // Protected routes
 router.post('/logout', protect, logout);

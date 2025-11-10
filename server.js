@@ -9,7 +9,16 @@ const { startBookingScheduler } = require('./utils/bookingScheduler');
 const BookingStatusService = require('./services/bookingStatusService');
 const { checkBookingStatus } = require('./middleware/bookingStatusMiddleware');
 
+// Security middleware
+const { securityHeaders, additionalSecurity, securityLogger } = require('./middleware/security');
+const { mongoSanitizer, xssProtection } = require('./middleware/sanitizer');
+const { apiLimiter, adminLimiter } = require('./middleware/rateLimiter');
+const { logAdminActivity, validateAdminSession } = require('./middleware/adminSecurity');
+
 const app = express();
+
+// Trust proxy - required for rate limiting behind reverse proxy
+app.set('trust proxy', 1);
 
 // Allow ONLY your admin app (recommended)
 app.use(cors({
@@ -26,9 +35,23 @@ app.use(cors({
 }));
 app.options('*', cors());
 
+/* ------------------------------ Security Middleware ------------------------------ */
+// Apply security headers first
+app.use(securityHeaders);
+app.use(additionalSecurity);
+app.use(securityLogger);
+
+// MongoDB injection & XSS protection
+app.use(mongoSanitizer);
+app.use(xssProtection);
+
+// Global rate limiter (apply to all routes)
+app.use('/api/', apiLimiter);
+
 /* ------------------------------ Core Middleware ------------------------------ */
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// Limit JSON payload size to prevent DoS attacks
+app.use(express.json({ limit: '5mb' })); // Reduced from 10mb
+app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
 /* --------------------------- Connect services/jobs --------------------------- */
 connectDB();
@@ -61,8 +84,14 @@ app.use((req, res, next) => {
 app.use('/api/bookings', checkBookingStatus);
 
 /* --------------------------------- Routes ---------------------------------- */
+// Auth routes with stricter rate limiting (applied in routes)
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/privacy', require('./routes/privacy'));
+
+// Admin routes with enhanced security
+app.use('/api/admin', adminLimiter); // Apply stricter rate limit to all admin routes
+app.use('/api/admin', logAdminActivity); // Log all admin activity
+app.use('/api/admin', validateAdminSession); // Validate admin session on each request
 app.use('/api/admin/auth', require('./routes/adminAuth'));
 app.use('/api/admin/users', require('./routes/user'));
 app.use('/api/admin/products', require('./routes/adminProducts'));
@@ -141,16 +170,24 @@ app.get('/', (req, res) => {
 });
 
 /* ------------------------------- Error handler ------------------------------- */
-/*
-  Ensure even error responses aren’t blocked by CORS.
-  Because we apply app.use(cors(...)) first, errors will already have ACAO,
-  but this keeps responses consistent.
-*/
 app.use((err, req, res, next) => {
-  console.error('❌ Server error occurred:', err?.message || err);
+  // Log error details internally but don't expose to client
+  console.error('❌ Server error occurred:', {
+    message: err?.message,
+    stack: process.env.NODE_ENV === 'development' ? err?.stack : undefined,
+    url: req.url,
+    method: req.method,
+    ip: req.ip
+  });
+  
+  // Don't expose internal error details in production
+  const message = process.env.NODE_ENV === 'development' 
+    ? err?.message || 'Server error'
+    : 'An error occurred. Please try again.';
+  
   res.status(err.status || 500).json({
     success: false,
-    message: 'Server error. Please try again.'
+    message: message
   });
 });
 

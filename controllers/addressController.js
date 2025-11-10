@@ -160,7 +160,22 @@ exports.updateAddress = async (req, res) => {
     if (!address) {
       return res.status(404).json({
         success: false,
-        message: 'Address not found'
+        message: 'Address not found or you do not have permission to update it'
+      });
+    }
+
+    // Validate required fields if provided
+    if (label !== undefined && !['Home', 'Work', 'Other'].includes(label)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid address label. Must be Home, Work, or Other'
+      });
+    }
+
+    if (phone !== undefined && phone.trim().length < 10) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid phone number'
       });
     }
 
@@ -188,7 +203,7 @@ exports.updateAddress = async (req, res) => {
 
     await address.save();
 
-    console.log('✅ Address updated successfully');
+    console.log('✅ Address updated successfully:', address._id);
 
     res.status(200).json({
       success: true,
@@ -197,6 +212,16 @@ exports.updateAddress = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Update address failed:', error);
+    
+    // Handle validation errors
+    if (error.name === 'ValidationError') {
+      const errors = Object.values(error.errors).map(err => err.message);
+      return res.status(400).json({
+        success: false,
+        message: 'Validation error: ' + errors.join(', ')
+      });
+    }
+    
     res.status(500).json({
       success: false,
       message: 'Failed to update address. Please try again.'
@@ -217,13 +242,26 @@ exports.deleteAddress = async (req, res) => {
     if (!address) {
       return res.status(404).json({
         success: false,
-        message: 'Address not found'
+        message: 'Address not found or you do not have permission to delete it'
       });
     }
 
+    const wasDefault = address.isDefault;
+    
+    // Delete the address
     await address.deleteOne();
 
-    console.log('✅ Address deleted successfully');
+    // If deleted address was default, set another address as default
+    if (wasDefault) {
+      const remainingAddresses = await Address.find({ userId: req.user._id }).limit(1);
+      if (remainingAddresses.length > 0) {
+        remainingAddresses[0].isDefault = true;
+        await remainingAddresses[0].save();
+        console.log('✅ Reassigned default address to:', remainingAddresses[0]._id);
+      }
+    }
+
+    console.log('✅ Address deleted successfully:', req.params.id);
 
     res.status(200).json({
       success: true,
@@ -243,6 +281,7 @@ exports.deleteAddress = async (req, res) => {
 // @access  Private
 exports.setDefaultAddress = async (req, res) => {
   try {
+    // First verify the address exists and belongs to the user
     const address = await Address.findOne({
       _id: req.params.id,
       userId: req.user._id
@@ -251,21 +290,35 @@ exports.setDefaultAddress = async (req, res) => {
     if (!address) {
       return res.status(404).json({
         success: false,
-        message: 'Address not found'
+        message: 'Address not found or you do not have permission to update it'
       });
     }
 
-    // Remove default from all other addresses
+    // If already default, no need to update
+    if (address.isDefault) {
+      return res.status(200).json({
+        success: true,
+        message: 'This address is already set as default',
+        data: address
+      });
+    }
+
+    // Use a transaction-like approach: first unset all defaults, then set the new one
+    // Remove default from all other addresses (atomic operation)
     await Address.updateMany(
-      { userId: req.user._id, _id: { $ne: req.params.id } },
-      { isDefault: false }
+      { 
+        userId: req.user._id, 
+        _id: { $ne: req.params.id },
+        isDefault: true 
+      },
+      { $set: { isDefault: false } }
     );
 
     // Set this address as default
     address.isDefault = true;
     await address.save();
 
-    console.log('✅ Default address updated');
+    console.log('✅ Default address updated:', address._id);
 
     res.status(200).json({
       success: true,

@@ -29,8 +29,11 @@
     "cron": "^3.1.7",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
+    "express-mongo-sanitize": "^2.2.0",
     "express-validator": "^7.0.1",
     "firebase-admin": "^13.6.0",
+    "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
     "mongoose": "^8.0.0",
     "mongoose-field-encryption": "^7.0.1",
@@ -39,7 +42,9 @@
     "nodemailer": "^6.9.7",
     "razorpay": "^2.9.6",
     "sharp": "^0.34.4",
-    "twilio": "^5.10.4"
+    "twilio": "^5.10.4",
+    "validator": "^13.11.0",
+    "xss-clean": "^0.1.4"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
