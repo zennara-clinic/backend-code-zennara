@@ -4,6 +4,26 @@ const Category = require('../models/Category');
 const mongoose = require('mongoose');
 const NotificationHelper = require('../utils/notificationHelper');
 
+// Helper function to update category consultation count
+const updateCategoryCount = async (categoryName) => {
+  try {
+    const count = await Consultation.countDocuments({ 
+      category: categoryName,
+      isActive: true 
+    });
+    
+    await Category.findOneAndUpdate(
+      { name: categoryName },
+      { consultationCount: count },
+      { upsert: false }
+    );
+    
+    console.log(`📊 Updated category "${categoryName}" count to ${count}`);
+  } catch (error) {
+    console.error(`❌ Error updating category count for "${categoryName}":`, error);
+  }
+};
+
 // @desc    Create new consultation service
 // @route   POST /api/consultations
 // @access  Private (Admin only)
@@ -61,6 +81,9 @@ exports.createConsultation = async (req, res) => {
       isPopular: isPopular !== undefined ? isPopular : false
     });
 
+    // Update category count
+    await updateCategoryCount(category);
+
     // Create notification for new consultation
     try {
       await NotificationHelper.consultationCreated({
@@ -104,6 +127,11 @@ exports.updateConsultation = async (req, res) => {
     const { id } = req.params;
     const updateData = { ...req.body };
 
+    // Get old consultation to track category changes
+    const oldConsultation = await Consultation.findOne({
+      $or: [{ _id: mongoose.Types.ObjectId.isValid(id) ? id : null }, { id: id }, { slug: id }]
+    });
+
     // Remove fields that are no longer in the schema
     delete updateData.duration_minutes;
     delete updateData.reviews;
@@ -124,6 +152,14 @@ exports.updateConsultation = async (req, res) => {
         success: false,
         message: 'Consultation service not found'
       });
+    }
+
+    // Update category counts (both old and new if category changed)
+    if (oldConsultation && updateData.category && oldConsultation.category !== updateData.category) {
+      await updateCategoryCount(oldConsultation.category); // Update old category
+      await updateCategoryCount(updateData.category); // Update new category
+    } else if (consultation) {
+      await updateCategoryCount(consultation.category); // Update current category
     }
 
     // Create notification for consultation update
@@ -174,6 +210,9 @@ exports.deleteConsultation = async (req, res) => {
       });
     }
 
+    // Update category count after deletion
+    await updateCategoryCount(consultation.category);
+
     res.status(200).json({
       success: true,
       message: 'Consultation service deleted successfully',
@@ -208,6 +247,9 @@ exports.toggleConsultationStatus = async (req, res) => {
 
     consultation.isActive = !consultation.isActive;
     await consultation.save();
+
+    // Update category count since active status changed
+    await updateCategoryCount(consultation.category);
 
     res.status(200).json({
       success: true,
