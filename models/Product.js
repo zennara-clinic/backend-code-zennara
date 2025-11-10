@@ -28,8 +28,7 @@ const productSchema = new mongoose.Schema({
   code: {
     type: String,
     trim: true,
-    sparse: true,
-    unique: true
+    sparse: true
   },
   price: {
     type: Number,

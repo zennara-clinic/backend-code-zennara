@@ -148,8 +148,13 @@ exports.protectAdmin = async (req, res, next) => {
       // Verify JWT token
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       
-      // Check if this is an admin token
-      if (decoded.role !== 'admin') {
+      // Check if this is an admin token (check type field)
+      if (decoded.type !== 'admin') {
+        console.warn('⚠️ Non-admin token used for admin route:', {
+          type: decoded.type,
+          role: decoded.role,
+          ip: clientIP
+        });
         return res.status(403).json({
           success: false,
           message: 'Access denied. Admin privileges required.'
