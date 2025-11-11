@@ -430,6 +430,10 @@ _Reply CANCEL to cancel appointment_`;
    * Send OTP for verification
    */
   async sendOTP(phoneNumber, otp, expiryMinutes = 5) {
+    // Debug: Log environment variable status
+    console.log('[DEBUG] WHATSAPP_OTP_TEMPLATE_SID exists:', !!process.env.WHATSAPP_OTP_TEMPLATE_SID);
+    console.log('[DEBUG] WHATSAPP_OTP_TEMPLATE_SID value:', process.env.WHATSAPP_OTP_TEMPLATE_SID);
+    
     // Try template message first (production mode)
     if (process.env.WHATSAPP_OTP_TEMPLATE_SID && 
         !process.env.WHATSAPP_OTP_TEMPLATE_SID.includes('xxx')) {
@@ -449,6 +453,7 @@ _Reply CANCEL to cancel appointment_`;
     
     // Fallback to direct message (sandbox mode)
     console.log('WhatsApp template not configured, using fallback message');
+    console.log('[DEBUG] Reason: Template SID is', process.env.WHATSAPP_OTP_TEMPLATE_SID || 'undefined');
     const message = `*Zennara Clinic - Verification Code*
 
 Your verification code is: *${otp}*
