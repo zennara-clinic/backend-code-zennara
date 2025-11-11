@@ -105,28 +105,40 @@ class WhatsAppService {
    * Send booking confirmation (when user creates appointment)
    */
   async sendBookingConfirmation(phoneNumber, data) {
-    const message = `*Zennara Clinic - Booking Confirmed*
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_BOOKING_RECEIVED_SID && 
+        !process.env.WHATSAPP_BOOKING_RECEIVED_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_BOOKING_RECEIVED_SID,
+        {
+          '1': data.patientName,
+          '2': data.referenceNumber,
+          '3': data.treatment,
+          '4': data.date,
+          '5': data.timeSlots,
+          '6': data.location
+        }
+      );
+    }
+    
+    // Fallback to direct message (sandbox mode)
+    const message = `Hello ${data.patientName}!
 
-Hello ${data.patientName}!
+Your appointment request has been received.
 
-Your appointment has been received successfully.
-
-*Booking Details:*
 Reference: ${data.referenceNumber}
 Treatment: ${data.treatment}
 Date: ${data.date}
 Time: ${data.timeSlots}
 Location: ${data.location}
 
-Status: *Awaiting Confirmation*
+Status: Awaiting Confirmation
 
-We'll confirm your exact appointment time shortly. You'll receive a confirmation message once your appointment is scheduled.
+You will receive a confirmation message once your appointment is scheduled.
 
-Track your appointment: https://zennara.in/appointments
-
-Thank you for choosing Zennara!
-
-_Reply HELP for assistance_`;
+Thank you for choosing Zennara Clinic.`;
 
     return await this.sendMessage(phoneNumber, message);
   }
@@ -154,24 +166,18 @@ _Reply HELP for assistance_`;
     }
     
     // Fallback to direct message (sandbox mode)
-    const message = `*Zennara Clinic - Appointment Confirmed*
+    const message = `Hello ${data.patientName}!
 
-Hello ${data.patientName}!
+Your appointment has been confirmed.
 
-Great news! Your appointment has been confirmed.
-
-*Confirmed Details:*
 Reference: ${data.referenceNumber}
 Treatment: ${data.treatment}
 Date: ${data.confirmedDate}
 Time: ${data.confirmedTime}
 Location: ${data.location}
 
-Please arrive 10 minutes early. Bring any relevant medical documents.
+Please arrive 10 minutes early with any relevant medical documents.
 
-View details in your Zennara App.
-
-See you soon!
 Zennara Clinic`;
 
     return await this.sendMessage(phoneNumber, message);
@@ -192,33 +198,24 @@ Zennara Clinic`;
           '1': data.patientName,
           '2': data.referenceNumber,
           '3': data.treatment,
-          '4': data.oldDate,
-          '5': data.oldTime,
-          '6': data.newDate,
-          '7': data.newTime,
-          '8': data.location
+          '4': data.newDate,
+          '5': data.newTime,
+          '6': data.location
         }
       );
     }
     
     // Fallback to direct message (sandbox mode)
-    const message = `*Zennara Clinic - Appointment Rescheduled*
-
-Hello ${data.patientName}!
+    const message = `Hello ${data.patientName}!
 
 Your appointment has been rescheduled.
 
 Reference: ${data.referenceNumber}
 Treatment: ${data.treatment}
-
-Previous: ${data.oldDate} at ${data.oldTime}
-New Schedule: ${data.newDate} at ${data.newTime}
-
+New Date: ${data.newDate}
+New Time: ${data.newTime}
 Location: ${data.location}
 
-Check your Zennara App for updated details.
-
-We look forward to seeing you!
 Zennara Clinic`;
 
     return await this.sendMessage(phoneNumber, message);
@@ -246,9 +243,7 @@ Zennara Clinic`;
     }
     
     // Fallback to direct message (sandbox mode)
-    const message = `*Zennara Clinic - Appointment Cancelled*
-
-Hello ${data.patientName},
+    const message = `Hello ${data.patientName},
 
 Your appointment has been cancelled.
 
@@ -257,9 +252,8 @@ Treatment: ${data.treatment}
 Date: ${data.date}
 Time: ${data.time}
 
-Want to rebook? Open the Zennara App and book a new appointment.
+You can book a new appointment through the Zennara App.
 
-We hope to see you soon!
 Zennara Clinic`;
 
     return await this.sendMessage(phoneNumber, message);
@@ -287,11 +281,9 @@ Zennara Clinic`;
     }
     
     // Fallback to direct message (sandbox mode)
-    const message = `*Zennara Clinic - Checked In*
+    const message = `Hello ${data.patientName}!
 
-Hello ${data.patientName}!
-
-You have been checked in successfully!
+You have been checked in successfully.
 
 Treatment: ${data.treatment}
 Time: ${data.time}
@@ -299,9 +291,8 @@ Location: ${data.location}
 
 Estimated wait time: ${data.waitTime || '5-10'} minutes
 
-Please have a seat in the waiting area. Our staff will call you shortly.
+Please have a seat in the waiting area.
 
-Thank you!
 Zennara Clinic`;
 
     return await this.sendMessage(phoneNumber, message);
@@ -328,21 +319,15 @@ Zennara Clinic`;
     }
     
     // Fallback to direct message (sandbox mode)
-    const message = `*Zennara Clinic - Session Completed*
+    const message = `Hello ${data.patientName}!
 
-Hello ${data.patientName}!
-
-Thank you for visiting Zennara Clinic today!
+Thank you for visiting Zennara Clinic today.
 
 Treatment: ${data.treatment}
 Date: ${data.date}
 Location: ${data.location}
 
-We hope you had a great experience!
-
-Rate your visit in the Zennara App.
-
-Book your next appointment anytime in the app.
+We hope you had a great experience. You can rate your visit in the Zennara App.
 
 See you next time!
 Zennara Clinic`;
@@ -372,22 +357,17 @@ Zennara Clinic`;
     }
     
     // Fallback to direct message (sandbox mode)
-    const message = `*Zennara Clinic - Missed Appointment*
-
-Hello ${data.patientName},
+    const message = `Hello ${data.patientName},
 
 We missed you today.
-
-You did not show up for your scheduled appointment:
 
 Treatment: ${data.treatment}
 Date: ${data.date}
 Time: ${data.time}
 Location: ${data.location}
 
-We understand things happen. Want to reschedule? Open the Zennara App to book a new appointment.
+You can reschedule through the Zennara App.
 
-Hope to see you soon!
 Zennara Clinic`;
 
     return await this.sendMessage(phoneNumber, message);
@@ -397,31 +377,38 @@ Zennara Clinic`;
    * Send appointment reminder (24 hours before)
    */
   async sendAppointmentReminder(phoneNumber, data) {
-    const message = `*Zennara Clinic - Appointment Reminder*
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_REMINDER_TEMPLATE_SID && 
+        !process.env.WHATSAPP_REMINDER_TEMPLATE_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_REMINDER_TEMPLATE_SID,
+        {
+          '1': data.patientName,
+          '2': data.treatment,
+          '3': data.date,
+          '4': data.time,
+          '5': data.location,
+          '6': data.address || 'Check Zennara App for location details'
+        }
+      );
+    }
+    
+    // Fallback to direct message (sandbox mode)
+    const message = `Hello ${data.patientName}!
 
-Hello ${data.patientName}!
+Reminder: Your appointment is tomorrow.
 
-This is a reminder about your upcoming appointment.
-
-*Appointment Details:*
 Treatment: ${data.treatment}
-Date: ${data.date} (Tomorrow)
+Date: ${data.date}
 Time: ${data.time}
 Location: ${data.location}
+Address: ${data.address || 'Check Zennara App for location details'}
 
-*Address:*
-${data.address || 'Check our website for location details'}
+Please arrive 10 minutes early with relevant documents.
 
-*Remember to:*
-• Arrive 10 minutes early
-• Bring any relevant documents
-• Reply CONFIRM to confirm your attendance
-
-Need to reschedule? Visit: https://zennara.in/appointments
-
-See you tomorrow!
-
-_Reply CANCEL to cancel appointment_`;
+Zennara Clinic`;
 
     return await this.sendMessage(phoneNumber, message);
   }
@@ -454,15 +441,9 @@ _Reply CANCEL to cancel appointment_`;
     // Fallback to direct message (sandbox mode)
     console.log('WhatsApp template not configured, using fallback message');
     console.log('[DEBUG] Reason: Template SID is', process.env.WHATSAPP_OTP_TEMPLATE_SID || 'undefined');
-    const message = `*Zennara Clinic - Verification Code*
+    const message = `Your Zennara verification code is ${otp}
 
-Your verification code is: *${otp}*
-
-Valid for ${expiryMinutes} minutes
-
-Do not share this code with anyone.
-
-If you didn't request this code, please ignore this message.`;
+Valid for ${expiryMinutes} minutes. Do not share this code with anyone.`;
 
     return await this.sendMessage(phoneNumber, message);
   }
@@ -473,34 +454,36 @@ If you didn't request this code, please ignore this message.`;
    * Send order placed notification (when user places order)
    */
   async sendOrderConfirmation(phoneNumber, data) {
-    const itemsList = data.items.map(item => `${item.quantity}x ${item.name}`).join('\n');
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_ORDER_PLACED_SID && 
+        !process.env.WHATSAPP_ORDER_PLACED_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_ORDER_PLACED_SID,
+        {
+          '1': data.customerName,
+          '2': data.orderNumber,
+          '3': data.total,
+          '4': data.paymentMethod,
+          '5': data.shippingAddress
+        }
+      );
+    }
     
-    const message = `*Zennara Clinic - Order Placed*
+    // Fallback to direct message (sandbox mode)
+    const message = `Hello ${data.customerName}!
 
-Hello ${data.customerName}!
+Your order has been placed successfully.
 
-Thank you for placing your order with us!
-
-*Order Details:*
 Order Number: ${data.orderNumber}
-Status: Order Placed
-
-*Items:*
-${itemsList}
-
-*Order Summary:*
-Subtotal: Rs.${data.subtotal}
-Delivery Fee: Rs.${data.deliveryFee}
 Total: Rs.${data.total}
+Payment: ${data.paymentMethod}
 
-*Delivery Address:*
+Delivery Address:
 ${data.shippingAddress}
 
-*Payment Method:* ${data.paymentMethod}
-
-Your order is awaiting confirmation from our team. You'll receive another notification once your order is confirmed.
-
-Track your order in the Zennara App.
+Your order is awaiting confirmation. Check the Zennara App for updates.
 
 Thank you for shopping with us!`;
 
@@ -511,25 +494,32 @@ Thank you for shopping with us!`;
    * Send order confirmed notification (when admin confirms)
    */
   async sendOrderConfirmed(phoneNumber, data) {
-    const itemsList = data.items ? data.items.map(item => `${item.quantity}x ${item.name}`).join('\n') : '';
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_ORDER_CONFIRMED_SID && 
+        !process.env.WHATSAPP_ORDER_CONFIRMED_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_ORDER_CONFIRMED_SID,
+        {
+          '1': data.customerName,
+          '2': data.orderNumber,
+          '3': data.total
+        }
+      );
+    }
     
-    const message = `*Zennara Clinic - Order Confirmed*
+    // Fallback to direct message (sandbox mode)
+    const message = `Hello ${data.customerName}!
 
-Hello ${data.customerName}!
+Your order has been confirmed.
 
-Great news! Your order has been confirmed by our team.
-
-*Order Details:*
 Order Number: ${data.orderNumber}
-Status: Confirmed
+Total: Rs.${data.total}
 
-${itemsList ? `*Items:*\n${itemsList}\n\n` : ''}*Total Amount:* Rs.${data.total}
+We are processing your order. Check the Zennara App for updates.
 
-We'll start processing your order shortly. You'll receive updates as your order progresses.
-
-Track your order in the Zennara App.
-
-Thank you for your patience!`;
+Thank you!`;
 
     return await this.sendMessage(phoneNumber, message);
   }
@@ -538,18 +528,28 @@ Thank you for your patience!`;
    * Send order processing notification
    */
   async sendOrderProcessing(phoneNumber, data) {
-    const message = `*Zennara Clinic - Order Processing*
-
-Hello ${data.customerName}!
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_ORDER_PROCESSING_SID && 
+        !process.env.WHATSAPP_ORDER_PROCESSING_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_ORDER_PROCESSING_SID,
+        {
+          '1': data.customerName,
+          '2': data.orderNumber
+        }
+      );
+    }
+    
+    // Fallback to direct message (sandbox mode)
+    const message = `Hello ${data.customerName}!
 
 Your order is now being processed.
 
 Order Number: ${data.orderNumber}
-Status: Processing
 
-We're preparing your items for shipment. You'll receive another update once your order is packed.
-
-Track your order in the Zennara App.`;
+We are preparing your items for shipment. Check the Zennara App for updates.`;
 
     return await this.sendMessage(phoneNumber, message);
   }
@@ -558,18 +558,28 @@ Track your order in the Zennara App.`;
    * Send order packed notification
    */
   async sendOrderPacked(phoneNumber, data) {
-    const message = `*Zennara Clinic - Order Packed*
-
-Hello ${data.customerName}!
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_ORDER_PACKED_SID && 
+        !process.env.WHATSAPP_ORDER_PACKED_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_ORDER_PACKED_SID,
+        {
+          '1': data.customerName,
+          '2': data.orderNumber
+        }
+      );
+    }
+    
+    // Fallback to direct message (sandbox mode)
+    const message = `Hello ${data.customerName}!
 
 Your order has been packed and is ready for shipment.
 
 Order Number: ${data.orderNumber}
-Status: Packed
 
-Your order will be handed over to our delivery partner soon.
-
-Track your order in the Zennara App.`;
+Your order will be handed over to our delivery partner soon. Check the Zennara App for updates.`;
 
     return await this.sendMessage(phoneNumber, message);
   }
@@ -578,21 +588,32 @@ Track your order in the Zennara App.`;
    * Send order shipped notification
    */
   async sendOrderShipped(phoneNumber, data) {
-    const message = `*Zennara Clinic - Order Shipped*
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_ORDER_SHIPPED_SID && 
+        !process.env.WHATSAPP_ORDER_SHIPPED_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_ORDER_SHIPPED_SID,
+        {
+          '1': data.customerName,
+          '2': data.orderNumber,
+          '3': data.trackingId || 'Will be updated soon',
+          '4': data.estimatedDelivery || '2-3 business days'
+        }
+      );
+    }
+    
+    // Fallback to direct message (sandbox mode)
+    const message = `Hello ${data.customerName}!
 
-Hello ${data.customerName}!
-
-Great news! Your order has been shipped.
+Your order has been shipped.
 
 Order Number: ${data.orderNumber}
 Tracking ID: ${data.trackingId || 'Will be updated soon'}
-Status: Shipped
-
 Estimated Delivery: ${data.estimatedDelivery || '2-3 business days'}
 
-Your order is on its way!
-
-Track your order in the Zennara App.`;
+Check the Zennara App for tracking updates.`;
 
     return await this.sendMessage(phoneNumber, message);
   }
@@ -601,19 +622,32 @@ Track your order in the Zennara App.`;
    * Send order out for delivery notification
    */
   async sendOrderOutForDelivery(phoneNumber, data) {
-    const message = `*Zennara Clinic - Out for Delivery*
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_OUT_FOR_DELIVERY_SID && 
+        !process.env.WHATSAPP_OUT_FOR_DELIVERY_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_OUT_FOR_DELIVERY_SID,
+        {
+          '1': data.customerName,
+          '2': data.orderNumber,
+          '3': data.deliveryPartner || 'Local Courier',
+          '4': data.expectedTime || 'End of day'
+        }
+      );
+    }
+    
+    // Fallback to direct message (sandbox mode)
+    const message = `Hello ${data.customerName}!
 
-Hello ${data.customerName}!
-
-Your order is out for delivery today!
+Your order is out for delivery today.
 
 Order Number: ${data.orderNumber}
 Delivery Partner: ${data.deliveryPartner || 'Local Courier'}
 Expected By: ${data.expectedTime || 'End of day'}
 
-Please keep your phone handy. Our delivery partner may call you.
-
-Track your order in the Zennara App.`;
+Please keep your phone handy.`;
 
     return await this.sendMessage(phoneNumber, message);
   }
@@ -622,20 +656,30 @@ Track your order in the Zennara App.`;
    * Send order delivered notification
    */
   async sendOrderDelivered(phoneNumber, data) {
-    const message = `*Zennara Clinic - Order Delivered*
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_ORDER_DELIVERED_SID && 
+        !process.env.WHATSAPP_ORDER_DELIVERED_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_ORDER_DELIVERED_SID,
+        {
+          '1': data.customerName,
+          '2': data.orderNumber,
+          '3': data.deliveredAt
+        }
+      );
+    }
+    
+    // Fallback to direct message (sandbox mode)
+    const message = `Hello ${data.customerName}!
 
-Hello ${data.customerName}!
-
-Your order has been delivered successfully!
+Your order has been delivered successfully.
 
 Order Number: ${data.orderNumber}
 Delivered At: ${data.deliveredAt}
 
-Thank you for shopping with Zennara Clinic!
-
-We hope you love your products. Please rate your experience in the Zennara App.
-
-Need help? Contact us through the app.`;
+Thank you for shopping with Zennara Clinic. Please rate your experience in the app.`;
 
     return await this.sendMessage(phoneNumber, message);
   }
@@ -644,9 +688,23 @@ Need help? Contact us through the app.`;
    * Send order cancelled notification
    */
   async sendOrderCancelled(phoneNumber, data) {
-    const message = `*Zennara Clinic - Order Cancelled*
-
-Hello ${data.customerName},
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_ORDER_CANCELLED_SID && 
+        !process.env.WHATSAPP_ORDER_CANCELLED_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_ORDER_CANCELLED_SID,
+        {
+          '1': data.customerName,
+          '2': data.orderNumber,
+          '3': data.reason || 'As per your request'
+        }
+      );
+    }
+    
+    // Fallback to direct message (sandbox mode)
+    const message = `Hello ${data.customerName},
 
 Your order has been cancelled.
 
@@ -655,9 +713,7 @@ Reason: ${data.reason || 'As per your request'}
 
 If payment was made, refund will be processed within 5-7 business days.
 
-Need to place a new order? Visit the Zennara App.
-
-Thank you!`;
+Thank you.`;
 
     return await this.sendMessage(phoneNumber, message);
   }
@@ -666,20 +722,32 @@ Thank you!`;
    * Send return request received notification
    */
   async sendReturnRequestReceived(phoneNumber, data) {
-    const message = `*Zennara Clinic - Return Request Received*
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_RETURN_REQUEST_SID && 
+        !process.env.WHATSAPP_RETURN_REQUEST_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_RETURN_REQUEST_SID,
+        {
+          '1': data.customerName,
+          '2': data.orderNumber,
+          '3': data.reason
+        }
+      );
+    }
+    
+    // Fallback to direct message (sandbox mode)
+    const message = `Hello ${data.customerName},
 
-Hello ${data.customerName},
-
-We've received your return request.
+We have received your return request.
 
 Order Number: ${data.orderNumber}
 Return Reason: ${data.reason}
 
-Our team will review your request and contact you within 24 hours.
+Our team will review and contact you within 24 hours. Check the Zennara App for updates.
 
-You can track the return status in the Zennara App.
-
-Thank you for your patience.`;
+Thank you.`;
 
     return await this.sendMessage(phoneNumber, message);
   }
@@ -688,21 +756,30 @@ Thank you for your patience.`;
    * Send return approved notification
    */
   async sendReturnApproved(phoneNumber, data) {
-    const message = `*Zennara Clinic - Return Approved*
-
-Hello ${data.customerName}!
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_RETURN_APPROVED_SID && 
+        !process.env.WHATSAPP_RETURN_APPROVED_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_RETURN_APPROVED_SID,
+        {
+          '1': data.customerName,
+          '2': data.orderNumber
+        }
+      );
+    }
+    
+    // Fallback to direct message (sandbox mode)
+    const message = `Hello ${data.customerName}!
 
 Your return request has been approved.
 
 Order Number: ${data.orderNumber}
 
-Our logistics partner will contact you within 24-48 hours to schedule a pickup.
+Our logistics partner will contact you within 24-48 hours to schedule pickup. Please keep items ready in original packaging.
 
-Please keep the items ready in their original packaging.
-
-Refund will be processed after we receive and verify the returned items.
-
-Track return status in the Zennara App.`;
+Check the Zennara App for updates.`;
 
     return await this.sendMessage(phoneNumber, message);
   }
@@ -711,18 +788,32 @@ Track return status in the Zennara App.`;
    * Send return rejected notification
    */
   async sendReturnRejected(phoneNumber, data) {
-    const message = `*Zennara Clinic - Return Request Declined*
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_RETURN_REJECTED_SID && 
+        !process.env.WHATSAPP_RETURN_REJECTED_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_RETURN_REJECTED_SID,
+        {
+          '1': data.customerName,
+          '2': data.orderNumber,
+          '3': data.rejectionReason
+        }
+      );
+    }
+    
+    // Fallback to direct message (sandbox mode)
+    const message = `Hello ${data.customerName},
 
-Hello ${data.customerName},
-
-We're unable to process your return request.
+We are unable to process your return request.
 
 Order Number: ${data.orderNumber}
 Reason: ${data.rejectionReason}
 
-If you have questions, please contact our support team through the Zennara App.
+Contact our support team through the Zennara App for assistance.
 
-Thank you for understanding.`;
+Thank you.`;
 
     return await this.sendMessage(phoneNumber, message);
   }
@@ -731,9 +822,24 @@ Thank you for understanding.`;
    * Send refund processed notification
    */
   async sendRefundProcessed(phoneNumber, data) {
-    const message = `*Zennara Clinic - Refund Processed*
-
-Hello ${data.customerName}!
+    // Try template message first (production mode)
+    if (process.env.WHATSAPP_REFUND_PROCESSED_SID && 
+        !process.env.WHATSAPP_REFUND_PROCESSED_SID.includes('xxx')) {
+      
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_REFUND_PROCESSED_SID,
+        {
+          '1': data.customerName,
+          '2': data.orderNumber,
+          '3': data.refundAmount,
+          '4': data.refundMethod
+        }
+      );
+    }
+    
+    // Fallback to direct message (sandbox mode)
+    const message = `Hello ${data.customerName}!
 
 Your refund has been processed.
 
@@ -741,9 +847,9 @@ Order Number: ${data.orderNumber}
 Refund Amount: Rs.${data.refundAmount}
 Refund Method: ${data.refundMethod}
 
-The amount will be credited to your account within 5-7 business days.
+Amount will be credited within 5-7 business days.
 
-Thank you for your patience!`;
+Thank you!`;
 
     return await this.sendMessage(phoneNumber, message);
   }
