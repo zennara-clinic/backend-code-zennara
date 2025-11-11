@@ -228,7 +228,8 @@ exports.login = async (req, res) => {
       if (user.phone) {
         try {
           await whatsappService.sendOTP(user.phone, otp, 5);
-          console.log('OTP WhatsApp sent to:', user.phone);
+          console.log('📱 OTP WhatsApp sent to:', user.phone);
+          console.log('   Using approved template: zennara_otp_v2');
         } catch (whatsappError) {
           console.error('WhatsApp OTP failed (non-blocking):', whatsappError.message);
           // Don't fail the login if WhatsApp fails - email OTP is primary
@@ -444,7 +445,8 @@ exports.resendOTP = async (req, res) => {
       if (user.phone) {
         try {
           await whatsappService.sendOTP(user.phone, otp, 5);
-          console.log('OTP WhatsApp resent to:', user.phone);
+          console.log('📱 OTP WhatsApp resent to:', user.phone);
+          console.log('   Using approved template: zennara_otp_v2');
         } catch (whatsappError) {
           console.error('WhatsApp OTP failed (non-blocking):', whatsappError.message);
           // Don't fail the request if WhatsApp fails - email OTP is primary

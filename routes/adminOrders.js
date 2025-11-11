@@ -37,7 +37,7 @@ router.put('/:id/reject-return',
   rejectReturn
 );
 router.delete('/:id',
-  requireRole('super_admin'),
+  requireRole('super_admin', 'admin'),
   adminSensitiveOperationsLimiter,
   auditLog('ORDER_DELETED', 'ORDER'),
   deleteOrder

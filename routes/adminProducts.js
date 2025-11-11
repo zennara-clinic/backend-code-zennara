@@ -22,7 +22,7 @@ router.get('/statistics', getProductStatistics);
 
 // Bulk operations
 router.patch('/bulk-update',
-  requireRole('super_admin'),
+  requireRole('super_admin', 'admin'),
   adminSensitiveOperationsLimiter,
   auditLog('BULK_UPDATE', 'PRODUCT'),
   bulkUpdateProducts
@@ -45,7 +45,7 @@ router.route('/:id')
     updateProduct
   )
   .delete(
-    requireRole('super_admin'),
+    requireRole('super_admin', 'admin'),
     adminSensitiveOperationsLimiter,
     auditLog('PRODUCT_DELETED', 'PRODUCT'),
     deleteProduct

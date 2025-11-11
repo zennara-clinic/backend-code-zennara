@@ -434,17 +434,21 @@ _Reply CANCEL to cancel appointment_`;
     if (process.env.WHATSAPP_OTP_TEMPLATE_SID && 
         !process.env.WHATSAPP_OTP_TEMPLATE_SID.includes('xxx')) {
       
+      console.log('Using approved WhatsApp template for OTP');
+      console.log('Template SID:', process.env.WHATSAPP_OTP_TEMPLATE_SID);
+      console.log('Template Name: zennara_otp_v2');
+      
       return await this.sendTemplateMessage(
         phoneNumber,
         process.env.WHATSAPP_OTP_TEMPLATE_SID,
         {
-          '1': otp.toString(),
-          '2': expiryMinutes.toString()
+          '1': otp.toString()
         }
       );
     }
     
     // Fallback to direct message (sandbox mode)
+    console.log('WhatsApp template not configured, using fallback message');
     const message = `*Zennara Clinic - Verification Code*
 
 Your verification code is: *${otp}*
