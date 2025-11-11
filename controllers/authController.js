@@ -227,11 +227,19 @@ exports.login = async (req, res) => {
       // Send OTP via WhatsApp (non-blocking)
       if (user.phone) {
         try {
-          await whatsappService.sendOTP(user.phone, otp, 5);
-          console.log('📱 OTP WhatsApp sent to:', user.phone);
-          console.log('   Using approved template: zennara_otp_v2');
+          const whatsappResult = await whatsappService.sendOTP(user.phone, otp, 5);
+          
+          if (whatsappResult.success) {
+            console.log('📱 OTP WhatsApp sent to:', user.phone);
+            console.log('   Message SID:', whatsappResult.messageSid);
+            console.log('   Using approved template: zennara_otp_v2');
+          } else {
+            console.error('WhatsApp OTP failed (non-blocking):', whatsappResult.error);
+            console.error('   Error code:', whatsappResult.code);
+            console.error('   Phone number:', user.phone);
+          }
         } catch (whatsappError) {
-          console.error('WhatsApp OTP failed (non-blocking):', whatsappError.message);
+          console.error('WhatsApp OTP exception (non-blocking):', whatsappError.message);
           // Don't fail the login if WhatsApp fails - email OTP is primary
         }
       } else {
@@ -444,11 +452,19 @@ exports.resendOTP = async (req, res) => {
       // Send OTP via WhatsApp (non-blocking)
       if (user.phone) {
         try {
-          await whatsappService.sendOTP(user.phone, otp, 5);
-          console.log('📱 OTP WhatsApp resent to:', user.phone);
-          console.log('   Using approved template: zennara_otp_v2');
+          const whatsappResult = await whatsappService.sendOTP(user.phone, otp, 5);
+          
+          if (whatsappResult.success) {
+            console.log('📱 OTP WhatsApp resent to:', user.phone);
+            console.log('   Message SID:', whatsappResult.messageSid);
+            console.log('   Using approved template: zennara_otp_v2');
+          } else {
+            console.error('WhatsApp OTP resend failed (non-blocking):', whatsappResult.error);
+            console.error('   Error code:', whatsappResult.code);
+            console.error('   Phone number:', user.phone);
+          }
         } catch (whatsappError) {
-          console.error('WhatsApp OTP failed (non-blocking):', whatsappError.message);
+          console.error('WhatsApp OTP exception (non-blocking):', whatsappError.message);
           // Don't fail the request if WhatsApp fails - email OTP is primary
         }
       } else {
