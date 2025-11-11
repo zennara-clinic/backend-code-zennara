@@ -69,6 +69,34 @@ const UserSchema = new mongoose.Schema({
     enum: ['Male', 'Female', 'Other', 'Prefer not to say']
   },
   
+  // Medical History & Lifestyle
+  medicalHistory: {
+    type: String,
+    default: ''
+  },
+  drugAllergies: {
+    type: String,
+    default: ''
+  },
+  dietaryPreferences: {
+    type: [String],
+    default: []
+  },
+  smoking: {
+    type: String,
+    enum: ['Yes', 'No', 'Occasionally', ''],
+    default: ''
+  },
+  drinking: {
+    type: String,
+    enum: ['Yes', 'No', 'Occasionally', 'Socially', ''],
+    default: ''
+  },
+  additionalInfo: {
+    type: String,
+    default: ''
+  },
+  
   // Profile Picture
   profilePicture: {
     url: {

@@ -593,6 +593,12 @@ exports.getMe = async (req, res) => {
         zenMembershipStartDate: user.zenMembershipStartDate,
         zenMembershipExpiryDate: user.zenMembershipExpiryDate,
         zenMembershipAutoRenew: user.zenMembershipAutoRenew,
+        medicalHistory: user.medicalHistory || '',
+        drugAllergies: user.drugAllergies || '',
+        dietaryPreferences: user.dietaryPreferences || [],
+        smoking: user.smoking || '',
+        drinking: user.drinking || '',
+        additionalInfo: user.additionalInfo || '',
         profilePicture: user.profilePicture?.url || null,
         isVerified: user.isVerified,
         createdAt: user.createdAt
@@ -612,15 +618,32 @@ exports.getMe = async (req, res) => {
 // @access  Private
 exports.updateProfile = async (req, res) => {
   try {
-    const { fullName, phone, location, dateOfBirth, gender } = req.body;
+    const { 
+      fullName, 
+      phone, 
+      location, 
+      dateOfBirth, 
+      gender,
+      medicalHistory,
+      drugAllergies,
+      dietaryPreferences,
+      smoking,
+      drinking,
+      additionalInfo
+    } = req.body;
     console.log('📥 RAW Request body:', req.body);
-    console.log('📥 Update profile request:', { fullName, phone, location, dateOfBirth, gender });
-    console.log('📊 Data types:', {
-      fullName: typeof fullName,
-      phone: typeof phone,
-      location: typeof location,
-      dateOfBirth: typeof dateOfBirth,
-      gender: typeof gender
+    console.log('📥 Update profile request:', { 
+      fullName, 
+      phone, 
+      location, 
+      dateOfBirth, 
+      gender,
+      medicalHistory,
+      drugAllergies,
+      dietaryPreferences,
+      smoking,
+      drinking,
+      additionalInfo
     });
     console.log('👤 User ID:', req.user._id);
     
@@ -631,6 +654,12 @@ exports.updateProfile = async (req, res) => {
     if (location !== undefined) updateData.location = location;
     if (dateOfBirth !== undefined) updateData.dateOfBirth = dateOfBirth;
     if (gender !== undefined) updateData.gender = gender;
+    if (medicalHistory !== undefined) updateData.medicalHistory = medicalHistory;
+    if (drugAllergies !== undefined) updateData.drugAllergies = drugAllergies;
+    if (dietaryPreferences !== undefined) updateData.dietaryPreferences = dietaryPreferences;
+    if (smoking !== undefined) updateData.smoking = smoking;
+    if (drinking !== undefined) updateData.drinking = drinking;
+    if (additionalInfo !== undefined) updateData.additionalInfo = additionalInfo;
 
     console.log('🔄 Updating with data:', updateData);
     console.log('🔑 Looking for user with ID:', req.user._id);
@@ -709,6 +738,12 @@ exports.updateProfile = async (req, res) => {
         location: updatedUser.location,
         dateOfBirth: updatedUser.dateOfBirth,
         gender: updatedUser.gender,
+        medicalHistory: updatedUser.medicalHistory || '',
+        drugAllergies: updatedUser.drugAllergies || '',
+        dietaryPreferences: updatedUser.dietaryPreferences || [],
+        smoking: updatedUser.smoking || '',
+        drinking: updatedUser.drinking || '',
+        additionalInfo: updatedUser.additionalInfo || '',
         profilePicture: updatedUser.profilePicture?.url || null
       }
     });
