@@ -90,6 +90,11 @@ const consultationSchema = new mongoose.Schema({
     min: 0,
     max: 5
   },
+  reviews: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
   isActive: {
     type: Boolean,
     default: true,
