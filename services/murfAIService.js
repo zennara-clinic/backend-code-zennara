@@ -20,9 +20,9 @@ class MurfAIService {
   async textToSpeech(text, options = {}) {
     try {
       const {
-        voiceId = 'en-US-Lily', // Default female voice
+        voiceId = 'en-US-wayne', // Default Murf AI voice
         model = 'Falcon',
-        sampleRate = 44100,
+        sampleRate = 24000,
         format = 'mp3',
         style = 'Conversational'
       } = options;
@@ -43,7 +43,7 @@ class MurfAIService {
         },
         {
           headers: {
-            'Authorization': `Bearer ${this.apiKey}`,
+            'api-key': this.apiKey,
             'Content-Type': 'application/json'
           },
           responseType: 'arraybuffer'
@@ -66,9 +66,9 @@ class MurfAIService {
   async streamTextToSpeech(text, options = {}) {
     try {
       const {
-        voiceId = 'en-US-Lily',
+        voiceId = 'en-US-wayne',
         model = 'Falcon',
-        sampleRate = 44100,
+        sampleRate = 24000,
         format = 'mp3'
       } = options;
 
@@ -83,7 +83,7 @@ class MurfAIService {
         },
         {
           headers: {
-            'Authorization': `Bearer ${this.apiKey}`,
+            'api-key': this.apiKey,
             'Content-Type': 'application/json'
           },
           responseType: 'stream'
@@ -107,7 +107,7 @@ class MurfAIService {
         `${this.baseURL}/voices`,
         {
           headers: {
-            'Authorization': `Bearer ${this.apiKey}`,
+            'api-key': this.apiKey,
             'Content-Type': 'application/json'
           }
         }
@@ -127,32 +127,32 @@ class MurfAIService {
   getDefaultVoices() {
     return [
       {
-        id: 'en-US-Lily',
-        name: 'Lily',
-        language: 'English (US)',
-        gender: 'Female',
-        description: 'Professional and friendly female voice'
-      },
-      {
-        id: 'en-US-Marcus',
-        name: 'Marcus',
+        id: 'en-US-wayne',
+        name: 'Wayne',
         language: 'English (US)',
         gender: 'Male',
-        description: 'Warm and professional male voice'
+        description: 'Professional and friendly male voice'
       },
       {
-        id: 'en-IN-Priya',
-        name: 'Priya',
-        language: 'English (India)',
+        id: 'en-US-natalie',
+        name: 'Natalie',
+        language: 'English (US)',
         gender: 'Female',
-        description: 'Indian English female voice'
+        description: 'Warm and professional female voice'
       },
       {
-        id: 'en-IN-Ravi',
-        name: 'Ravi',
-        language: 'English (India)',
+        id: 'en-US-terrell',
+        name: 'Terrell',
+        language: 'English (US)',
         gender: 'Male',
-        description: 'Indian English male voice'
+        description: 'Clear and confident male voice'
+      },
+      {
+        id: 'en-US-claire',
+        name: 'Claire',
+        language: 'English (US)',
+        gender: 'Female',
+        description: 'Friendly and engaging female voice'
       }
     ];
   }

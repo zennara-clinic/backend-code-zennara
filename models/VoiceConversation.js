@@ -75,7 +75,7 @@ const voiceConversationSchema = new mongoose.Schema({
   voiceSettings: {
     voiceId: {
       type: String,
-      default: 'en-US-Lily'
+      default: 'en-US-wayne'
     },
     model: {
       type: String,
@@ -157,7 +157,7 @@ voiceConversationSchema.statics.createSession = async function(userId, metadata 
       location: metadata.location || null
     },
     voiceSettings: {
-      voiceId: voiceSettings.voiceId || 'en-US-Lily',
+      voiceId: voiceSettings.voiceId || 'en-US-wayne',
       model: voiceSettings.model || 'Falcon',
       language: voiceSettings.language || 'en-US'
     }
