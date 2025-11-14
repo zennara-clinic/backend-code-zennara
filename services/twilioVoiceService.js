@@ -83,43 +83,11 @@ class TwilioVoiceService {
       referenceNumber
     } = bookingDetails;
 
-    // Create the voice message script
+    // Create the voice message script - short, energetic, and crisp
     const message = `
       <Response>
-        <Say voice="man" language="en-IN">
-          Hello ${this.escapeXml(patientName)}, thank you for booking an appointment with Zennara Clinic.
-        </Say>
-        <Pause length="1"/>
-        <Say voice="man" language="en-IN">
-          Here are your booking details.
-        </Say>
-        <Pause length="1"/>
-        <Say voice="man" language="en-IN">
-          Your booking reference number is ${this.speakReferenceNumber(referenceNumber)}.
-        </Say>
-        <Pause length="1"/>
-        <Say voice="man" language="en-IN">
-          You have booked ${this.escapeXml(treatment)}.
-        </Say>
-        <Pause length="1"/>
-        <Say voice="man" language="en-IN">
-          Your preferred appointment date is ${this.escapeXml(date)}.
-        </Say>
-        <Pause length="1"/>
-        <Say voice="man" language="en-IN">
-          Your preferred time slots are ${this.escapeXml(timeSlots)}.
-        </Say>
-        <Pause length="1"/>
-        <Say voice="man" language="en-IN">
-          You have selected ${this.escapeXml(branchName)} branch, located at ${this.escapeXml(branchAddress)}.
-        </Say>
-        <Pause length="1"/>
-        <Say voice="man" language="en-IN">
-          Our team will confirm your appointment shortly. If you have any questions, please feel free to contact us.
-        </Say>
-        <Pause length="1"/>
-        <Say voice="man" language="en-IN">
-          Thank you for choosing Zennara Clinic. Have a great day!
+        <Say voice="Polly.Matthew" language="en-IN">
+          Hello ${this.escapeXml(patientName)}! Thanks for booking with Zennara Clinic. We'll review and confirm your appointment shortly. You have booked at ${this.escapeXml(branchName)} branch. Have a great day!
         </Say>
       </Response>
     `;
