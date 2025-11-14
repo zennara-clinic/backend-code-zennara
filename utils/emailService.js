@@ -17,7 +17,6 @@ const getServiceCompletionOTPTemplate = require('../Email Templates/serviceCompl
 const getPackageCancellationOtpTemplate = require('../Email Templates/packageCancellationOtpTemplate');
 const getBookingExpiredNotificationTemplate = require('../Email Templates/bookingExpiredNotification');
 const getBirthdayWishTemplate = require('../Email Templates/birthdayWishTemplate');
-
 // Product Order Templates
 const getOrderConfirmationTemplate = require('../Email Templates/orderConfirmation');
 const getOrderConfirmedEmail = require('../Email Templates/orderConfirmedByAdmin');

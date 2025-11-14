@@ -5,6 +5,7 @@ const Branch = require('../models/Branch');
 const emailService = require('../utils/emailService');
 const NotificationHelper = require('../utils/notificationHelper');
 const whatsappService = require('../services/whatsappService');
+const twilioVoiceService = require('../services/twilioVoiceService');
 
 // @desc    Create new booking
 // @route   POST /api/bookings
@@ -117,6 +118,29 @@ exports.createBooking = async (req, res) => {
       console.log('WhatsApp booking confirmation sent');
     } catch (whatsappError) {
       console.error('WhatsApp sending failed, but booking was created:', whatsappError.message);
+    }
+
+    // Make automated voice call for booking confirmation
+    try {
+      const formattedDate = booking.preferredDate.toLocaleDateString('en-US', { 
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+      });
+      
+      await twilioVoiceService.makeBookingConfirmationCall(
+        booking.mobileNumber,
+        {
+          patientName: booking.fullName,
+          referenceNumber: booking.referenceNumber,
+          treatment: consultation.name,
+          date: formattedDate,
+          timeSlots: booking.preferredTimeSlots.join(', '),
+          branchName: branch.name,
+          branchAddress: branch.address.line1 + ', ' + branch.address.city
+        }
+      );
+      console.log('Voice call initiated for booking confirmation');
+    } catch (voiceError) {
+      console.error('Voice call failed, but booking was created:', voiceError.message);
     }
 
     res.status(201).json({
