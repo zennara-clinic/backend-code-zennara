@@ -23,15 +23,23 @@ class VoiceAgentService {
       
       // Analyze query intent
       const intent = this.detectIntent(query);
+      console.log(`🎯 User query: "${query}" → Detected intent: ${intent}`);
       
       // Generate response based on intent
       const responseText = await this.generateResponse(intent, userData, query);
       
       // Convert to speech using Murf AI
+      console.log('🎙️ Generating voice response with Murf AI...');
       const audioResponse = await murfAIService.textToSpeech(responseText, {
         voiceId: 'en-IN-male-1', // Indian English male voice
         speed: 1.0
       });
+      
+      if (audioResponse.success) {
+        console.log('✅ Murf AI voice generated successfully');
+      } else {
+        console.log('❌ Murf AI failed:', audioResponse.error);
+      }
       
       return {
         success: true,
@@ -66,9 +74,12 @@ class VoiceAgentService {
       /track(ing)? (my )?(order|package|delivery|shipment)/i,
       /(order|package|delivery) (status|update|tracking|location)/i,
       /(what('s| is) the |check )?(status|progress) (of |on )?(my )?order/i,
-      /(when (will|do)|has) (my )?(order|package) (arrive|come|reach|deliver)/i,
-      /delivery (status|update|tracking)/i,
-      /(is|are) my (order|package) (shipped|delivered|on the way)/i
+      /(when (will|do|can|could)|has) (my )?(order|package|delivery|shipment) (arrive|come|reach|deliver|get|receive)/i,
+      /when (can|will|do) (i|we) (get|receive) (the |my )?(order|delivery|package|shipment)/i,
+      /delivery (status|update|tracking|time|date|eta)/i,
+      /(is|are) my (order|package) (shipped|delivered|on the way)/i,
+      /(order|delivery|package|shipment) (eta|estimated time|expected|when)/i,
+      /how long (will|does|until) (my )?(order|delivery|package)/i
     ];
     if (orderStatusPatterns.some(pattern => pattern.test(lowerQuery))) {
       return 'ORDER_STATUS';
