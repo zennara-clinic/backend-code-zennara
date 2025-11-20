@@ -143,7 +143,45 @@ const productOrderSchema = new mongoose.Schema({
   },
   returnRejectionReason: String,
   deliveredAt: Date,
-  notes: String
+  notes: String,
+  // Refund Management
+  refundDetails: {
+    method: {
+      type: String,
+      enum: ['Razorpay', 'Bank Transfer', 'UPI', 'Store Credit', 'Cash'],
+      default: null
+    },
+    amount: {
+      type: Number,
+      default: 0
+    },
+    status: {
+      type: String,
+      enum: ['Pending', 'Processing', 'Completed', 'Failed'],
+      default: 'Pending'
+    },
+    bankDetails: {
+      accountHolderName: String,
+      bankName: String,
+      accountNumber: String,
+      ifscCode: String,
+      upiId: String
+    },
+    razorpayRefundId: String,
+    transactionId: String,
+    transactionProof: String, // URL to uploaded proof
+    refundInitiatedAt: Date,
+    refundCompletedAt: Date,
+    refundedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Admin'
+    },
+    notes: String,
+    failureReason: String
+  },
+  razorpayOrderId: String,
+  razorpayPaymentId: String,
+  razorpaySignature: String
 }, {
   timestamps: true
 });

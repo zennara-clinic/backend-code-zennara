@@ -11,6 +11,11 @@ const {
   approveReturn,
   rejectReturn
 } = require('../controllers/productOrderController');
+const {
+  initiateRefund,
+  completeRefund,
+  getCustomerBankDetails
+} = require('../controllers/refundController');
 const { protectAdmin, requireRole, auditLog } = require('../middleware/auth');
 const { adminSensitiveOperationsLimiter } = require('../middleware/rateLimiter');
 
@@ -41,6 +46,22 @@ router.delete('/:id',
   adminSensitiveOperationsLimiter,
   auditLog('ORDER_DELETED', 'ORDER'),
   deleteOrder
+);
+
+// Refund routes
+router.post('/:id/initiate-refund',
+  requireRole('super_admin', 'admin'),
+  auditLog('REFUND_INITIATED', 'ORDER'),
+  initiateRefund
+);
+router.put('/:id/complete-refund',
+  requireRole('super_admin', 'admin'),
+  auditLog('REFUND_COMPLETED', 'ORDER'),
+  completeRefund
+);
+router.get('/user/:userId/bank-details',
+  requireRole('super_admin', 'admin'),
+  getCustomerBankDetails
 );
 
 module.exports = router;

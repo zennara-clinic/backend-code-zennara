@@ -234,6 +234,47 @@ const UserSchema = new mongoose.Schema({
     default: 0
   },
   
+  // Bank Details for Refunds (COD orders)
+  refundBankDetails: {
+    accountHolderName: {
+      type: String,
+      default: null
+    },
+    bankName: {
+      type: String,
+      default: null
+    },
+    accountNumber: {
+      type: String,
+      default: null
+    },
+    ifscCode: {
+      type: String,
+      default: null
+    },
+    upiId: {
+      type: String,
+      default: null
+    },
+    preferredMethod: {
+      type: String,
+      enum: ['Bank Transfer', 'UPI', null],
+      default: null
+    },
+    isVerified: {
+      type: Boolean,
+      default: false
+    },
+    addedAt: {
+      type: Date,
+      default: null
+    },
+    lastUpdatedAt: {
+      type: Date,
+      default: null
+    }
+  },
+  
   // Timestamps
   createdAt: {
     type: Date,
@@ -313,6 +354,19 @@ UserSchema.methods.generateOTP = function() {
 
 // Method to verify OTP
 UserSchema.methods.verifyOTP = function(enteredOTP) {
+  // DEMO ACCOUNT BYPASS for Google Play Review
+  // Allow fixed OTP "1234" for demo account
+  const DEMO_EMAIL = 'demo@zennara.com';
+  const DEMO_OTP = '1234';
+  
+  if (this.email === DEMO_EMAIL && String(enteredOTP).trim() === DEMO_OTP) {
+    console.log('✅ Demo account login - OTP bypass activated');
+    // Reset counters for demo account
+    this.failedLoginAttempts = 0;
+    this.accountLockedUntil = null;
+    return { success: true };
+  }
+  
   if (!this.otp || !this.otpExpiry) {
     return { success: false, message: 'No OTP found. Please request a new one.' };
   }

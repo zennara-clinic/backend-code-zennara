@@ -20,6 +20,10 @@ const {
   deleteAccount,
   exportUserData
 } = require('../controllers/authController');
+const {
+  updateBankDetails,
+  getMyBankDetails
+} = require('../controllers/refundController');
 const { protect } = require('../middleware/auth');
 const { upload } = require('../middleware/upload');
 
@@ -83,5 +87,9 @@ router.get('/security-status', protect, getSecurityStatus);
 // Data privacy routes (DPDPA 2023 compliance)
 router.get('/export-data', protect, exportUserData);
 router.delete('/account', protect, deleteAccount);
+
+// Bank details routes (for refunds)
+router.get('/me/bank-details', protect, getMyBankDetails);
+router.put('/me/bank-details', protect, updateBankDetails);
 
 module.exports = router;
