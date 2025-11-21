@@ -174,23 +174,23 @@ exports.upgradeMembership = async (req, res) => {
 // @access  Public
 exports.login = async (req, res) => {
   try {
-    const { email } = req.body;
+    const { phone } = req.body;
 
-    // Validate email
-    if (!email) {
+    // Validate phone
+    if (!phone) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide email address'
+        message: 'Please provide phone number'
       });
     }
 
-    // Find user by email
-    const user = await User.findOne({ email: email.toLowerCase() });
+    // Find user by phone
+    const user = await User.findOne({ phone: phone });
 
     if (!user) {
       return res.status(404).json({
         success: false,
-        message: 'No account found with this email. Please sign up first.'
+        message: 'No account found with this phone number. Please sign up first.'
       });
     }
 
@@ -280,18 +280,18 @@ exports.login = async (req, res) => {
 // @access  Public
 exports.verifyOTP = async (req, res) => {
   try {
-    const { email, otp } = req.body;
+    const { phone, otp } = req.body;
 
     // Validate input
-    if (!email || !otp) {
+    if (!phone || !otp) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide email and OTP'
+        message: 'Please provide phone number and OTP'
       });
     }
 
     // Find user
-    const user = await User.findOne({ email: email.toLowerCase() });
+    const user = await User.findOne({ phone: phone });
 
     if (!user) {
       return res.status(404).json({
@@ -410,18 +410,18 @@ exports.verifyOTP = async (req, res) => {
 // @access  Public
 exports.resendOTP = async (req, res) => {
   try {
-    const { email } = req.body;
+    const { phone } = req.body;
 
-    // Validate email
-    if (!email) {
+    // Validate phone
+    if (!phone) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide email address'
+        message: 'Please provide phone number'
       });
     }
 
     // Find user
-    const user = await User.findOne({ email: email.toLowerCase() });
+    const user = await User.findOne({ phone: phone });
 
     if (!user) {
       return res.status(404).json({
