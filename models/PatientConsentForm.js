@@ -12,15 +12,13 @@ const patientConsentFormSchema = new mongoose.Schema({
   // Booking Reference
   bookingId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'Booking',
-    index: true
+    ref: 'Booking'
   },
 
   // Pre-Consult Form Reference (optional)
   preConsultFormId: {
     type: mongoose.Schema.Types.ObjectId,
-    ref: 'PreConsultForm',
-    index: true
+    ref: 'PreConsultForm'
   },
 
   // Patient Information

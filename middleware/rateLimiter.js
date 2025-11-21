@@ -1,5 +1,19 @@
 const rateLimit = require('express-rate-limit');
 
+// Helper function to normalize IP address (handles IPv6)
+const normalizeIp = (ip) => {
+  if (!ip) return 'unknown';
+  // Remove IPv6 prefix if present
+  if (ip.startsWith('::ffff:')) {
+    return ip.substring(7);
+  }
+  // For IPv6, use a hash or simplified version
+  if (ip.includes(':')) {
+    return ip.replace(/:/g, '-');
+  }
+  return ip;
+};
+
 // Strict rate limiter for admin login endpoints
 exports.adminLoginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -13,8 +27,8 @@ exports.adminLoginLimiter = rateLimit({
   legacyHeaders: false,
   skipSuccessfulRequests: false, // Count all requests
   keyGenerator: (req) => {
-    // Use IP + email for rate limiting key
-    return `${req.ip}_${req.body.email || 'unknown'}`;
+    // Use normalized IP + email for rate limiting key
+    return `${normalizeIp(req.ip)}_${req.body.email || 'unknown'}`;
   }
 });
 
@@ -30,7 +44,7 @@ exports.adminOTPLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => {
-    return `${req.ip}_${req.body.email || 'unknown'}`;
+    return `${normalizeIp(req.ip)}_${req.body.email || 'unknown'}`;
   }
 });
 
@@ -61,6 +75,6 @@ exports.adminSensitiveOperationsLimiter = rateLimit({
   legacyHeaders: false,
   keyGenerator: (req) => {
     // Use admin ID for authenticated requests
-    return req.admin?._id?.toString() || req.ip;
+    return req.admin?._id?.toString() || normalizeIp(req.ip);
   }
 });

@@ -56,8 +56,7 @@ const serviceCardSchema = new mongoose.Schema({
   },
   clientId: {
     type: String,
-    required: true,
-    index: true
+    required: true
   },
 
   // Primary Doctor and Manager
