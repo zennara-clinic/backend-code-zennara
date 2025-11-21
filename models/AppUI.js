@@ -66,6 +66,62 @@ const appUISchema = new mongoose.Schema({
       type: String,
       trim: true
     },
+    image: {
+      type: String,
+      trim: true
+    },
+    enabled: {
+      type: Boolean,
+      default: true
+    },
+    order: {
+      type: Number,
+      default: 0
+    }
+  }],
+
+  // Zen Membership Card (for home page)
+  zenMembershipCard: {
+    enabled: {
+      type: Boolean,
+      default: false
+    },
+    image: {
+      type: String,
+      trim: true
+    },
+    title: {
+      type: String,
+      trim: true
+    },
+    subtitle: {
+      type: String,
+      trim: true
+    },
+    buttonText: {
+      type: String,
+      trim: true
+    },
+    backgroundColor: {
+      type: String,
+      default: '#2C5F4D'
+    }
+  },
+
+  // Profile Cards/Menu Items (for profile page)
+  profileCards: [{
+    name: {
+      type: String,
+      trim: true
+    },
+    title: {
+      type: String,
+      trim: true
+    },
+    icon: {
+      type: String,
+      trim: true
+    },
     enabled: {
       type: Boolean,
       default: true

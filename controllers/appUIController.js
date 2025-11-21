@@ -85,7 +85,8 @@ exports.updatePageUI = async (req, res) => {
 // Upload image for UI element
 exports.uploadUIImage = async (req, res) => {
   try {
-    const { page, type } = req.params; // type: 'hero', 'bottom', 'section'
+    const { page, type } = req.params; // type: 'hero', 'bottom', 'membership', 'section-{index}'
+    const { sectionIndex } = req.body; // For section images
     
     if (!req.file) {
       return res.status(400).json({
@@ -110,6 +111,16 @@ exports.uploadUIImage = async (req, res) => {
       } else if (type === 'bottom' && appUI.bottomBanner?.image) {
         oldImageUrl = appUI.bottomBanner.image;
         appUI.bottomBanner.image = imageUrl;
+      } else if (type === 'membership' && appUI.zenMembershipCard?.image) {
+        oldImageUrl = appUI.zenMembershipCard.image;
+        appUI.zenMembershipCard.image = imageUrl;
+      } else if (type.startsWith('section-') && sectionIndex !== undefined) {
+        // Handle section image upload
+        const index = parseInt(sectionIndex);
+        if (appUI.sections && appUI.sections[index]) {
+          oldImageUrl = appUI.sections[index].image;
+          appUI.sections[index].image = imageUrl;
+        }
       }
       
       // Delete old image
@@ -187,10 +198,17 @@ async function createDefaultUI(page) {
         buttonText: 'Learn More'
       },
       sections: [
-        { name: 'consultations', title: 'Consultations', enabled: true, order: 1 },
-        { name: 'popularConsultations', title: 'Popular Consultations', enabled: true, order: 2 },
-        { name: 'popularProducts', title: 'Popular Products', enabled: true, order: 3 }
+        { name: 'consultations', title: 'Consultations', enabled: true, order: 1, image: '' },
+        { name: 'popularConsultations', title: 'Popular Consultations', enabled: true, order: 2, image: '' },
+        { name: 'popularProducts', title: 'Popular Products', enabled: true, order: 3, image: '' }
       ],
+      zenMembershipCard: {
+        enabled: true,
+        title: 'JOIN THE ZENNARA FAMILY',
+        subtitle: 'Become a member and enjoy exclusive benefits',
+        buttonText: 'Sign Up Today',
+        backgroundColor: '#2C5F4D'
+      },
       bottomBanner: {
         enabled: true,
         title: 'JOIN THE ZENNARA FAMILY',
@@ -245,7 +263,21 @@ async function createDefaultUI(page) {
       searchBar: {
         enabled: false
       },
-      sections: []
+      sections: [],
+      profileCards: [
+        { name: 'personal', title: 'Personal', icon: 'User', enabled: true, order: 1 },
+        { name: 'addresses', title: 'Addresses', icon: 'MapPin', enabled: true, order: 2 },
+        { name: 'bankDetails', title: 'Bank Details', icon: 'CreditCard', enabled: true, order: 3 },
+        { name: 'membership', title: 'Membership', icon: 'Heart', enabled: true, order: 4 },
+        { name: 'orders', title: 'Orders', icon: 'ShoppingBag', enabled: true, order: 5 },
+        { name: 'treatments', title: 'Treatments', icon: 'Stethoscope', enabled: true, order: 6 },
+        { name: 'appointments', title: 'Appointments', icon: 'Calendar', enabled: true, order: 7 },
+        { name: 'forms', title: 'Forms', icon: 'FileText', enabled: true, order: 8 },
+        { name: 'help', title: 'Help', icon: 'HelpCircle', enabled: true, order: 9 },
+        { name: 'delete', title: 'Delete', icon: 'Trash2', enabled: true, order: 10 },
+        { name: 'terms', title: 'Terms', icon: 'FileText', enabled: true, order: 11 },
+        { name: 'privacy', title: 'Privacy', icon: 'Shield', enabled: true, order: 12 }
+      ]
     }
   };
   
