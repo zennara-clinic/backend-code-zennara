@@ -7,6 +7,11 @@ const appCustomizationSchema = new mongoose.Schema({
       type: String,
       default: 'https://zennara-storage.s3.ap-south-1.amazonaws.com/zennara/Manual+Upload/ZEN+UPDATED+HERO+BANNER.png'
     },
+    heroBannerRoute: {
+      type: String,
+      enum: ['consultations', 'products', 'appointments', 'profile'],
+      default: 'consultations'
+    },
     consultationsButtonText: {
       type: String,
       default: 'Book Consultation'

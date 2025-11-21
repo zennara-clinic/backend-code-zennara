@@ -178,6 +178,7 @@ exports.resetCustomizationSettings = async (req, res) => {
     // Reset to default values
     settings.homeScreen = {
       heroBannerImage: 'https://zennara-bucket.s3.ap-south-1.amazonaws.com/default-hero-banner.jpg',
+      heroBannerRoute: 'consultations',
       consultationsButtonText: 'Book Consultation',
       productsButtonText: 'Shop Products',
       consultationCategoryCards: [
