@@ -206,6 +206,12 @@ exports.resetCustomizationSettings = async (req, res) => {
           displayOrder: 4
         }
       ],
+      consultationsSectionHeading: 'Consultations',
+      consultationsSectionButtonText: 'See All',
+      popularConsultationsSectionHeading: 'Popular Consultations',
+      popularConsultationsSectionButtonText: 'See All',
+      popularProductsSectionHeading: 'Popular Products',
+      popularProductsSectionButtonText: 'See All',
       zenMembershipCardImage: null,
       zenMembershipCardTitle: 'Zen Membership',
       zenMembershipCardDescription: 'Unlock exclusive benefits and save more'

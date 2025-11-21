@@ -61,6 +61,31 @@ const appCustomizationSchema = new mongoose.Schema({
         }
       ]
     },
+    // Section Headings and Button Texts
+    consultationsSectionHeading: {
+      type: String,
+      default: 'Consultations'
+    },
+    consultationsSectionButtonText: {
+      type: String,
+      default: 'See All'
+    },
+    popularConsultationsSectionHeading: {
+      type: String,
+      default: 'Popular Consultations'
+    },
+    popularConsultationsSectionButtonText: {
+      type: String,
+      default: 'See All'
+    },
+    popularProductsSectionHeading: {
+      type: String,
+      default: 'Popular Products'
+    },
+    popularProductsSectionButtonText: {
+      type: String,
+      default: 'See All'
+    },
     zenMembershipCardImage: {
       type: String,
       default: null
