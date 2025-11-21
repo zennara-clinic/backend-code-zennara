@@ -55,7 +55,7 @@ const UserSchema = new mongoose.Schema({
   },
   zenMembershipAutoRenew: {
     type: Boolean,
-    default: true
+    default: false // Default to false for one-time VIP packages
   },
   
   // Additional Details (from signup step 3)
@@ -417,6 +417,34 @@ UserSchema.methods.clearOTP = function() {
   this.otp = null;
   this.otpExpiry = null;
   this.otpAttempts = 0;
+};
+
+// Method to check if VIP Wellness Package is still active
+UserSchema.methods.isVIPMembershipActive = function() {
+  if (this.memberType !== 'Zen Member') {
+    return false;
+  }
+  
+  if (!this.zenMembershipExpiryDate) {
+    return false;
+  }
+  
+  // Check if expiry date is in the future
+  return new Date(this.zenMembershipExpiryDate) > new Date();
+};
+
+// Method to get remaining days in membership
+UserSchema.methods.getMembershipDaysRemaining = function() {
+  if (!this.isVIPMembershipActive()) {
+    return 0;
+  }
+  
+  const now = new Date();
+  const expiry = new Date(this.zenMembershipExpiryDate);
+  const diffTime = expiry - now;
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  
+  return diffDays > 0 ? diffDays : 0;
 };
 
 module.exports = mongoose.model('User', UserSchema);

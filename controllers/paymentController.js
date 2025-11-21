@@ -299,7 +299,7 @@ exports.verifyProductPayment = async (req, res) => {
 // @access  Private
 exports.createMembershipPayment = async (req, res) => {
   try {
-    const amount = 1999; // Zen membership price (₹1999)
+    const amount = 110000; // VIP Wellness Package price (₹1,10,000)
     
     console.log('👑 Creating membership payment for user:', req.user._id);
     
@@ -315,9 +315,8 @@ exports.createMembershipPayment = async (req, res) => {
     }
     
     // Generate receipt (max 40 chars for Razorpay)
-    const timestamp = Date.now().toString().slice(-10);
-    const userIdSuffix = req.user._id.toString().slice(-10);
-    const receipt = `ZEN_${timestamp}_${userIdSuffix}`;
+    const timestamp = Date.now().toString().slice(-8);
+    const receipt = `VIP_PKG_${timestamp}`;
     
     // Create Razorpay order
     const razorpayOrder = await razorpayService.createOrder(
@@ -325,9 +324,10 @@ exports.createMembershipPayment = async (req, res) => {
       'INR',
       receipt,
       {
-        orderType: 'membership',
+        orderType: 'vip_wellness_package',
         userId: req.user._id.toString(),
-        membershipType: 'Zen Member'
+        packageType: 'VIP Wellness Package',
+        validity: '1 year'
       }
     );
     
@@ -425,12 +425,14 @@ exports.verifyMembershipPayment = async (req, res) => {
     
     user.memberType = 'Zen Member';
     user.zenMembershipStartDate = new Date();
-    user.zenMembershipExpiryDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days from now
-    user.zenMembershipAutoRenew = true;
+    // Set expiry to 1 year (365 days) from now for VIP Wellness Package
+    user.zenMembershipExpiryDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+    user.zenMembershipAutoRenew = false; // One-time package, not recurring
     
     await user.save();
     
-    console.log('👑 User upgraded to Zen Member:', user.email);
+    console.log('👑 User upgraded to VIP Member (1 year):', user.email);
+    console.log('📅 Membership valid until:', user.zenMembershipExpiryDate.toLocaleDateString());
     
     // Return updated user data
     const updatedUser = {
