@@ -91,6 +91,7 @@ app.use('/api/payments', require('./routes/payment'));
 app.use('/api/pre-consult-forms', require('./routes/preConsultForm'));
 app.use('/api/patient-consent-forms', require('./routes/patientConsentForm'));
 app.use('/api/service-cards', require('./routes/serviceCard'));
+app.use('/api/app-customization', require('./routes/appCustomizationRoutes'));
 
 /* ------------------------------ Health Check -------------------------------- */
 app.get('/', (req, res) => {

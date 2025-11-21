@@ -1,19 +1,5 @@
 const rateLimit = require('express-rate-limit');
 
-// Helper function to normalize IP address (handles IPv6)
-const normalizeIp = (ip) => {
-  if (!ip) return 'unknown';
-  // Remove IPv6 prefix if present
-  if (ip.startsWith('::ffff:')) {
-    return ip.substring(7);
-  }
-  // For IPv6, use a hash or simplified version
-  if (ip.includes(':')) {
-    return ip.replace(/:/g, '-');
-  }
-  return ip;
-};
-
 // Strict rate limiter for admin login endpoints
 exports.adminLoginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -26,10 +12,13 @@ exports.adminLoginLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skipSuccessfulRequests: false, // Count all requests
+  skip: () => false, // Don't skip any requests
   keyGenerator: (req) => {
-    // Use normalized IP + email for rate limiting key
-    return `${normalizeIp(req.ip)}_${req.body.email || 'unknown'}`;
-  }
+    // Use IP + email for rate limiting key
+    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    return `${ip}_${req.body.email || 'unknown'}`;
+  },
+  validate: { ipv6: false } // Disable IPv6 validation
 });
 
 // OTP verification rate limiter
@@ -44,8 +33,10 @@ exports.adminOTPLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => {
-    return `${normalizeIp(req.ip)}_${req.body.email || 'unknown'}`;
-  }
+    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    return `${ip}_${req.body.email || 'unknown'}`;
+  },
+  validate: { ipv6: false } // Disable IPv6 validation
 });
 
 // General admin API rate limiter (more lenient)
@@ -59,7 +50,8 @@ exports.adminApiLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  skipSuccessfulRequests: true // Only count failed requests
+  skipSuccessfulRequests: true, // Only count failed requests
+  validate: { ipv6: false } // Disable IPv6 validation
 });
 
 // Strict rate limiter for sensitive operations (delete, bulk update)
@@ -75,6 +67,8 @@ exports.adminSensitiveOperationsLimiter = rateLimit({
   legacyHeaders: false,
   keyGenerator: (req) => {
     // Use admin ID for authenticated requests
-    return req.admin?._id?.toString() || normalizeIp(req.ip);
-  }
+    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    return req.admin?._id?.toString() || ip;
+  },
+  validate: { ipv6: false } // Disable IPv6 validation
 });
