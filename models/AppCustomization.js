@@ -15,9 +15,51 @@ const appCustomizationSchema = new mongoose.Schema({
       type: String,
       default: 'Shop Products'
     },
-    consultationSectionImage: {
-      type: String,
-      default: null
+    consultationCategoryCards: {
+      type: [{
+        image: {
+          type: String,
+          required: true
+        },
+        categoryName: {
+          type: String,
+          required: true
+        },
+        searchTerm: {
+          type: String,
+          required: true
+        },
+        displayOrder: {
+          type: Number,
+          default: 0
+        }
+      }],
+      default: [
+        {
+          image: 'https://zennara-storage.s3.ap-south-1.amazonaws.com/zennara/Manual+Upload/SKIN.png',
+          categoryName: 'Skin',
+          searchTerm: 'Skin',
+          displayOrder: 1
+        },
+        {
+          image: 'https://zennara-storage.s3.ap-south-1.amazonaws.com/zennara/Manual+Upload/HAIR.png',
+          categoryName: 'Hair',
+          searchTerm: 'Hair',
+          displayOrder: 2
+        },
+        {
+          image: 'https://zennara-storage.s3.ap-south-1.amazonaws.com/zennara/Manual+Upload/FACIALS.png',
+          categoryName: 'Facials',
+          searchTerm: 'Facials',
+          displayOrder: 3
+        },
+        {
+          image: 'https://zennara-storage.s3.ap-south-1.amazonaws.com/zennara/Manual+Upload/AESTHETICS.png',
+          categoryName: 'Aesthetics',
+          searchTerm: 'Aesthetics',
+          displayOrder: 4
+        }
+      ]
     },
     zenMembershipCardImage: {
       type: String,
