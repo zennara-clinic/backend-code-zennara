@@ -560,4 +560,286 @@ async function handlePaymentFailed(paymentEntity) {
   }
 }
 
+// @desc    Create Razorpay order for consultation booking
+// @route   POST /api/payments/consultation/create
+// @access  Private
+exports.createConsultationPayment = async (req, res) => {
+  try {
+    const { consultationId, bookingData } = req.body;
+    
+    console.log('💳 Creating consultation payment order for user:', req.user._id);
+    
+    // Validate booking data
+    if (!bookingData || !consultationId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Booking data and consultation ID are required'
+      });
+    }
+    
+    // Fetch consultation to get price
+    const Consultation = require('../models/Consultation');
+    const consultation = await Consultation.findById(consultationId);
+    
+    if (!consultation) {
+      return res.status(404).json({
+        success: false,
+        message: 'Consultation not found'
+      });
+    }
+    
+    const amount = consultation.price;
+    
+    // Validate amount
+    if (!amount || amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid consultation price'
+      });
+    }
+    
+    // Generate receipt (max 40 chars for Razorpay)
+    const timestamp = Date.now().toString().slice(-10);
+    const userIdSuffix = req.user._id.toString().slice(-10);
+    const receipt = `CONS_${timestamp}_${userIdSuffix}`;
+    
+    // Create Razorpay order
+    const razorpayOrder = await razorpayService.createOrder(
+      amount,
+      'INR',
+      receipt,
+      {
+        orderType: 'consultation',
+        userId: req.user._id.toString(),
+        consultationId: consultationId,
+        consultationName: consultation.name
+      }
+    );
+    
+    // Create payment record in database
+    const payment = await Payment.create({
+      userId: req.user._id,
+      orderType: 'Booking',
+      razorpayOrderId: razorpayOrder.id,
+      amount: amount,
+      currency: 'INR',
+      status: 'created',
+      metadata: {
+        receipt: receipt,
+        consultationId: consultationId,
+        bookingData: bookingData
+      }
+    });
+    
+    console.log('✅ Consultation payment record created:', payment._id);
+    
+    res.json({
+      success: true,
+      data: {
+        orderId: razorpayOrder.id,
+        amount: razorpayOrder.amount,
+        currency: razorpayOrder.currency,
+        keyId: process.env.RAZORPAY_KEY_ID,
+        paymentId: payment._id,
+        consultationPrice: amount
+      }
+    });
+  } catch (error) {
+    console.error('❌ Create consultation payment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create payment order',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Verify consultation payment and create booking
+// @route   POST /api/payments/consultation/verify
+// @access  Private
+exports.verifyConsultationPayment = async (req, res) => {
+  try {
+    const {
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature,
+      bookingData
+    } = req.body;
+    
+    console.log('🔍 Verifying consultation payment:', razorpay_payment_id);
+    
+    // Verify signature
+    const isValid = razorpayService.verifySignature(
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature
+    );
+    
+    if (!isValid) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid payment signature'
+      });
+    }
+    
+    // Find payment record
+    const payment = await Payment.findOne({ razorpayOrderId: razorpay_order_id });
+    
+    if (!payment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Payment record not found'
+      });
+    }
+    
+    // Update payment status
+    payment.razorpayPaymentId = razorpay_payment_id;
+    payment.status = 'completed';
+    payment.completedAt = new Date();
+    await payment.save();
+    
+    console.log('✅ Payment verified and updated');
+    
+    // Create booking with payment details
+    const Booking = require('../models/Booking');
+    const Consultation = require('../models/Consultation');
+    const Branch = require('../models/Branch');
+    
+    const consultation = await Consultation.findById(bookingData.consultationId);
+    const branch = await Branch.findOne({ name: bookingData.preferredLocation, isActive: true });
+    
+    if (!consultation || !branch) {
+      return res.status(404).json({
+        success: false,
+        message: 'Consultation or branch not found'
+      });
+    }
+    
+    const booking = new Booking({
+      userId: req.user._id,
+      consultationId: bookingData.consultationId,
+      fullName: bookingData.fullName,
+      mobileNumber: bookingData.mobileNumber,
+      email: bookingData.email,
+      branchId: branch._id,
+      preferredLocation: bookingData.preferredLocation,
+      preferredDate: new Date(bookingData.preferredDate),
+      preferredTimeSlots: bookingData.preferredTimeSlots,
+      status: 'Awaiting Confirmation',
+      paymentId: payment._id,
+      razorpayOrderId: razorpay_order_id,
+      razorpayPaymentId: razorpay_payment_id,
+      paymentStatus: 'paid',
+      amount: payment.amount,
+      paymentMethod: 'Razorpay',
+      paidAt: new Date()
+    });
+    
+    await booking.save();
+    await booking.populate('consultationId', 'name category price image');
+    
+    console.log('✅ Booking created with payment:', booking.referenceNumber);
+    
+    // Create notification
+    const NotificationHelper = require('../utils/notificationHelper');
+    try {
+      await NotificationHelper.bookingCreated({
+        _id: booking._id,
+        userId: booking.userId,
+        patientName: booking.fullName,
+        consultation: { name: consultation.name },
+        branch: { name: branch.name },
+        appointmentDate: booking.preferredDate
+      });
+    } catch (notifError) {
+      console.error('⚠️ Failed to create notification:', notifError.message);
+    }
+    
+    // Send booking confirmation email
+    const emailService = require('../utils/emailService');
+    try {
+      await emailService.sendAppointmentBookingConfirmation(
+        booking.email,
+        booking.fullName,
+        {
+          referenceNumber: booking.referenceNumber,
+          treatment: consultation.name,
+          category: consultation.category,
+          preferredDate: booking.preferredDate.toLocaleDateString('en-US', { 
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+          }),
+          timeSlots: booking.preferredTimeSlots.join(', '),
+          location: booking.preferredLocation
+        },
+        booking.preferredLocation
+      );
+    } catch (emailError) {
+      console.error('⚠️ Email sending failed:', emailError.message);
+    }
+    
+    // Send WhatsApp booking confirmation
+    const whatsappService = require('../services/whatsappService');
+    try {
+      await whatsappService.sendBookingConfirmation(
+        booking.mobileNumber,
+        {
+          patientName: booking.fullName,
+          referenceNumber: booking.referenceNumber,
+          treatment: consultation.name,
+          date: booking.preferredDate.toLocaleDateString('en-US', { 
+            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+          }),
+          timeSlots: booking.preferredTimeSlots.join(', '),
+          location: booking.preferredLocation
+        }
+      );
+    } catch (whatsappError) {
+      console.error('⚠️ WhatsApp sending failed:', whatsappError.message);
+    }
+    
+    // Make automated voice call
+    const twilioVoiceService = require('../services/twilioVoiceService');
+    try {
+      const formattedDate = booking.preferredDate.toLocaleDateString('en-US', { 
+        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+      });
+      
+      await twilioVoiceService.makeBookingConfirmationCall(
+        booking.mobileNumber,
+        {
+          patientName: booking.fullName,
+          referenceNumber: booking.referenceNumber,
+          treatment: consultation.name,
+          date: formattedDate,
+          timeSlots: booking.preferredTimeSlots.join(', '),
+          branchName: branch.name,
+          branchAddress: branch.address.line1 + ', ' + branch.address.city
+        }
+      );
+    } catch (voiceError) {
+      console.error('⚠️ Voice call failed:', voiceError.message);
+    }
+    
+    res.json({
+      success: true,
+      message: 'Payment verified and booking created successfully',
+      data: {
+        booking: booking,
+        payment: {
+          id: payment._id,
+          amount: payment.amount,
+          status: payment.status
+        }
+      }
+    });
+  } catch (error) {
+    console.error('❌ Verify consultation payment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Payment verification failed',
+      error: error.message
+    });
+  }
+};
+
 module.exports = exports;

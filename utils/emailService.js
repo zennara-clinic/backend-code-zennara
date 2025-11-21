@@ -131,7 +131,7 @@ exports.sendAppointmentBookingConfirmation = async (email, fullName, bookingData
   try {
     const htmlContent = getAppointmentBookingConfirmationTemplate(fullName, bookingData, branch);
     
-    const response = await sendEmail(email, 'Appointment Booking Received - Zennara Clinic', htmlContent);
+    const response = await sendEmail(email, `Appointment Booking Received [${bookingData.referenceNumber}]`, htmlContent);
     console.log('✅ Appointment booking confirmation email sent successfully');
     return response;
   } catch (error) {
@@ -145,7 +145,7 @@ exports.sendAppointmentConfirmed = async (email, fullName, appointmentData, bran
   try {
     const htmlContent = getAppointmentConfirmedTemplate(fullName, appointmentData, branch);
     
-    const response = await sendEmail(email, 'Appointment Confirmed - Zennara Clinic', htmlContent);
+    const response = await sendEmail(email, `Appointment Confirmed [${appointmentData.referenceNumber}]`, htmlContent);
     console.log('✅ Appointment confirmed email sent successfully');
     return response;
   } catch (error) {
@@ -159,7 +159,7 @@ exports.sendAppointmentReminder = async (email, fullName, appointmentData, branc
   try {
     const htmlContent = getAppointmentReminderTemplate(fullName, appointmentData, branch);
     
-    const response = await sendEmail(email, 'Appointment Reminder - Zennara Clinic', htmlContent);
+    const response = await sendEmail(email, `Appointment Reminder [${appointmentData.referenceNumber}]`, htmlContent);
     console.log('✅ Appointment reminder email sent successfully');
     return response;
   } catch (error) {
@@ -173,7 +173,7 @@ exports.sendAppointmentRescheduled = async (email, fullName, appointmentData, br
   try {
     const htmlContent = getAppointmentRescheduledTemplate(fullName, appointmentData, branch);
     
-    const response = await sendEmail(email, 'Appointment Rescheduled - Zennara Clinic', htmlContent);
+    const response = await sendEmail(email, `Appointment Rescheduled [${appointmentData.referenceNumber}]`, htmlContent);
     console.log('✅ Appointment rescheduled email sent successfully');
     return response;
   } catch (error) {
@@ -187,7 +187,7 @@ exports.sendAppointmentCancelled = async (email, fullName, appointmentData, bran
   try {
     const htmlContent = getAppointmentCancelledTemplate(fullName, appointmentData, branch);
     
-    const response = await sendEmail(email, 'Appointment Cancelled - Zennara Clinic', htmlContent);
+    const response = await sendEmail(email, `Appointment Cancelled [${appointmentData.referenceNumber}]`, htmlContent);
     console.log('✅ Appointment cancelled email sent successfully');
     return response;
   } catch (error) {
@@ -201,7 +201,7 @@ exports.sendAppointmentCompleted = async (email, fullName, appointmentData, bran
   try {
     const htmlContent = getAppointmentCompletedTemplate(fullName, appointmentData, branch);
     
-    const response = await sendEmail(email, 'Thank You - Zennara Clinic', htmlContent);
+    const response = await sendEmail(email, `Thank You for Visiting Zennara [${appointmentData.referenceNumber}]`, htmlContent);
     console.log('✅ Appointment completed email sent successfully');
     return response;
   } catch (error) {
@@ -215,7 +215,7 @@ exports.sendRatingRequest = async (email, fullName, appointmentData, branch = 'Z
   try {
     const htmlContent = getRatingRequestTemplate(fullName, appointmentData, branch);
     
-    const response = await sendEmail(email, 'How Was Your Experience? - Zennara Clinic', htmlContent);
+    const response = await sendEmail(email, `How Was Your Experience? [${appointmentData.referenceNumber}]`, htmlContent);
     console.log('✅ Rating request email sent successfully');
     return response;
   } catch (error) {
@@ -229,7 +229,7 @@ exports.sendNoShowNotification = async (email, fullName, appointmentData, branch
   try {
     const htmlContent = getNoShowNotificationTemplate(fullName, appointmentData, branch);
     
-    const response = await sendEmail(email, 'Missed Appointment - Zennara Clinic', htmlContent);
+    const response = await sendEmail(email, `Missed Appointment [${appointmentData.referenceNumber}]`, htmlContent);
     console.log('✅ No-show notification email sent successfully');
     return response;
   } catch (error) {
@@ -243,7 +243,7 @@ exports.sendCheckInSuccessful = async (email, fullName, appointmentData, branch 
   try {
     const htmlContent = getCheckInSuccessfulTemplate(fullName, appointmentData, branch);
     
-    const response = await sendEmail(email, 'Check-in Confirmed - Zennara Clinic', htmlContent);
+    const response = await sendEmail(email, `Check-in Confirmed [${appointmentData.referenceNumber}]`, htmlContent);
     console.log('✅ Check-in successful email sent successfully');
     return response;
   } catch (error) {
@@ -378,7 +378,7 @@ exports.sendBirthdayWish = async (email, fullName) => {
 exports.sendOrderConfirmationEmail = async (email, customerName, orderData) => {
   try {
     const htmlContent = getOrderConfirmationTemplate(customerName, orderData);
-    const response = await sendEmail(email, `Order Placed - ${orderData.orderNumber}`, htmlContent);
+    const response = await sendEmail(email, `Order Placed [${orderData.orderNumber}]`, htmlContent);
     console.log('Order placed email sent successfully');
     return response;
   } catch (error) {
@@ -391,7 +391,7 @@ exports.sendOrderConfirmationEmail = async (email, customerName, orderData) => {
 exports.sendOrderConfirmedEmail = async (email, customerName, orderData) => {
   try {
     const htmlContent = getOrderConfirmedEmail(customerName, orderData);
-    const response = await sendEmail(email, `Order Confirmed - ${orderData.orderNumber}`, htmlContent);
+    const response = await sendEmail(email, `Order Confirmed by Admin [${orderData.orderNumber}]`, htmlContent);
     console.log('Order confirmed email sent successfully');
     return response;
   } catch (error) {
@@ -404,7 +404,7 @@ exports.sendOrderConfirmedEmail = async (email, customerName, orderData) => {
 exports.sendOrderProcessingEmail = async (email, customerName, orderData) => {
   try {
     const htmlContent = getOrderProcessingTemplate(customerName, orderData);
-    const response = await sendEmail(email, `Order Processing - ${orderData.orderNumber}`, htmlContent);
+    const response = await sendEmail(email, `Your Order is Being Processed [${orderData.orderNumber}]`, htmlContent);
     console.log('Order processing email sent successfully');
     return response;
   } catch (error) {
@@ -417,7 +417,7 @@ exports.sendOrderProcessingEmail = async (email, customerName, orderData) => {
 exports.sendOrderPackedEmail = async (email, customerName, orderData) => {
   try {
     const htmlContent = getOrderPackedTemplate(customerName, orderData);
-    const response = await sendEmail(email, `Order Packed - ${orderData.orderNumber}`, htmlContent);
+    const response = await sendEmail(email, `Order Packed & Ready [${orderData.orderNumber}]`, htmlContent);
     console.log('Order packed email sent successfully');
     return response;
   } catch (error) {
@@ -430,7 +430,7 @@ exports.sendOrderPackedEmail = async (email, customerName, orderData) => {
 exports.sendOrderShippedEmail = async (email, customerName, orderData) => {
   try {
     const htmlContent = getOrderShippedTemplate(customerName, orderData);
-    const response = await sendEmail(email, `Order Shipped - ${orderData.orderNumber}`, htmlContent);
+    const response = await sendEmail(email, `Order Shipped - Track Your Delivery [${orderData.orderNumber}]`, htmlContent);
     console.log('Order shipped email sent successfully');
     return response;
   } catch (error) {
@@ -443,7 +443,7 @@ exports.sendOrderShippedEmail = async (email, customerName, orderData) => {
 exports.sendOrderOutForDeliveryEmail = async (email, customerName, orderData) => {
   try {
     const htmlContent = getOrderOutForDeliveryTemplate(customerName, orderData);
-    const response = await sendEmail(email, `Out for Delivery - ${orderData.orderNumber}`, htmlContent);
+    const response = await sendEmail(email, `Out for Delivery Today [${orderData.orderNumber}]`, htmlContent);
     console.log('Order out for delivery email sent successfully');
     return response;
   } catch (error) {
@@ -456,7 +456,7 @@ exports.sendOrderOutForDeliveryEmail = async (email, customerName, orderData) =>
 exports.sendOrderDeliveredEmail = async (email, customerName, orderData) => {
   try {
     const htmlContent = getOrderDeliveredTemplate(customerName, orderData);
-    const response = await sendEmail(email, `Order Delivered - ${orderData.orderNumber}`, htmlContent);
+    const response = await sendEmail(email, `Order Successfully Delivered [${orderData.orderNumber}]`, htmlContent);
     console.log('Order delivered email sent successfully');
     return response;
   } catch (error) {
@@ -469,7 +469,7 @@ exports.sendOrderDeliveredEmail = async (email, customerName, orderData) => {
 exports.sendOrderCancelledEmail = async (email, customerName, orderData) => {
   try {
     const htmlContent = getOrderCancelledTemplate(customerName, orderData);
-    const response = await sendEmail(email, `Order Cancelled - ${orderData.orderNumber}`, htmlContent);
+    const response = await sendEmail(email, `Order Cancellation Confirmed [${orderData.orderNumber}]`, htmlContent);
     console.log('Order cancelled email sent successfully');
     return response;
   } catch (error) {
@@ -482,7 +482,7 @@ exports.sendOrderCancelledEmail = async (email, customerName, orderData) => {
 exports.sendReturnRequestReceivedEmail = async (email, customerName, orderData) => {
   try {
     const htmlContent = getReturnRequestReceivedTemplate(customerName, orderData);
-    const response = await sendEmail(email, `Return Request Received - ${orderData.orderNumber}`, htmlContent);
+    const response = await sendEmail(email, `Return Request Received & Under Review [${orderData.orderNumber}]`, htmlContent);
     console.log('Return request email sent successfully');
     return response;
   } catch (error) {
@@ -495,7 +495,7 @@ exports.sendReturnRequestReceivedEmail = async (email, customerName, orderData) 
 exports.sendReturnApprovedEmail = async (email, customerName, orderData) => {
   try {
     const htmlContent = getReturnApprovedTemplate(customerName, orderData);
-    const response = await sendEmail(email, `Return Approved - ${orderData.orderNumber}`, htmlContent);
+    const response = await sendEmail(email, `Return Request Approved [${orderData.orderNumber}]`, htmlContent);
     console.log('Return approved email sent successfully');
     return response;
   } catch (error) {
@@ -508,7 +508,7 @@ exports.sendReturnApprovedEmail = async (email, customerName, orderData) => {
 exports.sendReturnRejectedEmail = async (email, customerName, orderData) => {
   try {
     const htmlContent = getReturnRejectedTemplate(customerName, orderData);
-    const response = await sendEmail(email, `Return Request Update - ${orderData.orderNumber}`, htmlContent);
+    const response = await sendEmail(email, `Return Request Decision [${orderData.orderNumber}]`, htmlContent);
     console.log('Return rejected email sent successfully');
     return response;
   } catch (error) {
@@ -521,7 +521,7 @@ exports.sendReturnRejectedEmail = async (email, customerName, orderData) => {
 exports.sendRefundProcessedEmail = async (email, customerName, orderData) => {
   try {
     const htmlContent = getRefundProcessedTemplate(customerName, orderData);
-    const response = await sendEmail(email, `Refund Processed - ${orderData.orderNumber}`, htmlContent);
+    const response = await sendEmail(email, `Refund Successfully Processed [${orderData.orderNumber}]`, htmlContent);
     console.log('Refund processed email sent successfully');
     return response;
   } catch (error) {

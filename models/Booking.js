@@ -106,6 +106,29 @@ const bookingSchema = new mongoose.Schema({
   feedback: String,
   ratedAt: Date,
 
+  // Payment Details
+  paymentId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Payment'
+  },
+  razorpayOrderId: String,
+  razorpayPaymentId: String,
+  paymentStatus: {
+    type: String,
+    enum: ['pending', 'paid', 'failed', 'refunded'],
+    default: 'pending'
+  },
+  amount: {
+    type: Number,
+    required: true
+  },
+  paymentMethod: {
+    type: String,
+    enum: ['Razorpay'],
+    default: 'Razorpay'
+  },
+  paidAt: Date,
+
   // Metadata
   notes: String,
   adminNotes: String,
