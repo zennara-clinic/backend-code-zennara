@@ -151,7 +151,6 @@ const appUISchema = new mongoose.Schema({
 });
 
 // Index for better query performance
-appUISchema.index({ page: 1 });
 appUISchema.index({ isActive: 1 });
 
 module.exports = mongoose.model('AppUI', appUISchema);
