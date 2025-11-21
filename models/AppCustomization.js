@@ -91,21 +91,53 @@ const appCustomizationSchema = new mongoose.Schema({
       type: String,
       default: 'Search settings...'
     },
-    membershipCardText: {
+    personalCardText: {
       type: String,
-      default: 'Zen Membership'
-    },
-    ordersCardText: {
-      type: String,
-      default: 'My Orders'
-    },
-    appointmentsCardText: {
-      type: String,
-      default: 'My Appointments'
+      default: 'Personal'
     },
     addressesCardText: {
       type: String,
-      default: 'Saved Addresses'
+      default: 'Addresses'
+    },
+    bankDetailsCardText: {
+      type: String,
+      default: 'Bank Details'
+    },
+    membershipCardText: {
+      type: String,
+      default: 'Membership'
+    },
+    ordersCardText: {
+      type: String,
+      default: 'Orders'
+    },
+    treatmentsCardText: {
+      type: String,
+      default: 'Treatments'
+    },
+    appointmentsCardText: {
+      type: String,
+      default: 'Appointments'
+    },
+    formsCardText: {
+      type: String,
+      default: 'Forms'
+    },
+    helpCardText: {
+      type: String,
+      default: 'Help'
+    },
+    deleteCardText: {
+      type: String,
+      default: 'Delete'
+    },
+    termsCardText: {
+      type: String,
+      default: 'Terms'
+    },
+    privacyCardText: {
+      type: String,
+      default: 'Privacy'
     }
   },
 
