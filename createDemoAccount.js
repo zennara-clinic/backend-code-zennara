@@ -1,5 +1,5 @@
 /**
- * Script to create demo account for Google Play review
+ * Script to create demo account for Apple Store review
  * Run this once: node createDemoAccount.js
  */
 
@@ -33,24 +33,37 @@ async function createDemoAccount() {
 
     if (existingDemo) {
       console.log('ℹ️  Demo account already exists');
-      console.log('📧 Email:', existingDemo.email);
       console.log('👤 Name:', existingDemo.fullName);
       console.log('📱 Phone:', existingDemo.phone);
-      console.log('\n✅ Demo account is ready for Google Play review');
-      console.log('   Login with: demo@zennara.com');
-      console.log('   OTP: 1234 (fixed for demo account)');
+      console.log('📧 Email:', existingDemo.email);
+      console.log('📍 Location:', existingDemo.location);
+      console.log('\n✅ Demo account is ready for Apple Store review');
+      console.log('   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('   📱 Login Phone: 9999999999');
+      console.log('   🔐 Demo OTP: 1234 (fixed)');
+      console.log('   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('\n   Instructions for Apple Review:');
+      console.log('   1. Enter phone number: 9999999999');
+      console.log('   2. Enter OTP: 1234');
+      console.log('   3. Access all features without restrictions');
     } else {
       // Create demo account
       const demoUser = await User.create(DEMO_ACCOUNT);
 
       console.log('✅ Demo account created successfully!');
-      console.log('📧 Email:', demoUser.email);
       console.log('👤 Name:', demoUser.fullName);
       console.log('📱 Phone:', demoUser.phone);
+      console.log('📧 Email:', demoUser.email);
       console.log('📍 Location:', demoUser.location);
-      console.log('\n✅ Demo account is ready for Google Play review');
-      console.log('   Login with: demo@zennara.com');
-      console.log('   OTP: 1234 (fixed for demo account)');
+      console.log('\n✅ Demo account is ready for Apple Store review');
+      console.log('   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('   📱 Login Phone: 9999999999');
+      console.log('   🔐 Demo OTP: 1234 (fixed)');
+      console.log('   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('\n   Instructions for Apple Review:');
+      console.log('   1. Enter phone number: 9999999999');
+      console.log('   2. Enter OTP: 1234');
+      console.log('   3. Access all features without restrictions');
     }
 
     process.exit(0);

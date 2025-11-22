@@ -354,13 +354,14 @@ UserSchema.methods.generateOTP = function() {
 
 // Method to verify OTP
 UserSchema.methods.verifyOTP = function(enteredOTP) {
-  // DEMO ACCOUNT BYPASS for Google Play Review
-  // Allow fixed OTP "1234" for demo account
-  const DEMO_EMAIL = 'demo@zennara.com';
+  // DEMO ACCOUNT BYPASS for Apple Store Review
+  // Allow fixed OTP "1234" for demo account using phone number
+  const DEMO_PHONE = '9999999999';
   const DEMO_OTP = '1234';
   
-  if (this.email === DEMO_EMAIL && String(enteredOTP).trim() === DEMO_OTP) {
+  if (this.phone === DEMO_PHONE && String(enteredOTP).trim() === DEMO_OTP) {
     console.log('✅ Demo account login - OTP bypass activated');
+    console.log('📱 Demo phone:', DEMO_PHONE);
     // Reset counters for demo account
     this.failedLoginAttempts = 0;
     this.accountLockedUntil = null;

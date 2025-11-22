@@ -119,11 +119,17 @@ exports.getFormById = async (req, res) => {
     const { id } = req.params;
     const userId = req.user._id;
 
+    // Fetch form with basic population first
     const form = await PreConsultForm.findOne({ _id: id, userId })
-      .populate('bookingId', 'referenceNumber preferredDate status consultationId')
       .populate({
         path: 'bookingId',
-        populate: { path: 'consultationId', select: 'name category' }
+        select: 'referenceNumber preferredDate status consultationId',
+        populate: {
+          path: 'consultationId',
+          select: 'name category',
+          options: { strictPopulate: false }
+        },
+        options: { strictPopulate: false }
       });
 
     if (!form) {
@@ -133,9 +139,19 @@ exports.getFormById = async (req, res) => {
       });
     }
 
+    // Ensure form data is safe for frontend
+    const safeFormData = form.toObject();
+    
+    // Handle null/undefined nested references gracefully
+    if (safeFormData.bookingId && typeof safeFormData.bookingId === 'object') {
+      if (!safeFormData.bookingId.consultationId) {
+        safeFormData.bookingId.consultationId = null;
+      }
+    }
+
     res.status(200).json({
       success: true,
-      data: form
+      data: safeFormData
     });
   } catch (error) {
     console.error('Error fetching pre-consult form:', error);
