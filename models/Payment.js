@@ -13,7 +13,7 @@ const paymentSchema = new mongoose.Schema({
   },
   orderType: {
     type: String,
-    enum: ['ProductOrder', 'ZenMembership'],
+    enum: ['ProductOrder', 'ZenMembership', 'Booking'],
     required: true
   },
   razorpayOrderId: {
