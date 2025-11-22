@@ -149,6 +149,31 @@ exports.getFormById = async (req, res) => {
       }
     }
 
+    // Ensure all nested objects are safe
+    if (!safeFormData.reasonForVisit) {
+      safeFormData.reasonForVisit = { skin: false, hair: false, body: false, yoga: false, nutrition: false };
+    }
+    if (!safeFormData.skinConcerns) {
+      safeFormData.skinConcerns = { acnePimple: false, scar: false, pigmentation: false, skinSagging: false, skinTightening: false, wartSkinTag: false };
+    }
+    if (!safeFormData.hairConcerns) {
+      safeFormData.hairConcerns = { hairFallThinning: false, hairRemoval: false, others: null };
+    }
+    if (!safeFormData.medicalHistory) {
+      safeFormData.medicalHistory = { hypertension: false, diabetes: false, thyroid: false, menstrualHistory: null };
+    }
+    if (!safeFormData.dailyRoutine) {
+      safeFormData.dailyRoutine = { cleanser: null, moisturiser: null, sunscreen: null, otherProducts: null };
+    }
+    if (!safeFormData.diet) {
+      safeFormData.diet = { type: null, waterIntakeLiters: null };
+    }
+
+    // Ensure clientSignature is safe (prevent split() crash)
+    if (!safeFormData.clientSignature) {
+      safeFormData.clientSignature = null;
+    }
+
     res.status(200).json({
       success: true,
       data: safeFormData
