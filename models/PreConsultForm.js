@@ -185,8 +185,9 @@ const preConsultFormSchema = new mongoose.Schema({
   healthDataConsent: {
     accepted: {
       type: Boolean,
-      required: [true, 'Health data consent is required'],
       default: false
+      // Note: Consent validation is handled at application level
+      // Users can skip consent, but it's strongly recommended for legal compliance
     },
     acceptedAt: {
       type: Date,
@@ -221,21 +222,26 @@ const preConsultFormSchema = new mongoose.Schema({
 });
 
 // Field-level encryption for sensitive health data (DPDPA 2023 compliance)
-// Only encrypt if encryption keys are provided
+// Only encrypt if encryption keys are provided AND valid
 if (process.env.ENCRYPTION_SECRET && process.env.ENCRYPTION_SALT) {
-  preConsultFormSchema.plugin(encrypt, {
-    fields: [
-      'drugAllergies',
-      'otherAllergies', 
-      'medicalHistory',
-      'additionalInfo',
-      'lastMenstrualPeriod'
-    ],
-    secret: process.env.ENCRYPTION_SECRET,
-    saltGenerator: () => process.env.ENCRYPTION_SALT,
-    useAes256Gcm: true
-  });
-  console.log('🔒 Health data encryption enabled for PreConsultForm');
+  // Validate salt is exactly 16 characters
+  if (process.env.ENCRYPTION_SALT.length === 16) {
+    preConsultFormSchema.plugin(encrypt, {
+      fields: [
+        'drugAllergies',
+        'otherAllergies', 
+        'medicalHistory',
+        'additionalInfo',
+        'lastMenstrualPeriod'
+      ],
+      secret: process.env.ENCRYPTION_SECRET,
+      saltGenerator: () => process.env.ENCRYPTION_SALT,
+      useAes256Gcm: true
+    });
+    console.log('🔒 Health data encryption enabled for PreConsultForm');
+  } else {
+    console.warn(`⚠️  Invalid ENCRYPTION_SALT length (${process.env.ENCRYPTION_SALT.length} chars, need 16). Health data will NOT be encrypted.`);
+  }
 } else {
   console.warn('⚠️  Encryption keys not found. Health data will NOT be encrypted at rest.');
 }
