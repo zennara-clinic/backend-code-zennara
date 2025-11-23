@@ -6,7 +6,6 @@ const Message = require('../models/Message');
 
 const connectedUsers = new Map();
 const connectedAdmins = new Map();
-const presenceUpdateTimers = new Map(); // Debounce presence updates
 
 const setupSocketIO = (io) => {
   // Authentication middleware for socket
@@ -238,30 +237,25 @@ const setupSocketIO = (io) => {
       const { chatId } = data;
       
       if (socket.userType === 'user') {
-        const user = socket.user;
-        connectedUsers.set(user._id.toString(), { socketId: socket.id, chatId });
+        console.log(`👤 User ${socket.user.fullName} joined chat ${chatId}`);
         
+        // Broadcast to chat room (admins will receive this)
         const presenceData = {
           chatId,
-          userId: user._id,
-          userName: user.fullName,
+          userId: socket.user._id,
+          userName: socket.user.fullName,
           online: true,
-          lastSeen: null
+          lastSeen: new Date()
         };
         
-        // Debounce presence updates to prevent flickering
-        const timerKey = `${chatId}_${user._id}`;
-        if (presenceUpdateTimers.has(timerKey)) {
-          clearTimeout(presenceUpdateTimers.get(timerKey));
+        console.log(`📡 Broadcasting presence to chat ${chatId}:`, presenceData);
+        io.to(chatId).emit('userPresenceChanged', presenceData);
+        
+        // Also broadcast to branch room for admin panel updates
+        const chat = await Chat.findById(chatId);
+        if (chat) {
+          io.to(`branch_${chat.branchId}`).emit('userPresenceChanged', presenceData);
         }
-        
-        const timer = setTimeout(() => {
-          console.log(`📡 Broadcasting presence to chat ${chatId}:`, presenceData);
-          io.to(chatId).emit('userPresenceChanged', presenceData);
-          presenceUpdateTimers.delete(timerKey);
-        }, 300); // 300ms debounce
-        
-        presenceUpdateTimers.set(timerKey, timer);
       }
     });
 
@@ -269,30 +263,25 @@ const setupSocketIO = (io) => {
       const { chatId } = data;
       
       if (socket.userType === 'user') {
-        const user = socket.user;
-        connectedUsers.delete(user._id.toString());
+        console.log(`👤 User ${socket.user.fullName} left chat ${chatId}`);
         
+        // Broadcast to chat room (admins will receive this)
         const presenceData = {
           chatId,
-          userId: user._id,
-          userName: user.fullName,
+          userId: socket.user._id,
+          userName: socket.user.fullName,
           online: false,
           lastSeen: new Date()
         };
         
-        // Debounce presence updates to prevent flickering
-        const timerKey = `${chatId}_${user._id}`;
-        if (presenceUpdateTimers.has(timerKey)) {
-          clearTimeout(presenceUpdateTimers.get(timerKey));
+        console.log(`📡 Broadcasting offline presence to chat ${chatId}`);
+        io.to(chatId).emit('userPresenceChanged', presenceData);
+        
+        // Also broadcast to branch room
+        const chat = await Chat.findById(chatId);
+        if (chat) {
+          io.to(`branch_${chat.branchId}`).emit('userPresenceChanged', presenceData);
         }
-        
-        const timer = setTimeout(() => {
-          console.log(`📡 Broadcasting offline presence to chat ${chatId}`);
-          io.to(chatId).emit('userPresenceChanged', presenceData);
-          presenceUpdateTimers.delete(timerKey);
-        }, 300); // 300ms debounce
-        
-        presenceUpdateTimers.set(timerKey, timer);
       }
     });
 
