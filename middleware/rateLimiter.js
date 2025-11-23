@@ -1,5 +1,15 @@
 const rateLimit = require('express-rate-limit');
 
+// Helper function to normalize IP addresses
+const normalizeIP = (ip) => {
+  if (!ip) return 'unknown';
+  // Handle IPv6 addresses by extracting the last segment
+  if (ip.includes(':')) {
+    return ip.split(':').pop() || 'ipv6';
+  }
+  return ip;
+};
+
 // Strict rate limiter for admin login endpoints
 exports.adminLoginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -14,11 +24,10 @@ exports.adminLoginLimiter = rateLimit({
   skipSuccessfulRequests: false, // Count all requests
   skip: () => false, // Don't skip any requests
   keyGenerator: (req) => {
-    // Use IP + email for rate limiting key
-    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    // Use normalized IP + email for rate limiting key
+    const ip = normalizeIP(req.ip || req.connection.remoteAddress);
     return `${ip}_${req.body.email || 'unknown'}`;
-  },
-  validate: { ipv6: false } // Disable IPv6 validation
+  }
 });
 
 // OTP verification rate limiter
@@ -33,10 +42,9 @@ exports.adminOTPLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => {
-    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    const ip = normalizeIP(req.ip || req.connection.remoteAddress);
     return `${ip}_${req.body.email || 'unknown'}`;
-  },
-  validate: { ipv6: false } // Disable IPv6 validation
+  }
 });
 
 // General admin API rate limiter (more lenient)
@@ -51,7 +59,9 @@ exports.adminApiLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skipSuccessfulRequests: true, // Only count failed requests
-  validate: { ipv6: false } // Disable IPv6 validation
+  keyGenerator: (req) => {
+    return normalizeIP(req.ip || req.connection.remoteAddress);
+  }
 });
 
 // Strict rate limiter for sensitive operations (delete, bulk update)
@@ -67,8 +77,7 @@ exports.adminSensitiveOperationsLimiter = rateLimit({
   legacyHeaders: false,
   keyGenerator: (req) => {
     // Use admin ID for authenticated requests
-    const ip = req.ip || req.connection.remoteAddress || 'unknown';
+    const ip = normalizeIP(req.ip || req.connection.remoteAddress);
     return req.admin?._id?.toString() || ip;
-  },
-  validate: { ipv6: false } // Disable IPv6 validation
+  }
 });
