@@ -734,8 +734,24 @@ exports.returnOrder = async (req, res) => {
     }
     
     // Check if return window is valid (e.g., within 7 days of delivery)
+    if (!order.deliveredAt) {
+      return res.status(400).json({
+        success: false,
+        message: 'Order delivery date not found. Cannot process return.'
+      });
+    }
+    
     const deliveryDate = new Date(order.deliveredAt);
     const currentDate = new Date();
+    
+    // Validate delivery date is valid
+    if (isNaN(deliveryDate.getTime())) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid delivery date. Cannot process return.'
+      });
+    }
+    
     const daysSinceDelivery = Math.floor((currentDate - deliveryDate) / (1000 * 60 * 60 * 24));
     
     if (daysSinceDelivery > 7) {
