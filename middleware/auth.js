@@ -297,6 +297,167 @@ exports.auditLog = (action, resource) => {
   };
 };
 
+// Protect routes - allow both user and admin
+exports.protectBoth = async (req, res, next) => {
+  try {
+    let token;
+
+    // Check if token exists in Authorization header
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+      token = req.headers.authorization.split(' ')[1];
+    }
+
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: 'Not authorized. Please login to access this resource.'
+      });
+    }
+
+    try {
+      // Verify JWT token
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      
+      // Check if it's an admin token
+      if (decoded.role === 'admin' && decoded.adminId) {
+        const admin = await Admin.findById(decoded.adminId);
+        
+        if (!admin) {
+          return res.status(401).json({
+            success: false,
+            message: 'Admin account not found.',
+            code: 'ACCOUNT_DELETED'
+          });
+        }
+
+        if (!admin.isActive) {
+          return res.status(401).json({
+            success: false,
+            message: 'Your admin account has been deactivated.',
+            code: 'ACCOUNT_DEACTIVATED'
+          });
+        }
+
+        // Update last login
+        admin.lastLogin = Date.now();
+        await admin.save();
+
+        // Add admin info to request
+        req.admin = {
+          _id: admin._id,
+          email: admin.email,
+          name: admin.name,
+          role: admin.role,
+          isActive: admin.isActive
+        };
+        
+        // Extract IP and user agent for audit logging
+        req.adminIp = req.ip || req.connection.remoteAddress;
+        req.adminUserAgent = req.get('user-agent');
+        
+        return next();
+      }
+      
+      // Otherwise, treat as user token
+      if (decoded.userId) {
+        // Check if token exists and is valid in database
+        const tokenDoc = await Token.findOne({ token, isActive: true });
+        
+        if (!tokenDoc) {
+          return res.status(401).json({
+            success: false,
+            message: 'Session expired. Please login again.',
+            code: 'SESSION_EXPIRED'
+          });
+        }
+
+        // Check if token has expired
+        if (!tokenDoc.isValid()) {
+          await tokenDoc.revoke();
+          return res.status(401).json({
+            success: false,
+            message: 'Session expired. Please login again.',
+            code: 'SESSION_EXPIRED'
+          });
+        }
+
+        // Check if user account still exists and is active
+        const user = await User.findById(decoded.userId).select('-password -otp -otpExpires');
+        
+        if (!user) {
+          await Token.revokeAllUserTokens(decoded.userId);
+          return res.status(401).json({
+            success: false,
+            message: 'Account not found. Please contact support.',
+            code: 'ACCOUNT_DELETED'
+          });
+        }
+
+        if (!user.isActive) {
+          await Token.revokeAllUserTokens(decoded.userId);
+          return res.status(401).json({
+            success: false,
+            message: 'Your account has been deactivated. Please contact support.',
+            code: 'ACCOUNT_DEACTIVATED'
+          });
+        }
+
+        // Update last used time
+        tokenDoc.lastUsedAt = Date.now();
+        await tokenDoc.save();
+        
+        // Add user to request
+        req.user = {
+          _id: user._id,
+          email: user.email,
+          fullName: user.fullName,
+          phone: user.phone,
+          location: user.location,
+          dateOfBirth: user.dateOfBirth,
+          gender: user.gender,
+          memberType: user.memberType || 'Regular Member',
+          zenMembershipStartDate: user.zenMembershipStartDate,
+          zenMembershipExpiryDate: user.zenMembershipExpiryDate,
+          zenMembershipAutoRenew: user.zenMembershipAutoRenew,
+          profilePicture: user.profilePicture,
+          isVerified: user.isVerified,
+          isActive: user.isActive,
+          createdAt: user.createdAt
+        };
+        req.tokenId = tokenDoc._id;
+        
+        return next();
+      }
+      
+      // If neither user nor admin token
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token format.'
+      });
+      
+    } catch (error) {
+      if (error.name === 'TokenExpiredError') {
+        return res.status(401).json({
+          success: false,
+          message: 'Session expired. Please login again.',
+          code: 'SESSION_EXPIRED'
+        });
+      }
+      
+      return res.status(401).json({
+        success: false,
+        message: 'Invalid token. Please login again.'
+      });
+    }
+  } catch (error) {
+    console.error('❌ Authentication error');
+    res.status(500).json({
+      success: false,
+      message: 'Authentication failed'
+    });
+  }
+};
+
 // Helper to sanitize sensitive data from logs
 function sanitizeLogData(data) {
   if (!data || typeof data !== 'object') return data;

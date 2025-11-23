@@ -11,20 +11,20 @@ const {
   getChatStats,
   assignChat
 } = require('../controllers/chatController');
-const { protect, protectAdmin } = require('../middleware/auth');
+const { protect, protectAdmin, protectBoth } = require('../middleware/auth');
 
 // User routes
 router.post('/initiate', protect, initiateChat);
 router.get('/user', protect, getUserChats);
-router.get('/:chatId/messages', protect, getChatMessages);
-router.post('/:chatId/messages', protect, sendMessage);
-router.put('/:chatId/read', protect, markChatAsRead);
+
+// Shared routes (both user and admin can access)
+router.get('/:chatId/messages', protectBoth, getChatMessages);
+router.post('/:chatId/messages', protectBoth, sendMessage);
+router.put('/:chatId/read', protectBoth, markChatAsRead);
 
 // Admin routes
 router.get('/admin/branch/:branchId', protectAdmin, getChatsByBranch);
 router.get('/admin/stats', protectAdmin, getChatStats);
-router.post('/admin/:chatId/messages', protectAdmin, sendMessage);
-router.put('/admin/:chatId/read', protectAdmin, markChatAsRead);
 router.put('/admin/:chatId/close', protectAdmin, closeChat);
 router.put('/admin/:chatId/assign', protectAdmin, assignChat);
 

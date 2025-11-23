@@ -149,13 +149,17 @@ exports.getChatMessages = async (req, res) => {
       });
     }
 
-    // Check authorization
-    if (req.user && chat.userId.toString() !== req.user._id.toString()) {
-      return res.status(403).json({
-        success: false,
-        message: 'Unauthorized access'
-      });
+    // Check authorization - users can only see their own chats, admins can see all
+    if (req.user && !req.admin) {
+      // User must be the owner of the chat
+      if (chat.userId.toString() !== req.user._id.toString()) {
+        return res.status(403).json({
+          success: false,
+          message: 'Unauthorized access'
+        });
+      }
     }
+    // Admins have access to all chats, no additional check needed
 
     const messages = await Message.find({ chatId })
       .sort({ createdAt: -1 })
