@@ -95,6 +95,10 @@ const setupSocketIO = (io) => {
         // If admin, also join branch room
         if (socket.userType === 'admin') {
           socket.join(`branch_${chat.branchId}`);
+          
+          // Request presence status from user if they're in this chat
+          console.log(`Admin requesting presence for chat ${chatId}`);
+          io.to(chatId).emit('requestPresence', { chatId });
         }
 
         // Send confirmation
@@ -218,6 +222,59 @@ const setupSocketIO = (io) => {
       };
       console.log(`${socket.userType} stopped typing in chat ${chatId}`);
       socket.to(chatId).emit('userStoppedTyping', stopData);
+    });
+
+    // User presence tracking
+    socket.on('userJoinedChat', async (data) => {
+      const { chatId } = data;
+      
+      if (socket.userType === 'user') {
+        console.log(`👤 User ${socket.user.fullName} joined chat ${chatId}`);
+        
+        // Broadcast to chat room (admins will receive this)
+        io.to(chatId).emit('userPresenceChanged', {
+          chatId,
+          userId: socket.user._id,
+          userName: socket.user.fullName,
+          online: true,
+          lastSeen: new Date()
+        });
+      }
+    });
+
+    socket.on('userLeftChat', async (data) => {
+      const { chatId } = data;
+      
+      if (socket.userType === 'user') {
+        console.log(`👤 User ${socket.user.fullName} left chat ${chatId}`);
+        
+        // Broadcast to chat room (admins will receive this)
+        io.to(chatId).emit('userPresenceChanged', {
+          chatId,
+          userId: socket.user._id,
+          userName: socket.user.fullName,
+          online: false,
+          lastSeen: new Date()
+        });
+      }
+    });
+
+    // Admin requested presence - user responds with current status
+    socket.on('requestPresence', (data) => {
+      const { chatId } = data;
+      
+      if (socket.userType === 'user') {
+        console.log(`📡 User responding to presence request for chat ${chatId}`);
+        
+        // Broadcast current online status
+        io.to(chatId).emit('userPresenceChanged', {
+          chatId,
+          userId: socket.user._id,
+          userName: socket.user.fullName,
+          online: true,
+          lastSeen: new Date()
+        });
+      }
     });
 
     // Mark messages as read
