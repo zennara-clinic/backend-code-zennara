@@ -375,6 +375,42 @@ const setupSocketIO = (io) => {
       }
     });
 
+    // Delete message
+    socket.on('deleteMessage', async (data) => {
+      try {
+        const { messageId, chatId } = data;
+        const userType = socket.userType === 'admin' ? 'Admin' : 'User';
+        const userId = socket.userType === 'user' ? socket.user._id : socket.admin._id;
+
+        // Find and verify message ownership
+        const message = await Message.findById(messageId);
+        
+        if (!message) {
+          socket.emit('error', { message: 'Message not found' });
+          return;
+        }
+
+        if (message.senderId.toString() !== userId.toString() || message.senderModel !== userType) {
+          socket.emit('error', { message: 'You can only delete your own messages' });
+          return;
+        }
+
+        // Delete the message
+        await Message.findByIdAndDelete(messageId);
+
+        // Notify all users in the chat room
+        io.to(chatId).emit('messageDeleted', {
+          messageId,
+          chatId
+        });
+
+        console.log(`Message ${messageId} deleted by ${userType} ${userId}`);
+      } catch (error) {
+        console.error('Error deleting message via socket:', error);
+        socket.emit('error', { message: 'Failed to delete message' });
+      }
+    });
+
     // Handle disconnect
     socket.on('disconnect', async () => {
       console.log(`❌ Socket disconnected: ${socket.id}`);

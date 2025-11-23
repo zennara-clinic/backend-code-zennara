@@ -91,7 +91,6 @@ app.use((req, res, next) => {
       origin: req.get('Origin'),
       contentType: req.get('Content-Type'),
       bodyKeys: Object.keys(req.body || {})
-      // body: req.body // uncomment if you need full body logs
     });
   }
   next();

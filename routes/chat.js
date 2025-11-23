@@ -9,7 +9,8 @@ const {
   markChatAsRead,
   closeChat,
   getChatStats,
-  assignChat
+  assignChat,
+  deleteMessage
 } = require('../controllers/chatController');
 const { protect, protectAdmin, protectBoth } = require('../middleware/auth');
 
@@ -21,6 +22,7 @@ router.get('/user', protect, getUserChats);
 router.get('/:chatId/messages', protectBoth, getChatMessages);
 router.post('/:chatId/messages', protectBoth, sendMessage);
 router.put('/:chatId/read', protectBoth, markChatAsRead);
+router.delete('/messages/:messageId', protectBoth, deleteMessage);
 
 // Admin routes
 router.get('/admin/branch/:branchId', protectAdmin, getChatsByBranch);

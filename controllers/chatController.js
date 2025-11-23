@@ -470,3 +470,56 @@ exports.assignChat = async (req, res) => {
     });
   }
 };
+
+// @desc    Delete a message
+// @route   DELETE /api/chat/messages/:messageId
+// @access  Private (User or Admin - can only delete own messages)
+exports.deleteMessage = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const userType = req.user.role === 'admin' ? 'Admin' : 'User';
+    const userId = req.user._id;
+
+    // Find the message
+    const message = await Message.findById(messageId);
+
+    if (!message) {
+      return res.status(404).json({
+        success: false,
+        message: 'Message not found'
+      });
+    }
+
+    // Check if user is authorized to delete (only can delete own messages)
+    if (message.senderId.toString() !== userId.toString() || message.senderModel !== userType) {
+      return res.status(403).json({
+        success: false,
+        message: 'You can only delete your own messages'
+      });
+    }
+
+    // Delete the message
+    await Message.findByIdAndDelete(messageId);
+
+    // Emit socket event to notify other party
+    if (req.io) {
+      req.io.to(message.chatId.toString()).emit('messageDeleted', {
+        messageId: message._id,
+        chatId: message.chatId
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Message deleted successfully',
+      data: { messageId: message._id }
+    });
+  } catch (error) {
+    console.error('Error deleting message:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Error deleting message',
+      error: error.message
+    });
+  }
+};
