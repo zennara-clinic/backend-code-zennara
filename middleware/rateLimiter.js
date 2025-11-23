@@ -1,15 +1,5 @@
 const rateLimit = require('express-rate-limit');
 
-// Helper function to normalize IP addresses
-const normalizeIP = (ip) => {
-  if (!ip) return 'unknown';
-  // Handle IPv6 addresses by extracting the last segment
-  if (ip.includes(':')) {
-    return ip.split(':').pop() || 'ipv6';
-  }
-  return ip;
-};
-
 // Strict rate limiter for admin login endpoints
 exports.adminLoginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
@@ -23,10 +13,9 @@ exports.adminLoginLimiter = rateLimit({
   legacyHeaders: false,
   skipSuccessfulRequests: false, // Count all requests
   skip: () => false, // Don't skip any requests
-  keyGenerator: (req) => {
-    // Use normalized IP + email for rate limiting key
-    const ip = normalizeIP(req.ip || req.connection.remoteAddress);
-    return `${ip}_${req.body.email || 'unknown'}`;
+  keyGenerator: (req, res) => {
+    // Use IP + email for rate limiting key (library handles IPv6 automatically)
+    return `${req.ip}_${req.body.email || 'unknown'}`;
   }
 });
 
@@ -41,9 +30,8 @@ exports.adminOTPLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => {
-    const ip = normalizeIP(req.ip || req.connection.remoteAddress);
-    return `${ip}_${req.body.email || 'unknown'}`;
+  keyGenerator: (req, res) => {
+    return `${req.ip}_${req.body.email || 'unknown'}`;
   }
 });
 
@@ -59,8 +47,8 @@ exports.adminApiLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skipSuccessfulRequests: true, // Only count failed requests
-  keyGenerator: (req) => {
-    return normalizeIP(req.ip || req.connection.remoteAddress);
+  keyGenerator: (req, res) => {
+    return req.ip;
   }
 });
 
@@ -75,9 +63,8 @@ exports.adminSensitiveOperationsLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  keyGenerator: (req) => {
+  keyGenerator: (req, res) => {
     // Use admin ID for authenticated requests
-    const ip = normalizeIP(req.ip || req.connection.remoteAddress);
-    return req.admin?._id?.toString() || ip;
+    return req.admin?._id?.toString() || req.ip;
   }
 });

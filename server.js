@@ -3,13 +3,38 @@ dotenv.config();
 
 const express = require('express');
 const cors = require('cors');
+const http = require('http');
+const { Server } = require('socket.io');
 
 const connectDB = require('./config/db');
 const { startBookingScheduler } = require('./utils/bookingScheduler');
 const BookingStatusService = require('./services/bookingStatusService');
 const { checkBookingStatus } = require('./middleware/bookingStatusMiddleware');
+const { setupSocketIO } = require('./services/socketService');
 
 const app = express();
+const server = http.createServer(app);
+
+// Socket.IO setup with CORS
+const io = new Server(server, {
+  cors: {
+    origin: ['https://admin.sizid.com', 'http://localhost:5173', 'http://localhost:8081', 'exp://192.168.1.100:8081'],
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE']
+  },
+  transports: ['websocket', 'polling'],
+  pingTimeout: 60000,
+  pingInterval: 25000
+});
+
+// Initialize Socket.IO
+setupSocketIO(io);
+
+// Make io accessible to routes
+app.use((req, res, next) => {
+  req.io = io;
+  next();
+});
 
 // Allow ONLY your admin app (recommended)
 app.use(cors({
@@ -92,6 +117,7 @@ app.use('/api/pre-consult-forms', require('./routes/preConsultForm'));
 app.use('/api/patient-consent-forms', require('./routes/patientConsentForm'));
 app.use('/api/service-cards', require('./routes/serviceCard'));
 app.use('/api/app-customization', require('./routes/appCustomizationRoutes'));
+app.use('/api/chat', require('./routes/chat'));
 
 /* ------------------------------ Health Check -------------------------------- */
 app.get('/', (req, res) => {
@@ -162,7 +188,8 @@ app.use((req, res) => {
 
 /* --------------------------------- Listen ----------------------------------- */
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT} in ${process.env.NODE_ENV} mode`);
   console.log(`📅 Automatic booking cleanup enabled`);
+  console.log(`💬 Socket.IO enabled for real-time chat`);
 });
