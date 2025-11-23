@@ -80,7 +80,7 @@ const bookFakeAppointments = async () => {
         userId: user._id,
         consultationId: randomConsultation._id,
         fullName: user.fullName,
-        mobileNumber: user.phoneNumber || '+919876543210',
+        mobileNumber: user.phone || '+919876543210',
         email: user.email,
         branchId: randomBranch._id,
         preferredLocation: randomBranch.name,
@@ -112,7 +112,7 @@ const bookFakeAppointments = async () => {
 Summary:
 - User: ${user.fullName}
 - Email: ${user.email}
-- Phone: ${user.phoneNumber || 'N/A'}
+- Phone: ${user.phone || 'N/A'}
 - Total Bookings: ${bookings.length}
 - Consultations Used: ${consultations.length}
 - Branches Used: ${branches.length}
