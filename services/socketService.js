@@ -14,21 +14,40 @@ const setupSocketIO = (io) => {
       const token = socket.handshake.auth.token || socket.handshake.headers.authorization?.replace('Bearer ', '');
       const userType = socket.handshake.auth.userType || 'user'; // 'user' or 'admin'
 
+      console.log(`Socket auth attempt - UserType: ${userType}, Token present: ${!!token}`);
+
       if (!token) {
+        console.error('Socket auth failed: No token provided');
         return next(new Error('Authentication error: No token provided'));
       }
 
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      console.log('Socket JWT decoded:', { 
+        userId: decoded.userId, 
+        adminId: decoded.adminId, 
+        role: decoded.role,
+        userType 
+      });
 
       if (userType === 'admin') {
-        const admin = await Admin.findById(decoded.id);
+        // Admin tokens use 'adminId' field
+        const adminId = decoded.adminId || decoded.id;
+        if (!adminId) {
+          return next(new Error('Invalid admin token'));
+        }
+        const admin = await Admin.findById(adminId);
         if (!admin) {
           return next(new Error('Admin not found'));
         }
         socket.admin = admin;
         socket.userType = 'admin';
       } else {
-        const user = await User.findById(decoded.id);
+        // User tokens use 'userId' field
+        const userId = decoded.userId || decoded.id;
+        if (!userId) {
+          return next(new Error('Invalid user token'));
+        }
+        const user = await User.findById(userId);
         if (!user) {
           return next(new Error('User not found'));
         }

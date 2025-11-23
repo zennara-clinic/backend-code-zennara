@@ -18,7 +18,16 @@ const server = http.createServer(app);
 // Socket.IO setup with CORS
 const io = new Server(server, {
   cors: {
-    origin: ['https://admin.sizid.com', 'http://localhost:5173', 'http://localhost:8081', 'exp://192.168.1.100:8081'],
+    origin: [
+      'https://admin.sizid.com', 
+      'http://localhost:5173', 
+      'http://localhost:8081',
+      'http://localhost:19006', // Expo web default port
+      'http://localhost:19000', // Expo alternative port
+      'exp://192.168.1.100:8081',
+      /^http:\/\/localhost:\d+$/, // Allow any localhost port
+      /^http:\/\/192\.168\.\d+\.\d+:\d+$/, // Allow local network IPs
+    ],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE']
   },
@@ -38,7 +47,15 @@ app.use((req, res, next) => {
 
 // Allow ONLY your admin app (recommended)
 app.use(cors({
-  origin: ['https://admin.sizid.com','http://localhost:5173', 'http://localhost:8081'],
+  origin: [
+    'https://admin.sizid.com',
+    'http://localhost:5173', 
+    'http://localhost:8081',
+    'http://localhost:19006', // Expo web default port
+    'http://localhost:19000', // Expo alternative port
+    /^http:\/\/localhost:\d+$/, // Allow any localhost port for development
+    /^http:\/\/192\.168\.\d+\.\d+:\d+$/, // Allow local network IPs for mobile testing
+  ],
   credentials: false, // don't use cookies with a single origin unless you need them
   methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS','HEAD'],
   allowedHeaders: [
