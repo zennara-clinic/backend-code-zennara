@@ -63,16 +63,23 @@ const setupSocketIO = (io) => {
   });
 
   io.on('connection', (socket) => {
-    console.log(`Socket connected: ${socket.id}`);
+    console.log(`✅ Socket connected: ${socket.id}`);
 
     // Handle user/admin connection
     if (socket.userType === 'user' && socket.user) {
       connectedUsers.set(socket.user._id.toString(), socket.id);
-      console.log(`User connected: ${socket.user.fullName} (${socket.user._id})`);
+      console.log(`👤 User connected: ${socket.user.fullName} (${socket.user._id})`);
     } else if (socket.userType === 'admin' && socket.admin) {
       connectedAdmins.set(socket.admin._id.toString(), socket.id);
-      console.log(`Admin connected: ${socket.admin.name} (${socket.admin._id})`);
+      console.log(`👨‍💼 Admin connected: ${socket.admin.name} (${socket.admin._id})`);
     }
+
+    // Send connection confirmation
+    socket.emit('connected', {
+      socketId: socket.id,
+      userType: socket.userType,
+      timestamp: new Date()
+    });
 
     // Join chat room
     socket.on('joinChat', async (chatId) => {
@@ -90,19 +97,21 @@ const setupSocketIO = (io) => {
         }
 
         socket.join(chatId);
-        console.log(`${socket.userType} ${socket.id} joined chat ${chatId}`);
+        console.log(`💬 ${socket.userType} ${socket.id} joined chat ${chatId}`);
 
         // If admin, also join branch room
         if (socket.userType === 'admin') {
           socket.join(`branch_${chat.branchId}`);
+          console.log(`🏪 Admin also joined branch room: branch_${chat.branchId}`);
           
           // Request presence status from user if they're in this chat
-          console.log(`Admin requesting presence for chat ${chatId}`);
+          console.log(`📱 Admin requesting presence for chat ${chatId}`);
           io.to(chatId).emit('requestPresence', { chatId });
         }
 
         // Send confirmation
         socket.emit('joinedChat', { chatId });
+        console.log(`✅ Sent joinedChat confirmation for ${chatId}`);
 
         // Mark messages as delivered
         await Message.updateMany(
@@ -232,13 +241,22 @@ const setupSocketIO = (io) => {
         console.log(`👤 User ${socket.user.fullName} joined chat ${chatId}`);
         
         // Broadcast to chat room (admins will receive this)
-        io.to(chatId).emit('userPresenceChanged', {
+        const presenceData = {
           chatId,
           userId: socket.user._id,
           userName: socket.user.fullName,
           online: true,
           lastSeen: new Date()
-        });
+        };
+        
+        console.log(`📡 Broadcasting presence to chat ${chatId}:`, presenceData);
+        io.to(chatId).emit('userPresenceChanged', presenceData);
+        
+        // Also broadcast to branch room for admin panel updates
+        const chat = await Chat.findById(chatId);
+        if (chat) {
+          io.to(`branch_${chat.branchId}`).emit('userPresenceChanged', presenceData);
+        }
       }
     });
 
@@ -249,31 +267,49 @@ const setupSocketIO = (io) => {
         console.log(`👤 User ${socket.user.fullName} left chat ${chatId}`);
         
         // Broadcast to chat room (admins will receive this)
-        io.to(chatId).emit('userPresenceChanged', {
+        const presenceData = {
           chatId,
           userId: socket.user._id,
           userName: socket.user.fullName,
           online: false,
           lastSeen: new Date()
-        });
+        };
+        
+        console.log(`📡 Broadcasting offline presence to chat ${chatId}`);
+        io.to(chatId).emit('userPresenceChanged', presenceData);
+        
+        // Also broadcast to branch room
+        const chat = await Chat.findById(chatId);
+        if (chat) {
+          io.to(`branch_${chat.branchId}`).emit('userPresenceChanged', presenceData);
+        }
       }
     });
 
     // Admin requested presence - user responds with current status
-    socket.on('requestPresence', (data) => {
+    socket.on('requestPresence', async (data) => {
       const { chatId } = data;
       
       if (socket.userType === 'user') {
         console.log(`📡 User responding to presence request for chat ${chatId}`);
         
-        // Broadcast current online status
-        io.to(chatId).emit('userPresenceChanged', {
+        const presenceData = {
           chatId,
           userId: socket.user._id,
           userName: socket.user.fullName,
           online: true,
           lastSeen: new Date()
-        });
+        };
+        
+        // Broadcast current online status
+        io.to(chatId).emit('userPresenceChanged', presenceData);
+        
+        // Also send to branch room
+        const chat = await Chat.findById(chatId);
+        if (chat) {
+          console.log(`📡 Also sending presence to branch_${chat.branchId}`);
+          io.to(`branch_${chat.branchId}`).emit('userPresenceChanged', presenceData);
+        }
       }
     });
 
@@ -341,15 +377,29 @@ const setupSocketIO = (io) => {
     });
 
     // Handle disconnect
-    socket.on('disconnect', () => {
-      console.log(`Socket disconnected: ${socket.id}`);
+    socket.on('disconnect', async () => {
+      console.log(`❌ Socket disconnected: ${socket.id}`);
       
       if (socket.userType === 'user' && socket.user) {
         connectedUsers.delete(socket.user._id.toString());
-        console.log(`User disconnected: ${socket.user.fullName}`);
+        console.log(`👤 User disconnected: ${socket.user.fullName}`);
+        
+        // Notify all chats this user was in that they're offline
+        const userChats = await Chat.find({ userId: socket.user._id });
+        for (const chat of userChats) {
+          const presenceData = {
+            chatId: chat._id,
+            userId: socket.user._id,
+            userName: socket.user.fullName,
+            online: false,
+            lastSeen: new Date()
+          };
+          io.to(chat._id.toString()).emit('userPresenceChanged', presenceData);
+          io.to(`branch_${chat.branchId}`).emit('userPresenceChanged', presenceData);
+        }
       } else if (socket.userType === 'admin' && socket.admin) {
         connectedAdmins.delete(socket.admin._id.toString());
-        console.log(`Admin disconnected: ${socket.admin.name}`);
+        console.log(`👨‍💼 Admin disconnected: ${socket.admin.name}`);
       }
     });
   });
