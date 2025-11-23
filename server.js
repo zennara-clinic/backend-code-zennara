@@ -25,8 +25,6 @@ const io = new Server(server, {
       'http://localhost:19006', // Expo web default port
       'http://localhost:19000', // Expo alternative port
       'exp://192.168.1.100:8081',
-      /^http:\/\/localhost:\d+$/, // Allow any localhost port
-      /^http:\/\/192\.168\.\d+\.\d+:\d+$/, // Allow local network IPs
     ],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE']

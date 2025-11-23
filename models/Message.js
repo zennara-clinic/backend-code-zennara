@@ -23,19 +23,13 @@ const messageSchema = new mongoose.Schema({
   },
   messageType: {
     type: String,
-    enum: ['text', 'image', 'file', 'system'],
+    enum: ['text', 'system'],
     default: 'text'
   },
   content: {
     type: String,
     required: true
   },
-  attachments: [{
-    fileName: String,
-    fileUrl: String,
-    fileType: String,
-    fileSize: Number
-  }],
   isRead: {
     type: Boolean,
     default: false

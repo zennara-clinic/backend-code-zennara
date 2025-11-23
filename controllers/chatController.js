@@ -198,7 +198,7 @@ exports.getChatMessages = async (req, res) => {
 exports.sendMessage = async (req, res) => {
   try {
     const { chatId } = req.params;
-    const { content, messageType = 'text', attachments = [] } = req.body;
+    const { content, messageType = 'text' } = req.body;
 
     // Verify chat exists
     const chat = await Chat.findById(chatId);
@@ -235,7 +235,6 @@ exports.sendMessage = async (req, res) => {
       senderName,
       content,
       messageType,
-      attachments,
       isDelivered: true,
       deliveredAt: new Date()
     });

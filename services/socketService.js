@@ -143,7 +143,7 @@ const setupSocketIO = (io) => {
     // Send message via socket
     socket.on('sendMessage', async (data) => {
       try {
-        const { chatId, content, messageType = 'text', attachments = [] } = data;
+        const { chatId, content, messageType = 'text' } = data;
 
         const chat = await Chat.findById(chatId);
         if (!chat) {
@@ -172,7 +172,6 @@ const setupSocketIO = (io) => {
           senderName,
           content,
           messageType,
-          attachments,
           isDelivered: true,
           deliveredAt: new Date()
         });
