@@ -199,19 +199,25 @@ const setupSocketIO = (io) => {
     // Typing indicator
     socket.on('typing', (data) => {
       const { chatId } = data;
-      socket.to(chatId).emit('userTyping', {
+      const typingData = {
         userId: socket.userType === 'user' ? socket.user._id : socket.admin._id,
         userName: socket.userType === 'user' ? socket.user.fullName : socket.admin.name,
+        userType: socket.userType,
         chatId
-      });
+      };
+      console.log(`${socket.userType} typing in chat ${chatId}:`, typingData);
+      socket.to(chatId).emit('userTyping', typingData);
     });
 
     socket.on('stopTyping', (data) => {
       const { chatId } = data;
-      socket.to(chatId).emit('userStoppedTyping', {
+      const stopData = {
         userId: socket.userType === 'user' ? socket.user._id : socket.admin._id,
+        userType: socket.userType,
         chatId
-      });
+      };
+      console.log(`${socket.userType} stopped typing in chat ${chatId}`);
+      socket.to(chatId).emit('userStoppedTyping', stopData);
     });
 
     // Mark messages as read
