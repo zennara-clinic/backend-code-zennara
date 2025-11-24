@@ -10,6 +10,8 @@ exports.submitServiceReview = async (req, res) => {
     const { packageAssignmentId, serviceId, serviceName, rating, reviewText } = req.body;
     const userId = req.user.id;
 
+    console.log('Submit service review request:', { packageAssignmentId, serviceId, serviceName, rating, userId });
+
     // Validate required fields
     if (!packageAssignmentId || !serviceId || !serviceName || !rating || !reviewText) {
       return res.status(400).json({
@@ -43,6 +45,13 @@ exports.submitServiceReview = async (req, res) => {
 
     // Check if package assignment exists
     const assignment = await PackageAssignment.findOne({ assignmentId: packageAssignmentId });
+    
+    console.log('Found assignment:', assignment ? {
+      assignmentId: assignment.assignmentId,
+      userId: assignment.userId,
+      hasUserId: !!assignment.userId
+    } : 'null');
+
     if (!assignment) {
       return res.status(404).json({
         success: false,
@@ -51,6 +60,14 @@ exports.submitServiceReview = async (req, res) => {
     }
 
     // Verify user owns this assignment
+    if (!assignment.userId) {
+      console.error('Assignment has no userId:', assignment);
+      return res.status(400).json({
+        success: false,
+        message: 'Package assignment has no associated user'
+      });
+    }
+
     if (assignment.userId.toString() !== userId.toString()) {
       return res.status(403).json({
         success: false,
@@ -292,7 +309,7 @@ exports.canReviewService = async (req, res) => {
 
     // Check if package assignment exists and belongs to user
     const assignment = await PackageAssignment.findOne({ assignmentId: packageAssignmentId });
-    if (!assignment || assignment.userId.toString() !== userId.toString()) {
+    if (!assignment || !assignment.userId || assignment.userId.toString() !== userId.toString()) {
       return res.status(200).json({
         success: true,
         canReview: false,
