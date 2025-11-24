@@ -120,6 +120,8 @@ app.use('/api/package-assignments', require('./routes/packageAssignment'));
 app.use('/api/products', require('./routes/product'));
 app.use('/api/product-orders', require('./routes/productOrder'));
 app.use('/api/reviews', require('./routes/review'));
+app.use('/api/package-service-reviews', require('./routes/packageServiceReview'));
+app.use('/api/admin/package-service-reviews', require('./routes/admin/packageServiceReviewRoutes'));
 app.use('/api/upload', require('./routes/upload'));
 app.use('/api/coupons', require('./routes/coupon'));
 app.use('/api/vendors', require('./routes/vendor'));
@@ -130,8 +132,6 @@ app.use('/api/payments', require('./routes/payment'));
 app.use('/api/pre-consult-forms', require('./routes/preConsultForm'));
 app.use('/api/patient-consent-forms', require('./routes/patientConsentForm'));
 app.use('/api/service-cards', require('./routes/serviceCard'));
-app.use('/api/package-service-reviews', require('./routes/packageServiceReviewRoutes'));
-app.use('/api/admin/package-service-reviews', require('./routes/admin/packageServiceReviewRoutes'));
 app.use('/api/app-customization', require('./routes/appCustomizationRoutes'));
 app.use('/api/chat', require('./routes/chat'));
 

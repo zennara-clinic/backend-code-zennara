@@ -1,14 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const {
-  getAllReviews,
-  respondToReview
+  getAllServiceReviews,
+  approveServiceReview
 } = require('../../controllers/packageServiceReviewController');
-
-const { protectAdmin } = require('../../middleware/auth');
+const { protect, admin } = require('../../middleware/auth');
 
 // Admin routes
-router.get('/', protectAdmin, getAllReviews);
-router.put('/:reviewId/respond', protectAdmin, respondToReview);
+router.get('/', protect, admin, getAllServiceReviews);
+router.put('/:id/approve', protect, admin, approveServiceReview);
 
 module.exports = router;
