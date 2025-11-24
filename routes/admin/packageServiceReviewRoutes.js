@@ -3,12 +3,12 @@ const router = express.Router();
 const {
   getAllReviews,
   respondToReview
-} = require('../controllers/packageServiceReviewController');
+} = require('../../controllers/packageServiceReviewController');
 
-const { protect, authorize } = require('../middleware/auth');
+const { protectAdmin } = require('../../middleware/auth');
 
 // Admin routes
-router.get('/', protect, authorize('admin'), getAllReviews);
-router.put('/:reviewId/respond', protect, authorize('admin'), respondToReview);
+router.get('/', protectAdmin, getAllReviews);
+router.put('/:reviewId/respond', protectAdmin, respondToReview);
 
 module.exports = router;
