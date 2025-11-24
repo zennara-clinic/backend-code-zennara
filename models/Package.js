@@ -26,7 +26,8 @@ const packageSchema = new mongoose.Schema({
       required: true
     },
     serviceName: String,
-    servicePrice: Number
+    servicePrice: Number,
+    customPrice: Number  // Optional custom price for this service in the package
   }],
   consultationServices: [{
     serviceId: {
@@ -34,7 +35,8 @@ const packageSchema = new mongoose.Schema({
       required: true
     },
     serviceName: String,
-    servicePrice: Number
+    servicePrice: Number,
+    customPrice: Number  // Optional custom price for this consultation in the package
   }],
   price: {
     type: Number,
@@ -83,13 +85,15 @@ const packageSchema = new mongoose.Schema({
 packageSchema.pre('save', function(next) {
   if (this.services && this.services.length > 0) {
     this.originalPrice = this.services.reduce((total, service) => {
-      return total + (service.servicePrice || 0);
+      // Use customPrice if available, otherwise use servicePrice
+      return total + (service.customPrice !== undefined ? service.customPrice : (service.servicePrice || 0));
     }, 0);
     
     // Add consultation services to original price
     if (this.consultationServices && this.consultationServices.length > 0) {
       this.originalPrice += this.consultationServices.reduce((total, service) => {
-        return total + (service.servicePrice || 0);
+        // Use customPrice if available, otherwise use servicePrice
+        return total + (service.customPrice !== undefined ? service.customPrice : (service.servicePrice || 0));
       }, 0);
     }
     

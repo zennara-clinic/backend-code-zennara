@@ -14,7 +14,8 @@ exports.createPackage = async (req, res) => {
       consultationServices,
       price,
       image,
-      media
+      media,
+      customPrices  // Object mapping serviceId to custom price
     } = req.body;
 
     // Validate required fields
@@ -42,11 +43,16 @@ exports.createPackage = async (req, res) => {
         if (!service) {
           throw new Error(`Service ${serviceId} not found`);
         }
-        return {
+        const serviceDetail = {
           serviceId: service.id,
           serviceName: service.name,
           servicePrice: service.price
         };
+        // Add custom price if provided
+        if (customPrices && customPrices[serviceId] !== undefined && customPrices[serviceId] !== null) {
+          serviceDetail.customPrice = customPrices[serviceId];
+        }
+        return serviceDetail;
       })
     );
 
@@ -59,11 +65,16 @@ exports.createPackage = async (req, res) => {
           if (!service) {
             throw new Error(`Consultation service ${serviceId} not found`);
           }
-          return {
+          const serviceDetail = {
             serviceId: service.id,
             serviceName: service.name,
             servicePrice: service.price
           };
+          // Add custom price if provided
+          if (customPrices && customPrices[serviceId] !== undefined && customPrices[serviceId] !== null) {
+            serviceDetail.customPrice = customPrices[serviceId];
+          }
+          return serviceDetail;
         })
       );
     }
@@ -165,7 +176,8 @@ exports.updatePackage = async (req, res) => {
       image,
       media,
       isActive,
-      isPopular
+      isPopular,
+      customPrices  // Object mapping serviceId to custom price
     } = req.body;
 
     const packageData = await Package.findOne({ id: req.params.id });
@@ -185,11 +197,16 @@ exports.updatePackage = async (req, res) => {
           if (!service) {
             throw new Error(`Service ${serviceId} not found`);
           }
-          return {
+          const serviceDetail = {
             serviceId: service.id,
             serviceName: service.name,
             servicePrice: service.price
           };
+          // Add custom price if provided
+          if (customPrices && customPrices[serviceId] !== undefined && customPrices[serviceId] !== null) {
+            serviceDetail.customPrice = customPrices[serviceId];
+          }
+          return serviceDetail;
         })
       );
       packageData.services = serviceDetails;
@@ -204,11 +221,16 @@ exports.updatePackage = async (req, res) => {
             if (!service) {
               throw new Error(`Consultation service ${serviceId} not found`);
             }
-            return {
+            const serviceDetail = {
               serviceId: service.id,
               serviceName: service.name,
               servicePrice: service.price
             };
+            // Add custom price if provided
+            if (customPrices && customPrices[serviceId] !== undefined && customPrices[serviceId] !== null) {
+              serviceDetail.customPrice = customPrices[serviceId];
+            }
+            return serviceDetail;
           })
         );
         packageData.consultationServices = consultationServiceDetails;
