@@ -130,6 +130,8 @@ app.use('/api/payments', require('./routes/payment'));
 app.use('/api/pre-consult-forms', require('./routes/preConsultForm'));
 app.use('/api/patient-consent-forms', require('./routes/patientConsentForm'));
 app.use('/api/service-cards', require('./routes/serviceCard'));
+app.use('/api/package-service-reviews', require('./routes/packageServiceReviewRoutes'));
+app.use('/api/admin/package-service-reviews', require('./routes/admin/packageServiceReviewRoutes'));
 app.use('/api/app-customization', require('./routes/appCustomizationRoutes'));
 app.use('/api/chat', require('./routes/chat'));
 
