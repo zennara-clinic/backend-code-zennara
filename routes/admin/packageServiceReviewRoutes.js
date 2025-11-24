@@ -4,10 +4,13 @@ const {
   getAllServiceReviews,
   approveServiceReview
 } = require('../../controllers/packageServiceReviewController');
-const { protect, admin } = require('../../middleware/auth');
+const { protectAdmin } = require('../../middleware/auth');
+
+// Admin authentication middleware
+router.use(protectAdmin);
 
 // Admin routes
-router.get('/', protect, admin, getAllServiceReviews);
-router.put('/:id/approve', protect, admin, approveServiceReview);
+router.get('/', getAllServiceReviews);
+router.put('/:id/approve', approveServiceReview);
 
 module.exports = router;

@@ -11,12 +11,7 @@ exports.adminLoginLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  skipSuccessfulRequests: false, // Count all requests
-  skip: () => false, // Don't skip any requests
-  keyGenerator: (req, res) => {
-    // Use IP + email for rate limiting key (library handles IPv6 automatically)
-    return `${req.ip}_${req.body.email || 'unknown'}`;
-  }
+  skipSuccessfulRequests: false // Count all requests
 });
 
 // OTP verification rate limiter
@@ -29,10 +24,7 @@ exports.adminOTPLimiter = rateLimit({
     code: 'RATE_LIMIT_EXCEEDED'
   },
   standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req, res) => {
-    return `${req.ip}_${req.body.email || 'unknown'}`;
-  }
+  legacyHeaders: false
 });
 
 // General admin API rate limiter (more lenient)
@@ -46,10 +38,7 @@ exports.adminApiLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
-  skipSuccessfulRequests: true, // Only count failed requests
-  keyGenerator: (req, res) => {
-    return req.ip;
-  }
+  skipSuccessfulRequests: true // Only count failed requests
 });
 
 // Strict rate limiter for sensitive operations (delete, bulk update)
@@ -62,9 +51,5 @@ exports.adminSensitiveOperationsLimiter = rateLimit({
     code: 'RATE_LIMIT_EXCEEDED'
   },
   standardHeaders: true,
-  legacyHeaders: false,
-  keyGenerator: (req, res) => {
-    // Use admin ID for authenticated requests
-    return req.admin?._id?.toString() || req.ip;
-  }
+  legacyHeaders: false
 });

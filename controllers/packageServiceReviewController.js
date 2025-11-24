@@ -408,4 +408,13 @@ exports.approveServiceReview = async (req, res) => {
   }
 };
 
-module.exports = exports;
+module.exports = {
+  submitServiceReview: exports.submitServiceReview,
+  updateServiceReview: exports.updateServiceReview,
+  deleteServiceReview: exports.deleteServiceReview,
+  getMyServiceReviews: exports.getMyServiceReviews,
+  getServiceReviews: exports.getServiceReviews,
+  canReviewService: exports.canReviewService,
+  getAllServiceReviews: exports.getAllServiceReviews,
+  approveServiceReview: exports.approveServiceReview
+};
