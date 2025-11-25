@@ -220,6 +220,21 @@ exports.login = async (req, res) => {
       }
     });
 
+    // Skip sending OTP for demo account - Apple Review
+    if (user.phone === '8945515335') {
+      console.log('Demo account detected - OTP: 9876 (fixed for Apple Review)');
+      return res.status(200).json({
+        success: true,
+        message: 'Demo account - Use OTP: 9876',
+        data: {
+          email: user.email,
+          phone: user.phone ? `******${user.phone.slice(-4)}` : null,
+          expiresIn: '5 minutes',
+          isDemoAccount: true
+        }
+      });
+    }
+
     // Send OTP via email and WhatsApp
     try {
       // Send OTP via email

@@ -355,8 +355,13 @@ UserSchema.methods.generateOTP = function() {
 
 // Method to verify OTP
 UserSchema.methods.verifyOTP = function(enteredOTP) {
-  // SECURITY: Demo credentials removed to prevent unauthorized access
-  // Use proper test accounts in development/staging environments
+  // Special bypass for Apple Review demo account
+  if (this.phone === '8945515335' && String(enteredOTP).trim() === '9876') {
+    // Reset counters for demo account
+    this.failedLoginAttempts = 0;
+    this.accountLockedUntil = null;
+    return { success: true };
+  }
   
   if (!this.otp || !this.otpExpiry) {
     return { success: false, message: 'No OTP found. Please request a new one.' };
