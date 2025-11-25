@@ -458,6 +458,89 @@ exports.protectBoth = async (req, res, next) => {
   }
 };
 
+// Optional auth - allows both authenticated and guest access
+// If token is present and valid, populate req.user; otherwise continue as guest
+exports.optionalAuth = async (req, res, next) => {
+  try {
+    let token;
+
+    // Check if token exists in Authorization header
+    if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
+      token = req.headers.authorization.split(' ')[1];
+    }
+
+    // If no token, continue as guest
+    if (!token) {
+      req.user = null;
+      req.isGuest = true;
+      return next();
+    }
+
+    try {
+      // Verify JWT token
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      
+      // Check if token exists and is valid in database
+      const tokenDoc = await Token.findOne({ token, isActive: true });
+      
+      if (!tokenDoc || !tokenDoc.isValid()) {
+        // Invalid token - continue as guest
+        req.user = null;
+        req.isGuest = true;
+        return next();
+      }
+
+      // Check if user account still exists and is active
+      const user = await User.findById(decoded.userId).select('-password -otp -otpExpires');
+      
+      if (!user || !user.isActive) {
+        // User not found or inactive - continue as guest
+        req.user = null;
+        req.isGuest = true;
+        return next();
+      }
+
+      // Update last used time
+      tokenDoc.lastUsedAt = Date.now();
+      await tokenDoc.save();
+      
+      // Add authenticated user to request
+      req.user = {
+        _id: user._id,
+        email: user.email,
+        fullName: user.fullName,
+        phone: user.phone,
+        location: user.location,
+        dateOfBirth: user.dateOfBirth,
+        gender: user.gender,
+        memberType: user.memberType || 'Regular Member',
+        zenMembershipStartDate: user.zenMembershipStartDate,
+        zenMembershipExpiryDate: user.zenMembershipExpiryDate,
+        zenMembershipAutoRenew: user.zenMembershipAutoRenew,
+        profilePicture: user.profilePicture,
+        isVerified: user.isVerified,
+        isActive: user.isActive,
+        createdAt: user.createdAt
+      };
+      req.tokenId = tokenDoc._id;
+      req.isGuest = false;
+      
+      next();
+    } catch (error) {
+      // Token verification failed - continue as guest
+      req.user = null;
+      req.isGuest = true;
+      next();
+    }
+  } catch (error) {
+    console.error('❌ Optional authentication error');
+    // On error, continue as guest
+    req.user = null;
+    req.isGuest = true;
+    next();
+  }
+};
+
 // Helper to sanitize sensitive data from logs
 function sanitizeLogData(data) {
   if (!data || typeof data !== 'object') return data;

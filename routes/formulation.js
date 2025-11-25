@@ -10,20 +10,14 @@ const {
 } = require('../controllers/formulationController');
 const { protectAdmin } = require('../middleware/auth');
 
-// All routes require admin authentication
-router.use(protectAdmin);
+// Public routes - guests can view formulations
+router.get('/', getAllFormulations);
+router.get('/:id', getFormulationById);
 
-// Statistics route (must be before /:id)
-router.get('/statistics', getFormulationStatistics);
-
-// CRUD routes
-router.route('/')
-  .get(getAllFormulations)
-  .post(createFormulation);
-
-router.route('/:id')
-  .get(getFormulationById)
-  .put(updateFormulation)
-  .delete(deleteFormulation);
+// Admin protected routes
+router.get('/statistics', protectAdmin, getFormulationStatistics);
+router.post('/', protectAdmin, createFormulation);
+router.put('/:id', protectAdmin, updateFormulation);
+router.delete('/:id', protectAdmin, deleteFormulation);
 
 module.exports = router;

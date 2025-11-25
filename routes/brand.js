@@ -10,20 +10,14 @@ const {
 } = require('../controllers/brandController');
 const { protectAdmin } = require('../middleware/auth');
 
-// All routes require admin authentication
-router.use(protectAdmin);
+// Public routes - guests can view brands
+router.get('/', getAllBrands);
+router.get('/:id', getBrandById);
 
-// Statistics route (must be before /:id)
-router.get('/statistics', getBrandStatistics);
-
-// CRUD routes
-router.route('/')
-  .get(getAllBrands)
-  .post(createBrand);
-
-router.route('/:id')
-  .get(getBrandById)
-  .put(updateBrand)
-  .delete(deleteBrand);
+// Admin protected routes
+router.get('/statistics', protectAdmin, getBrandStatistics);
+router.post('/', protectAdmin, createBrand);
+router.put('/:id', protectAdmin, updateBrand);
+router.delete('/:id', protectAdmin, deleteBrand);
 
 module.exports = router;
