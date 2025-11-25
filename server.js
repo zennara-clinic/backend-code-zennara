@@ -6,6 +6,18 @@ const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
 
+// Security packages
+const helmet = require('helmet');
+const mongoSanitize = require('express-mongo-sanitize');
+const cookieParser = require('cookie-parser');
+
+// Utilities
+const logger = require('./utils/logger');
+const { 
+  securityHeaders, 
+  logSuspiciousActivity 
+} = require('./middleware/securityMiddleware');
+
 const connectDB = require('./config/db');
 const { startBookingScheduler } = require('./utils/bookingScheduler');
 const BookingStatusService = require('./services/bookingStatusService');
@@ -43,6 +55,51 @@ app.use((req, res, next) => {
   next();
 });
 
+/* ------------------------------ Security Middleware ------------------------------ */
+// Helmet - Security headers (must be early in middleware chain)
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:", "blob:"],
+      connectSrc: ["'self'", "https://api.sizid.com", "wss://api.sizid.com"],
+      fontSrc: ["'self'", "data:"],
+      objectSrc: ["'none'"],
+      mediaSrc: ["'self'"],
+      frameSrc: ["'none'"],
+    },
+  },
+  crossOriginEmbedderPolicy: false, // Required for some third-party resources
+  hsts: {
+    maxAge: 31536000,
+    includeSubDomains: true,
+    preload: true
+  }
+}));
+
+// Additional security headers
+app.use(securityHeaders);
+
+// Cookie parser (needed for CSRF)
+app.use(cookieParser());
+
+// NoSQL Injection Protection - Sanitize data
+app.use(mongoSanitize({
+  replaceWith: '_', // Replace prohibited characters
+  onSanitize: ({ req, key }) => {
+    logger.security('NoSQL injection attempt blocked', {
+      ip: req.ip,
+      path: req.path,
+      key: key
+    });
+  }
+}));
+
+// Log suspicious activity
+app.use(logSuspiciousActivity);
+
 // Allow ONLY your admin app (recommended)
 app.use(cors({
   origin: [
@@ -78,14 +135,14 @@ BookingStatusService.startAutoChecker();
 /* ----------------------------- Debug (optional) ------------------------------ */
 app.use((req, res, next) => {
   if (req.method === 'OPTIONS') {
-    console.log('🔍 CORS Preflight:', {
+    logger.debug('CORS Preflight', {
       origin: req.get('Origin'),
       method: req.get('Access-Control-Request-Method'),
       headers: req.get('Access-Control-Request-Headers')
     });
   }
   if (req.method === 'PUT' || req.method === 'POST') {
-    console.log('🔍 DEBUG Request:', {
+    logger.debug('Request received', {
       method: req.method,
       url: req.url,
       origin: req.get('Origin'),
@@ -205,7 +262,8 @@ app.use((req, res) => {
 /* --------------------------------- Listen ----------------------------------- */
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT} in ${process.env.NODE_ENV} mode`);
-  console.log(`📅 Automatic booking cleanup enabled`);
-  console.log(`💬 Socket.IO enabled for real-time chat`);
+  logger.info(`Server running on port ${PORT} in ${process.env.NODE_ENV || 'development'} mode`);
+  logger.info('Automatic booking cleanup enabled');
+  logger.info('Socket.IO enabled for real-time chat');
+  logger.info('Security middleware active: Helmet, NoSQL sanitization, XSS protection');
 });

@@ -26,19 +26,33 @@ const {
 } = require('../controllers/refundController');
 const { protect } = require('../middleware/auth');
 const { upload } = require('../middleware/upload');
+const { generateCSRFToken } = require('../middleware/securityMiddleware');
+const logger = require('../utils/logger');
+const {
+  validateSignup,
+  validateLogin,
+  validateVerifyOTP,
+  validateUpdateProfile
+} = require('../middleware/validators');
 
-// Public routes
-router.post('/signup', signup);
-router.post('/login', login); 
-router.post('/verify-otp', verifyOTP);
-router.post('/resend-otp', resendOTP);
+// CSRF Token endpoint
+router.get('/csrf-token', protect, (req, res) => {
+  const token = generateCSRFToken(req.user._id.toString());
+  res.json({ csrfToken: token });
+});
+
+// Public routes with validation
+router.post('/signup', validateSignup, signup);
+router.post('/login', validateLogin, login); 
+router.post('/verify-otp', validateVerifyOTP, verifyOTP);
+router.post('/resend-otp', validateLogin, resendOTP);
 
 // Protected routes
 router.post('/logout', protect, logout);
 router.post('/logout-all', protect, logoutAll);
 router.get('/me', protect, getMe);
 router.get('/stats', protect, getUserStats);
-router.put('/profile', protect, updateProfile);
+router.put('/profile', protect, validateUpdateProfile, updateProfile);
 router.post('/upgrade-membership', protect, upgradeMembership);
 
 // Profile picture upload with error handling
@@ -47,7 +61,7 @@ router.post('/profile-picture', protect, (req, res, next) => {
   
   uploadMiddleware(req, res, (err) => {
     if (err) {
-      console.error('❌ Multer upload error:', err);
+      logger.error('Multer upload error', { error: err.message });
       
       if (err.code === 'LIMIT_FILE_SIZE') {
         return res.status(400).json({

@@ -5,6 +5,8 @@ const User = require('../models/User');
 const NotificationHelper = require('../utils/notificationHelper');
 const whatsappService = require('../services/whatsappService');
 const emailService = require('../utils/emailService');
+const logger = require('../utils/logger');
+const { validateOwnership } = require('../middleware/securityMiddleware');
 
 // @desc    Create new product order
 // @route   POST /api/product-orders

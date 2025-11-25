@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
+const logger = require('../utils/logger');
 
 const UserSchema = new mongoose.Schema({
   // Patient ID - 8 character unique ID
@@ -354,19 +355,8 @@ UserSchema.methods.generateOTP = function() {
 
 // Method to verify OTP
 UserSchema.methods.verifyOTP = function(enteredOTP) {
-  // DEMO ACCOUNT BYPASS for Apple Store Review
-  // Allow fixed OTP "1234" for demo account using phone number
-  const DEMO_PHONE = '9999999999';
-  const DEMO_OTP = '1234';
-  
-  if (this.phone === DEMO_PHONE && String(enteredOTP).trim() === DEMO_OTP) {
-    console.log('✅ Demo account login - OTP bypass activated');
-    console.log('📱 Demo phone:', DEMO_PHONE);
-    // Reset counters for demo account
-    this.failedLoginAttempts = 0;
-    this.accountLockedUntil = null;
-    return { success: true };
-  }
+  // SECURITY: Demo credentials removed to prevent unauthorized access
+  // Use proper test accounts in development/staging environments
   
   if (!this.otp || !this.otpExpiry) {
     return { success: false, message: 'No OTP found. Please request a new one.' };

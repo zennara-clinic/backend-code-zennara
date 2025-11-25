@@ -8,6 +8,8 @@ const jwt = require('jsonwebtoken');
 const { sendOTPEmail, sendWelcomeEmail } = require('../utils/emailService');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../middleware/upload');
 const whatsappService = require('../services/whatsappService');
+const logger = require('../utils/logger');
+const { filterFields, validateOwnership } = require('../middleware/securityMiddleware');
 
 // @desc    Register new user
 // @route   POST /api/auth/signup
@@ -88,11 +90,11 @@ exports.signup = async (req, res) => {
 
     // Send welcome email (non-blocking)
     sendWelcomeEmail(user.email, user.fullName, user.location).catch(err => {
-      console.error('❌ Failed to send welcome email:', err);
+      logger.error('Failed to send welcome email', { error: err.message });
       // Don't fail registration if email fails
     });
 
-    console.log('✅ User registered successfully');
+    logger.info('User registered successfully', { userId: user._id });
 
     res.status(201).json({
       success: true,
@@ -148,7 +150,7 @@ exports.upgradeMembership = async (req, res) => {
     
     await user.save();
 
-    console.log(`✅ User upgraded to Zen Member: ${user.fullName} (Expires: ${expiryDate.toDateString()})`);
+    logger.info('User upgraded to Zen Member', { userId: user._id, fullName: user.fullName, expiresAt: expiryDate });
 
     res.status(200).json({
       success: true,
@@ -222,7 +224,7 @@ exports.login = async (req, res) => {
     try {
       // Send OTP via email
       await sendOTPEmail(user.email, user.fullName, otp, user.location);
-      console.log('📧 OTP email sent to:', user.email);
+      logger.info('OTP email sent', { email: user.email });
       
       // Send OTP via WhatsApp (non-blocking)
       if (user.phone) {
@@ -230,12 +232,9 @@ exports.login = async (req, res) => {
           const whatsappResult = await whatsappService.sendOTP(user.phone, otp, 5);
           
           if (whatsappResult.success) {
-            console.log('📱 OTP WhatsApp sent to:', user.phone);
-            console.log('   Message SID:', whatsappResult.messageSid);
-            console.log('   Using approved template: zennara_otp_v2');
+            logger.info('OTP WhatsApp sent', { phone: user.phone, messageSid: whatsappResult.messageSid });
           } else {
-            console.error('WhatsApp OTP failed (non-blocking):', whatsappResult.error);
-            console.error('   Error code:', whatsappResult.code);
+            logger.warn('WhatsApp OTP failed (non-blocking)', { error: whatsappResult.error, code: whatsappResult.code });
             console.error('   Phone number:', user.phone);
           }
         } catch (whatsappError) {
@@ -376,7 +375,7 @@ exports.verifyOTP = async (req, res) => {
       severity: 'low'
     });
 
-    console.log('✅ User logged in successfully');
+    logger.info('User logged in successfully', { userId: user._id });
 
     res.status(200).json({
       success: true,
@@ -397,7 +396,7 @@ exports.verifyOTP = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('❌ OTP verification failed');
+    logger.error('OTP verification failed', { error: error.message });
     res.status(500).json({
       success: false,
       message: 'Verification failed. Please try again.'
@@ -447,7 +446,7 @@ exports.resendOTP = async (req, res) => {
     try {
       // Send OTP via email
       await sendOTPEmail(user.email, user.fullName, otp, user.location);
-      console.log('📧 OTP email resent to:', user.email);
+      logger.info('OTP email resent', { email: user.email });
       
       // Send OTP via WhatsApp (non-blocking)
       if (user.phone) {
@@ -455,12 +454,9 @@ exports.resendOTP = async (req, res) => {
           const whatsappResult = await whatsappService.sendOTP(user.phone, otp, 5);
           
           if (whatsappResult.success) {
-            console.log('📱 OTP WhatsApp resent to:', user.phone);
-            console.log('   Message SID:', whatsappResult.messageSid);
-            console.log('   Using approved template: zennara_otp_v2');
+            logger.info('OTP WhatsApp resent', { phone: user.phone, messageSid: whatsappResult.messageSid });
           } else {
-            console.error('WhatsApp OTP resend failed (non-blocking):', whatsappResult.error);
-            console.error('   Error code:', whatsappResult.code);
+            logger.warn('WhatsApp OTP resend failed (non-blocking)', { error: whatsappResult.error, code: whatsappResult.code });
             console.error('   Phone number:', user.phone);
           }
         } catch (whatsappError) {
@@ -511,7 +507,7 @@ exports.logout = async (req, res) => {
       
       if (tokenDoc) {
         await tokenDoc.revoke();
-        console.log('✅ Token revoked successfully');
+        logger.info('Token revoked successfully');
       }
     }
 
@@ -535,7 +531,7 @@ exports.logoutAll = async (req, res) => {
   try {
     // Revoke all active tokens for this user
     await Token.revokeAllUserTokens(req.user._id);
-    console.log('✅ All tokens revoked successfully');
+    logger.info('All tokens revoked successfully', { userId: req.user._id });
 
     res.status(200).json({
       success: true,
@@ -555,7 +551,7 @@ exports.logoutAll = async (req, res) => {
 // @access  Private
 exports.getMe = async (req, res) => {
   try {
-    console.log('🔍 Fetching profile for user:', req.user._id);
+    logger.debug('Fetching user profile', { userId: req.user._id });
     
     // Use lean() to get plain JavaScript object (no Mongoose caching)
     const user = await User.findById(req.user._id)
@@ -563,19 +559,15 @@ exports.getMe = async (req, res) => {
       .lean();
 
     if (!user) {
-      console.log('❌ User not found:', req.user._id);
+      logger.warn('User not found', { userId: req.user._id });
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
     }
 
-    console.log('✅ Profile fetched from DB:', {
-      fullName: user.fullName,
-      phone: user.phone,
-      location: user.location,
-      dateOfBirth: user.dateOfBirth,
-      gender: user.gender,
+    logger.debug('Profile fetched from DB', {
+      userId: user._id,
       memberType: user.memberType
     });
 
@@ -631,21 +623,7 @@ exports.updateProfile = async (req, res) => {
       drinking,
       additionalInfo
     } = req.body;
-    console.log('📥 RAW Request body:', req.body);
-    console.log('📥 Update profile request:', { 
-      fullName, 
-      phone, 
-      location, 
-      dateOfBirth, 
-      gender,
-      medicalHistory,
-      drugAllergies,
-      dietaryPreferences,
-      smoking,
-      drinking,
-      additionalInfo
-    });
-    console.log('👤 User ID:', req.user._id);
+    logger.debug('Update profile request', { userId: req.user._id });
     
     // Build update object with only provided fields
     const updateData = {};
@@ -661,56 +639,31 @@ exports.updateProfile = async (req, res) => {
     if (drinking !== undefined) updateData.drinking = drinking;
     if (additionalInfo !== undefined) updateData.additionalInfo = additionalInfo;
 
-    console.log('🔄 Updating with data:', updateData);
-    console.log('🔑 Looking for user with ID:', req.user._id);
+    logger.debug('Updating user profile', { userId: req.user._id });
 
     // First, verify user exists
     const existingUser = await User.findById(req.user._id);
     if (!existingUser) {
-      console.log('❌ User not found with ID:', req.user._id);
+      logger.warn('User not found for profile update', { userId: req.user._id });
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
     }
 
-    console.log('📝 BEFORE UPDATE:', {
-      fullName: existingUser.fullName,
-      phone: existingUser.phone,
-      location: existingUser.location,
-      dateOfBirth: existingUser.dateOfBirth,
-      gender: existingUser.gender
-    });
-
-    // NUCLEAR OPTION: Direct property assignment with markModified
+    // Update fields with markModified to ensure tracking
     Object.keys(updateData).forEach(key => {
       existingUser[key] = updateData[key];
-      existingUser.markModified(key); // Force Mongoose to track the change
+      existingUser.markModified(key);
     });
 
-    console.log('💥 AFTER ASSIGNMENT:', {
-      fullName: existingUser.fullName,
-      phone: existingUser.phone,
-      location: existingUser.location,
-      dateOfBirth: existingUser.dateOfBirth,
-      gender: existingUser.gender
-    });
-
-    console.log('🔄 Modified paths:', existingUser.modifiedPaths());
-
-    // Save with validation completely disabled
+    // Save with validation
     const savedUser = await existingUser.save({ 
       validateBeforeSave: false,
       validateModifiedOnly: false 
     });
 
-    console.log('💾 SAVED TO DB:', {
-      fullName: savedUser.fullName,
-      phone: savedUser.phone,
-      location: savedUser.location,
-      dateOfBirth: savedUser.dateOfBirth,
-      gender: savedUser.gender
-    });
+    logger.info('User profile updated', { userId: req.user._id });
 
     // Fetch fresh from DB to confirm
     const updatedUser = await User.findById(req.user._id)
