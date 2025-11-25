@@ -11,7 +11,7 @@ const User = require('./models/User');
 const Booking = require('./models/Booking');
 const ProductOrder = require('./models/ProductOrder');
 const Product = require('./models/Product');
-const ServiceCard = require('./models/ServiceCard');
+const Consultation = require('./models/Consultation');
 const Branch = require('./models/Branch');
 
 // Demo account credentials
@@ -93,69 +93,151 @@ async function createDemoAppointments(userId) {
   try {
     console.log('📅 Creating demo appointments...');
     
-    // Delete existing demo appointments
-    await Booking.deleteMany({ user: userId });
+    // Delete existing demo appointments for this user
+    await Booking.deleteMany({ userId: userId });
     
-    // Get branches and services
-    const branches = await Branch.find().limit(2);
-    const services = await ServiceCard.find().limit(3);
+    // Get consultations and branches
+    const consultations = await Consultation.find({ isActive: true }).limit(5);
+    const branches = await Branch.find({ isActive: true }).limit(3);
     
-    if (branches.length === 0 || services.length === 0) {
-      console.log('⚠️ No branches or services found. Skipping appointments.');
-      return;
+    if (consultations.length === 0) {
+      console.log('⚠️ No consultations found. Creating with default consultation ID.');
     }
     
+    // Use first consultation or create a placeholder ObjectId
+    const defaultConsultationId = consultations[0]?._id || new mongoose.Types.ObjectId();
+    const defaultBranchId = branches[0]?._id;
+    const defaultLocation = branches[0]?.name || 'Jubilee Hills';
+    
     const appointments = [
+      // Completed appointments (past)
       {
-        user: userId,
-        service: services[0]?._id,
-        branch: branches[0]?._id,
-        date: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days from now
-        time: '10:00 AM',
-        status: 'Confirmed',
-        paymentStatus: 'Paid',
-        paymentMethod: 'Online',
-        amount: services[0]?.price || 1500,
-        notes: 'Consultation for skin treatment',
-        createdAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000) // Created 5 days ago
-      },
-      {
-        user: userId,
-        service: services[1]?._id || services[0]?._id,
-        branch: branches[0]?._id,
-        date: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000), // 10 days ago
-        time: '2:00 PM',
+        userId: userId,
+        consultationId: consultations[0]?._id || defaultConsultationId,
+        fullName: 'Apple Review Demo',
+        mobileNumber: DEMO_PHONE,
+        email: DEMO_EMAIL,
+        branchId: defaultBranchId,
+        preferredLocation: defaultLocation,
+        preferredDate: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000), // 20 days ago
+        preferredTimeSlots: ['10:00 AM'],
+        confirmedDate: new Date(Date.now() - 20 * 24 * 60 * 60 * 1000),
+        confirmedTime: '10:00 AM',
         status: 'Completed',
-        paymentStatus: 'Paid',
-        paymentMethod: 'Online',
-        amount: services[1]?.price || 2000,
-        notes: 'Hair treatment session completed',
-        createdAt: new Date(Date.now() - 15 * 24 * 60 * 60 * 1000) // Created 15 days ago
+        paymentStatus: 'paid',
+        amount: consultations[0]?.price || 1500,
+        rating: 5,
+        feedback: 'Excellent consultation! Very helpful and professional.',
+        ratedAt: new Date(Date.now() - 19 * 24 * 60 * 60 * 1000),
+        notes: 'Initial skin consultation - Completed successfully'
       },
       {
-        user: userId,
-        service: services[2]?._id || services[0]?._id,
-        branch: branches[1]?._id || branches[0]?._id,
-        date: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000), // 14 days from now
-        time: '11:30 AM',
-        status: 'Pending',
-        paymentStatus: 'Pending',
-        paymentMethod: 'Cash',
-        amount: services[2]?.price || 1800,
-        notes: 'Follow-up consultation',
-        createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) // Created 2 days ago
+        userId: userId,
+        consultationId: consultations[1]?._id || defaultConsultationId,
+        fullName: 'Apple Review Demo',
+        mobileNumber: DEMO_PHONE,
+        email: DEMO_EMAIL,
+        branchId: defaultBranchId,
+        preferredLocation: defaultLocation,
+        preferredDate: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000), // 10 days ago
+        preferredTimeSlots: ['2:00 PM'],
+        confirmedDate: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000),
+        confirmedTime: '2:00 PM',
+        status: 'Completed',
+        paymentStatus: 'paid',
+        amount: consultations[1]?.price || 2000,
+        rating: 4,
+        feedback: 'Great follow-up session. Seeing good results.',
+        ratedAt: new Date(Date.now() - 9 * 24 * 60 * 60 * 1000),
+        notes: 'Follow-up treatment session - Completed'
+      },
+      // Cancelled appointment
+      {
+        userId: userId,
+        consultationId: consultations[2]?._id || defaultConsultationId,
+        fullName: 'Apple Review Demo',
+        mobileNumber: DEMO_PHONE,
+        email: DEMO_EMAIL,
+        branchId: defaultBranchId,
+        preferredLocation: defaultLocation,
+        preferredDate: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000), // 5 days ago
+        preferredTimeSlots: ['11:00 AM'],
+        status: 'Cancelled',
+        paymentStatus: 'refunded',
+        amount: consultations[2]?.price || 1800,
+        cancellationReason: 'Schedule conflict - had to reschedule',
+        cancelledAt: new Date(Date.now() - 6 * 24 * 60 * 60 * 1000),
+        notes: 'Cancelled by user due to schedule conflict'
+      },
+      // Upcoming confirmed appointment
+      {
+        userId: userId,
+        consultationId: consultations[0]?._id || defaultConsultationId,
+        fullName: 'Apple Review Demo',
+        mobileNumber: DEMO_PHONE,
+        email: DEMO_EMAIL,
+        branchId: defaultBranchId,
+        preferredLocation: defaultLocation,
+        preferredDate: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000), // 3 days from now
+        preferredTimeSlots: ['10:00 AM'],
+        confirmedDate: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000),
+        confirmedTime: '10:00 AM',
+        status: 'Confirmed',
+        paymentStatus: 'paid',
+        amount: consultations[0]?.price || 1500,
+        notes: 'Upcoming skin treatment session - Confirmed'
+      },
+      // Upcoming awaiting confirmation
+      {
+        userId: userId,
+        consultationId: consultations[1]?._id || defaultConsultationId,
+        fullName: 'Apple Review Demo',
+        mobileNumber: DEMO_PHONE,
+        email: DEMO_EMAIL,
+        branchId: defaultBranchId,
+        preferredLocation: defaultLocation,
+        preferredDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days from now
+        preferredTimeSlots: ['3:00 PM', '4:00 PM'],
+        status: 'Awaiting Confirmation',
+        paymentStatus: 'pending',
+        amount: consultations[1]?.price || 2000,
+        notes: 'New booking request - Awaiting confirmation'
+      },
+      // Another upcoming appointment
+      {
+        userId: userId,
+        consultationId: consultations[2]?._id || defaultConsultationId,
+        fullName: 'Apple Review Demo',
+        mobileNumber: DEMO_PHONE,
+        email: DEMO_EMAIL,
+        branchId: branches[1]?._id || defaultBranchId,
+        preferredLocation: branches[1]?.name || defaultLocation,
+        preferredDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000), // 14 days from now
+        preferredTimeSlots: ['11:00 AM'],
+        confirmedDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000),
+        confirmedTime: '11:00 AM',
+        status: 'Confirmed',
+        paymentStatus: 'paid',
+        amount: consultations[2]?.price || 1800,
+        notes: 'Monthly check-up appointment - Confirmed'
       }
     ];
     
+    let createdCount = 0;
     for (const appointment of appointments) {
-      const booking = new Booking(appointment);
-      await booking.save();
-      console.log(`  ✅ Created appointment: ${appointment.status} - ${appointment.notes}`);
+      try {
+        const booking = new Booking(appointment);
+        await booking.save();
+        console.log(`  ✅ Created: ${appointment.status} - ${appointment.notes}`);
+        createdCount++;
+      } catch (err) {
+        console.log(`  ⚠️ Skipped appointment: ${err.message}`);
+      }
     }
     
-    console.log('✅ Demo appointments created successfully');
+    console.log(`✅ Created ${createdCount} demo appointments successfully`);
   } catch (error) {
-    console.error('❌ Error creating demo appointments:', error);
+    console.error('❌ Error creating demo appointments:', error.message);
   }
 }
 
@@ -164,7 +246,7 @@ async function createDemoOrders(userId) {
     console.log('🛍️ Creating demo product orders...');
     
     // Delete existing demo orders
-    await ProductOrder.deleteMany({ user: userId });
+    await ProductOrder.deleteMany({ userId: userId });
     
     // Get sample products
     const products = await Product.find({ isActive: true }).limit(5);

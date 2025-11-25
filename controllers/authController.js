@@ -666,16 +666,24 @@ exports.updateProfile = async (req, res) => {
       });
     }
 
+    // Validate gender if provided
+    const validGenders = ['Male', 'Female', 'Other', 'Prefer not to say'];
+    if (updateData.gender && !validGenders.includes(updateData.gender)) {
+      return res.status(400).json({
+        success: false,
+        message: `Invalid gender. Must be one of: ${validGenders.join(', ')}`
+      });
+    }
+
     // Update fields with markModified to ensure tracking
     Object.keys(updateData).forEach(key => {
       existingUser[key] = updateData[key];
       existingUser.markModified(key);
     });
 
-    // Save with validation
+    // Save with validation disabled for modified fields only
     const savedUser = await existingUser.save({ 
-      validateBeforeSave: false,
-      validateModifiedOnly: false 
+      validateModifiedOnly: true 
     });
 
     logger.info('User profile updated', { userId: req.user._id });

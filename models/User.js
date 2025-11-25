@@ -31,11 +31,11 @@ const UserSchema = new mongoose.Schema({
     match: [/^\d{10}$/, 'Please enter a valid 10-digit phone number']
   },
   
-  // Location (from signup step 1)
+  // Location (from signup step 1) - Branch name selected by user
   location: {
     type: String,
     required: [true, 'Location is required'],
-    enum: ['Jubilee Hills', 'Financial District', 'Kondapur']
+    trim: true
   },
   
   // Member Type - Only 2 types
