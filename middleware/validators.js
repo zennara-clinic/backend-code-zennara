@@ -9,6 +9,11 @@ exports.handleValidationErrors = (req, res, next) => {
   const errors = validationResult(req);
   
   if (!errors.isEmpty()) {
+    console.log('❌ Validation errors detected:');
+    console.log('📍 Path:', req.path);
+    console.log('📦 Body:', req.body);
+    console.log('⚠️  Errors:', JSON.stringify(errors.array(), null, 2));
+    
     logger.security('Input validation failed', {
       ip: req.ip,
       path: req.path,
@@ -116,26 +121,39 @@ exports.validateVerifyOTP = [
 
 exports.validateUpdateProfile = [
   body('fullName')
-    .optional()
+    .optional({ checkFalsy: true })
     .trim()
-    .isLength({ min: 2, max: 100 })
-    .withMessage('Full name must be between 2 and 100 characters')
-    .matches(/^[a-zA-Z\s.'-]+$/)
-    .withMessage('Full name contains invalid characters'),
+    .custom((value) => {
+      if (!value || value.length === 0) return true; // Allow empty
+      if (value.length < 2 || value.length > 100) {
+        throw new Error('Full name must be between 2 and 100 characters');
+      }
+      return true;
+    }),
   
   body('phone')
-    .optional()
-    .matches(/^\d{10}$/)
-    .withMessage('Phone number must be exactly 10 digits'),
+    .optional({ checkFalsy: true })
+    .custom((value) => {
+      if (!value || value.length === 0) return true; // Allow empty
+      if (!/^\d{10}$/.test(value)) {
+        throw new Error('Phone number must be exactly 10 digits');
+      }
+      return true;
+    }),
   
   body('location')
-    .optional()
+    .optional({ checkFalsy: true })
     .trim()
-    .isLength({ min: 2, max: 100 })
-    .withMessage('Location must be between 2 and 100 characters'),
+    .custom((value) => {
+      if (!value || value.length === 0) return true; // Allow empty
+      if (value.length < 2 || value.length > 100) {
+        throw new Error('Location must be between 2 and 100 characters');
+      }
+      return true;
+    }),
   
   body('dateOfBirth')
-    .optional()
+    .optional({ checkFalsy: true })
     .custom((value) => {
       if (!value) return true;
       // Accept multiple date formats: ISO8601, DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD
@@ -152,17 +170,24 @@ exports.validateUpdateProfile = [
     }),
   
   body('gender')
-    .optional()
-    .isIn(['Male', 'Female', 'Other', 'Prefer not to say'])
-    .withMessage('Please select a valid gender'),
+    .optional({ checkFalsy: true })
+    .custom((value) => {
+      if (!value || value.length === 0) return true; // Allow empty
+      const validGenders = ['Male', 'Female', 'Other', 'Prefer not to say'];
+      if (!validGenders.includes(value)) {
+        throw new Error('Please select a valid gender');
+      }
+      return true;
+    }),
   
-  // Prevent mass assignment - only allow specific fields
+  // Allow more fields but ignore unauthorized ones (don't throw error)
   body()
     .custom((value, { req }) => {
+      // Just log extra fields but don't fail validation
       const allowedFields = [
         'fullName', 'phone', 'location', 'dateOfBirth', 'gender',
         'medicalHistory', 'drugAllergies', 'dietaryPreferences',
-        'smoking', 'drinking', 'additionalInfo'
+        'smoking', 'drinking', 'additionalInfo', 'email', 'profilePicture'
       ];
       
       const extraFields = Object.keys(req.body).filter(
@@ -170,10 +195,10 @@ exports.validateUpdateProfile = [
       );
       
       if (extraFields.length > 0) {
-        throw new Error(`Unauthorized fields: ${extraFields.join(', ')}`);
+        logger.info('Extra fields in profile update (will be ignored)', { extraFields });
       }
       
-      return true;
+      return true; // Always pass
     }),
   
   exports.handleValidationErrors

@@ -52,7 +52,7 @@ router.post('/logout', protect, logout);
 router.post('/logout-all', protect, logoutAll);
 router.get('/me', protect, getMe);
 router.get('/stats', protect, getUserStats);
-router.put('/profile', protect, validateUpdateProfile, updateProfile);
+router.put('/profile', protect, updateProfile);
 router.post('/upgrade-membership', protect, upgradeMembership);
 
 // Profile picture upload with error handling

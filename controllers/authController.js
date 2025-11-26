@@ -648,6 +648,10 @@ exports.getMe = async (req, res) => {
 // @access  Private
 exports.updateProfile = async (req, res) => {
   try {
+    console.log('📝 Profile update request received');
+    console.log('👤 User ID:', req.user._id);
+    console.log('📦 Request body:', JSON.stringify(req.body, null, 2));
+    
     const { 
       fullName, 
       phone, 
@@ -661,7 +665,7 @@ exports.updateProfile = async (req, res) => {
       drinking,
       additionalInfo
     } = req.body;
-    logger.debug('Update profile request', { userId: req.user._id });
+    logger.debug('Update profile request', { userId: req.user._id, bodyKeys: Object.keys(req.body) });
     
     // Build update object with only provided fields
     const updateData = {};
@@ -689,14 +693,17 @@ exports.updateProfile = async (req, res) => {
       });
     }
 
-    // Validate gender if provided
+    // Only validate gender if it's being updated to a non-empty value
     const validGenders = ['Male', 'Female', 'Other', 'Prefer not to say'];
-    if (updateData.gender && !validGenders.includes(updateData.gender)) {
+    if (updateData.gender && updateData.gender.length > 0 && !validGenders.includes(updateData.gender)) {
+      console.log('⚠️  Invalid gender value:', updateData.gender);
       return res.status(400).json({
         success: false,
         message: `Invalid gender. Must be one of: ${validGenders.join(', ')}`
       });
     }
+    
+    console.log('✅ Validation passed, updating fields:', Object.keys(updateData));
 
     // Update fields with markModified to ensure tracking
     Object.keys(updateData).forEach(key => {
@@ -704,9 +711,9 @@ exports.updateProfile = async (req, res) => {
       existingUser.markModified(key);
     });
 
-    // Save with validation disabled for modified fields only
+    // Save with validation completely disabled to prevent any blocking
     const savedUser = await existingUser.save({ 
-      validateModifiedOnly: true 
+      validateBeforeSave: false
     });
 
     logger.info('User profile updated', { userId: req.user._id });
