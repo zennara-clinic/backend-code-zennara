@@ -106,10 +106,33 @@ exports.signup = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('❌ Registration failed');
+    console.error('❌ Registration failed:', error);
+    console.error('❌ Error name:', error.name);
+    console.error('❌ Error message:', error.message);
+    
+    // Handle Mongoose validation errors
+    if (error.name === 'ValidationError') {
+      const validationErrors = Object.values(error.errors).map(err => err.message);
+      console.error('❌ Validation errors:', validationErrors);
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: validationErrors
+      });
+    }
+    
+    // Handle duplicate key errors
+    if (error.code === 11000) {
+      const field = Object.keys(error.keyPattern)[0];
+      return res.status(400).json({
+        success: false,
+        message: `${field} already exists`
+      });
+    }
+    
     res.status(500).json({
       success: false,
-      message: 'Registration failed. Please try again.'
+      message: error.message || 'Registration failed. Please try again.'
     });
   }
 };

@@ -156,7 +156,6 @@ const UserSchema = new mongoose.Schema({
   privacyPolicyConsent: {
     accepted: {
       type: Boolean,
-      required: [true, 'Privacy policy acceptance is required'],
       default: false
     },
     version: {
@@ -175,7 +174,6 @@ const UserSchema = new mongoose.Schema({
   termsOfServiceConsent: {
     accepted: {
       type: Boolean,
-      required: [true, 'Terms of service acceptance is required'],
       default: false
     },
     version: {

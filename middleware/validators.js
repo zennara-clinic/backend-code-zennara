@@ -55,21 +55,39 @@ exports.validateSignup = [
     .withMessage('Location must be between 2 and 100 characters'),
   
   body('dateOfBirth')
-    .isISO8601()
-    .withMessage('Please provide a valid date of birth'),
+    .custom((value) => {
+      if (!value) {
+        throw new Error('Date of birth is required');
+      }
+      // Accept multiple date formats: ISO8601, DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD
+      const datePatterns = [
+        /^\d{4}-\d{2}-\d{2}$/,           // YYYY-MM-DD (ISO)
+        /^\d{2}\/\d{2}\/\d{4}$/,         // DD/MM/YYYY or MM/DD/YYYY
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/ // ISO8601 with time
+      ];
+      const isValidFormat = datePatterns.some(pattern => pattern.test(value));
+      if (!isValidFormat) {
+        throw new Error('Please provide a valid date of birth');
+      }
+      return true;
+    }),
   
   body('gender')
     .isIn(['Male', 'Female', 'Other', 'Prefer not to say'])
     .withMessage('Please select a valid gender'),
   
   body('privacyPolicyAccepted')
-    .isBoolean()
-    .equals('true')
+    .custom((value) => {
+      // Accept both boolean true and string 'true'
+      return value === true || value === 'true';
+    })
     .withMessage('You must accept the Privacy Policy'),
   
   body('termsAccepted')
-    .isBoolean()
-    .equals('true')
+    .custom((value) => {
+      // Accept both boolean true and string 'true'
+      return value === true || value === 'true';
+    })
     .withMessage('You must accept the Terms of Service'),
   
   exports.handleValidationErrors
