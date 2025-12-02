@@ -178,6 +178,8 @@ app.use('/api/products', require('./routes/product'));
 app.use('/api/product-orders', require('./routes/productOrder'));
 app.use('/api/reviews', require('./routes/review'));
 app.use('/api/package-service-reviews', require('./routes/packageServiceReview'));
+app.use('/api/admin/product-reviews', require('./routes/admin/productReviewRoutes'));
+app.use('/api/admin/consultation-reviews', require('./routes/admin/consultationReviewRoutes'));
 app.use('/api/admin/package-service-reviews', require('./routes/admin/packageServiceReviewRoutes'));
 app.use('/api/upload', require('./routes/upload'));
 app.use('/api/coupons', require('./routes/coupon'));

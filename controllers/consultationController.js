@@ -346,11 +346,19 @@ exports.getAllConsultations = async (req, res) => {
       minPrice, 
       maxPrice,
       tags,
-      sort 
+      sort,
+      isPopular
     } = req.query;
 
+    console.log('📞 getAllConsultations called with params:', {
+      category,
+      search,
+      isPopular,
+      isPopularType: typeof isPopular
+    });
+
     // Build query
-    let query = {};
+    let query = { isActive: true };
 
     // Filter by category
     if (category && category !== 'All') {
@@ -380,6 +388,14 @@ exports.getAllConsultations = async (req, res) => {
       query.tags = { $in: tagArray };
     }
 
+    // Filter by popular
+    if (isPopular === 'true') {
+      console.log('✅ Filtering for popular consultations');
+      query.isPopular = true;
+    } else {
+      console.log('⚠️ isPopular filter NOT applied. Value:', isPopular);
+    }
+
     // Build sort
     let sortOption = {};
     switch (sort) {
@@ -402,9 +418,17 @@ exports.getAllConsultations = async (req, res) => {
         sortOption = { createdAt: -1 };
     }
 
+    console.log('🔍 Final query:', query);
+    console.log('📊 Sort option:', sortOption);
+
     const consultations = await Consultation.find(query)
       .sort(sortOption)
       .select('-__v');
+
+    console.log('📦 Found consultations:', {
+      count: consultations.length,
+      names: consultations.slice(0, 6).map(c => c.name)
+    });
 
     res.status(200).json({
       success: true,
