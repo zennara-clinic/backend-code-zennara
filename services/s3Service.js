@@ -11,27 +11,54 @@ const crypto = require('crypto');
  */
 exports.uploadToS3 = async (file, folder = 'uploads') => {
   try {
-    // Optimize and compress image using sharp
-    const optimizedBuffer = await sharp(file.buffer)
-      .resize(2000, 2000, { 
-        fit: 'inside',
-        withoutEnlargement: true 
-      })
-      .jpeg({ 
-        quality: 85,
-        progressive: true 
-      })
-      .toBuffer();
+    // Get image metadata to detect format and transparency
+    const metadata = await sharp(file.buffer).metadata();
+    const isPng = metadata.format === 'png';
+    const hasAlpha = metadata.hasAlpha;
 
-    // Generate unique filename
-    const fileKey = `${folder}/${crypto.randomBytes(16).toString('hex')}-${Date.now()}.jpg`;
+    let optimizedBuffer;
+    let fileExtension;
+    let contentType;
+
+    // If PNG with transparency, preserve it as PNG
+    if (isPng && hasAlpha) {
+      optimizedBuffer = await sharp(file.buffer)
+        .resize(2000, 2000, { 
+          fit: 'inside',
+          withoutEnlargement: true 
+        })
+        .png({ 
+          quality: 85,
+          compressionLevel: 9
+        })
+        .toBuffer();
+      fileExtension = 'png';
+      contentType = 'image/png';
+    } else {
+      // Convert to JPEG for other formats or PNG without transparency
+      optimizedBuffer = await sharp(file.buffer)
+        .resize(2000, 2000, { 
+          fit: 'inside',
+          withoutEnlargement: true 
+        })
+        .jpeg({ 
+          quality: 85,
+          progressive: true 
+        })
+        .toBuffer();
+      fileExtension = 'jpg';
+      contentType = 'image/jpeg';
+    }
+
+    // Generate unique filename with correct extension
+    const fileKey = `${folder}/${crypto.randomBytes(16).toString('hex')}-${Date.now()}.${fileExtension}`;
 
     // Upload parameters
     const uploadParams = {
       Bucket: S3_BUCKET,
       Key: fileKey,
       Body: optimizedBuffer,
-      ContentType: 'image/jpeg',
+      ContentType: contentType,
       CacheControl: 'max-age=31536000' // Cache for 1 year
     };
 
@@ -40,7 +67,7 @@ exports.uploadToS3 = async (file, folder = 'uploads') => {
 
     // Return S3 URL
     const url = `https://${S3_BUCKET}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${fileKey}`;
-    console.log('✅ File uploaded to S3:', url);
+    console.log(`✅ File uploaded to S3 as ${fileExtension.toUpperCase()}:`, url);
     
     return url;
   } catch (error) {
