@@ -59,7 +59,7 @@ exports.uploadToS3 = async (file, folder = 'uploads') => {
       Key: fileKey,
       Body: optimizedBuffer,
       ContentType: contentType,
-      CacheControl: 'max-age=31536000' // Cache for 1 year
+      CacheControl: 'no-cache, no-store, must-revalidate' // No caching for instant updates
     };
 
     // Upload to S3
