@@ -130,6 +130,8 @@ exports.uploadCustomizationImage = async (req, res) => {
     }
 
     await settings.updateSettings(updates, req.admin._id);
+    
+    console.log(`✅ Logo/Image updated - Type: ${imageType}, New URL: ${imageUrl}, Version: ${settings.version}`);
 
     // Delete old image from S3 (if not default)
     if (oldImageUrl && !oldImageUrl.includes('default-hero-banner') && !oldImageUrl.includes('cloudinary.com')) {
