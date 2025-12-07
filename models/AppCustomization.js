@@ -1,6 +1,12 @@
 const mongoose = require('mongoose');
 
 const appCustomizationSchema = new mongoose.Schema({
+  // App Logo
+  appLogo: {
+    type: String,
+    default: 'https://res.cloudinary.com/dgcpuirdo/image/upload/v1749817496/zennara_logo_wtk8lz.png'
+  },
+
   // Home Screen
   homeScreen: {
     heroBannerImage: {

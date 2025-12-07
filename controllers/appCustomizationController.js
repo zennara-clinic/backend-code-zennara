@@ -98,12 +98,14 @@ exports.uploadCustomizationImage = async (req, res) => {
       });
     }
 
-    const { imageType } = req.params; // heroBanner, zenMembershipCard
+    const { imageType } = req.params; // appLogo, heroBanner, zenMembershipCard
     const settings = await AppCustomization.getSettings();
 
     // Delete old image from S3 if exists
     let oldImageUrl = null;
-    if (imageType === 'heroBanner' && settings.homeScreen.heroBannerImage) {
+    if (imageType === 'appLogo' && settings.appLogo) {
+      oldImageUrl = settings.appLogo;
+    } else if (imageType === 'heroBanner' && settings.homeScreen.heroBannerImage) {
       oldImageUrl = settings.homeScreen.heroBannerImage;
     } else if (imageType === 'zenMembershipCard' && settings.homeScreen.zenMembershipCardImage) {
       oldImageUrl = settings.homeScreen.zenMembershipCardImage;
@@ -114,7 +116,9 @@ exports.uploadCustomizationImage = async (req, res) => {
 
     // Update settings with new image URL
     const updates = {};
-    if (imageType === 'heroBanner') {
+    if (imageType === 'appLogo') {
+      updates.appLogo = imageUrl;
+    } else if (imageType === 'heroBanner') {
       updates.homeScreen = { heroBannerImage: imageUrl };
     } else if (imageType === 'zenMembershipCard') {
       updates.homeScreen = { zenMembershipCardImage: imageUrl };
@@ -176,6 +180,7 @@ exports.resetCustomizationSettings = async (req, res) => {
     const settings = await AppCustomization.getSettings();
     
     // Reset to default values
+    settings.appLogo = 'https://res.cloudinary.com/dgcpuirdo/image/upload/v1749817496/zennara_logo_wtk8lz.png';
     settings.homeScreen = {
       heroBannerImage: 'https://zennara-bucket.s3.ap-south-1.amazonaws.com/default-hero-banner.jpg',
       heroBannerRoute: 'consultations',
