@@ -266,10 +266,14 @@ appCustomizationSchema.statics.getSettings = async function() {
 appCustomizationSchema.methods.updateSettings = async function(updates, adminId) {
   // Deep merge updates
   Object.keys(updates).forEach(screen => {
-    if (this[screen] && typeof this[screen] === 'object') {
+    if (this[screen] && typeof this[screen] === 'object' && !Array.isArray(this[screen])) {
+      // Handle nested objects (homeScreen, consultationsScreen, etc.)
       Object.keys(updates[screen]).forEach(field => {
         this[screen][field] = updates[screen][field];
       });
+    } else {
+      // Handle root-level fields (appLogo, etc.)
+      this[screen] = updates[screen];
     }
   });
 

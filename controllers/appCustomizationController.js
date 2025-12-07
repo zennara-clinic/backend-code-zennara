@@ -91,6 +91,14 @@ exports.updateCustomizationSettings = async (req, res) => {
 // @access  Private (Admin only)
 exports.uploadCustomizationImage = async (req, res) => {
   try {
+    console.log('📸 Image upload request received:', {
+      imageType: req.params.imageType,
+      hasFile: !!req.file,
+      fileName: req.file?.originalname,
+      fileSize: req.file?.size,
+      adminEmail: req.admin?.email
+    });
+
     if (!req.file) {
       return res.status(400).json({
         success: false,
@@ -99,6 +107,15 @@ exports.uploadCustomizationImage = async (req, res) => {
     }
 
     const { imageType } = req.params; // appLogo, heroBanner, zenMembershipCard
+    
+    // Validate image type
+    if (!['appLogo', 'heroBanner', 'zenMembershipCard'].includes(imageType)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid image type. Must be appLogo, heroBanner, or zenMembershipCard'
+      });
+    }
+
     const settings = await AppCustomization.getSettings();
 
     // Delete old image from S3 if exists
@@ -111,8 +128,10 @@ exports.uploadCustomizationImage = async (req, res) => {
       oldImageUrl = settings.homeScreen.zenMembershipCardImage;
     }
 
+    console.log('📤 Uploading to S3...');
     // Upload new image to S3
     const imageUrl = await uploadToS3(req.file, 'app-customization');
+    console.log('✅ S3 upload successful:', imageUrl);
 
     // Update settings with new image URL
     const updates = {};
@@ -122,21 +141,19 @@ exports.uploadCustomizationImage = async (req, res) => {
       updates.homeScreen = { heroBannerImage: imageUrl };
     } else if (imageType === 'zenMembershipCard') {
       updates.homeScreen = { zenMembershipCardImage: imageUrl };
-    } else {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid image type'
-      });
     }
 
+    console.log('💾 Updating settings...');
     await settings.updateSettings(updates, req.admin._id);
+    console.log('✅ Settings updated successfully');
 
     // Delete old image from S3 (if not default)
-    if (oldImageUrl && !oldImageUrl.includes('default-hero-banner')) {
+    if (oldImageUrl && !oldImageUrl.includes('cloudinary.com') && !oldImageUrl.includes('default-hero-banner')) {
       try {
+        console.log('🗑️ Deleting old image:', oldImageUrl);
         await deleteFromS3(oldImageUrl);
       } catch (deleteError) {
-        console.error('Error deleting old image:', deleteError);
+        console.error('⚠️ Error deleting old image:', deleteError);
       }
     }
 
@@ -150,11 +167,14 @@ exports.uploadCustomizationImage = async (req, res) => {
       details: {
         imageType,
         imageUrl,
+        oldImageUrl,
         description: `Uploaded ${imageType} image`
       },
       ipAddress: req.ip,
       userAgent: req.get('user-agent')
     });
+
+    console.log('✅ Logo upload complete:', imageType);
 
     res.status(200).json({
       success: true,
@@ -163,7 +183,7 @@ exports.uploadCustomizationImage = async (req, res) => {
       data: settings
     });
   } catch (error) {
-    console.error('Error uploading customization image:', error);
+    console.error('❌ Error uploading customization image:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to upload image',

@@ -59,7 +59,8 @@ exports.uploadToS3 = async (file, folder = 'uploads') => {
       Key: fileKey,
       Body: optimizedBuffer,
       ContentType: contentType,
-      CacheControl: 'no-cache, no-store, must-revalidate' // No caching for instant updates
+      CacheControl: 'no-cache, no-store, must-revalidate', // No caching for instant updates
+      ACL: 'public-read' // Make object publicly readable
     };
 
     // Upload to S3
@@ -130,7 +131,8 @@ exports.uploadBufferToS3 = async (buffer, folder = 'uploads', contentType = 'app
       Bucket: S3_BUCKET,
       Key: fileKey,
       Body: buffer,
-      ContentType: contentType
+      ContentType: contentType,
+      ACL: 'public-read' // Make object publicly readable
     };
 
     // Upload to S3
