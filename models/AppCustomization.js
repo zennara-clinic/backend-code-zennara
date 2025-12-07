@@ -266,20 +266,16 @@ appCustomizationSchema.statics.getSettings = async function() {
 appCustomizationSchema.methods.updateSettings = async function(updates, adminId) {
   // Deep merge updates
   Object.keys(updates).forEach(screen => {
-    if (this[screen] && typeof this[screen] === 'object' && typeof updates[screen] === 'object') {
-      // Nested object update (e.g., homeScreen.heroBannerImage)
+    if (this[screen] && typeof this[screen] === 'object') {
       Object.keys(updates[screen]).forEach(field => {
         this[screen][field] = updates[screen][field];
       });
-    } else {
-      // Root-level field update (e.g., appLogo)
-      this[screen] = updates[screen];
     }
   });
 
   this.lastUpdatedBy = adminId;
   this.lastUpdatedAt = new Date();
-  this.version += 1; // Increment version for cache busting
+  this.version += 1;
 
   await this.save();
   return this;
