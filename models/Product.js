@@ -14,10 +14,16 @@ const productSchema = new mongoose.Schema({
     type: String,
     required: [true, 'Product formulation is required'],
     enum: [
-      'Balm', 'Capsule', 'Conditioner', 'Cream', 'Face Wash', 
-      'Gel', 'Lotion', 'Micellar Water', 'Moisturizer', 'Oil', 
-      'Patch', 'Pigmentation', 'Serum', 'Shampoo', 'Solution', 
-      'Sunscreen', 'Supplement'
+      'Cleansers',
+      'Toners / Essences',
+      'Serums',
+      'Moisturizers',
+      'Sunscreens',
+      'Exfoliants',
+      'Masks',
+      'Eye Creams / Eye Serums',
+      'Spot Treatments',
+      'Face Oils'
     ]
   },
   OrgName: {

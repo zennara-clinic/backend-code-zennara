@@ -13,7 +13,7 @@ const { validateOwnership } = require('../middleware/securityMiddleware');
 // @access  Private
 exports.createOrder = async (req, res) => {
   try {
-    const { items, addressId, pricing, coupon, paymentMethod = 'COD', notes } = req.body;
+    const { items, addressId, pricing, coupon, paymentMethod = 'Razorpay', notes } = req.body;
     
     console.log('📦 Creating product order for user:', req.user._id);
     console.log('👤 Member Type:', req.user.memberType);
@@ -57,6 +57,9 @@ exports.createOrder = async (req, res) => {
     const processedItems = [];
     let calculatedSubtotal = 0;
     
+    // Minimum cart value constant
+    const MINIMUM_CART_VALUE = 1000;
+    
     // First pass: validate all items before modifying stock
     const itemsToProcess = [];
     for (const item of items) {
@@ -91,7 +94,18 @@ exports.createOrder = async (req, res) => {
         });
       }
       
+      calculatedSubtotal += product.price * item.quantity;
       itemsToProcess.push({ product, quantity: item.quantity });
+    }
+    
+    // Validate minimum cart value
+    if (calculatedSubtotal < MINIMUM_CART_VALUE) {
+      return res.status(400).json({
+        success: false,
+        message: `Minimum order value is ₹${MINIMUM_CART_VALUE}. Your cart value is ₹${calculatedSubtotal}`,
+        minimumRequired: MINIMUM_CART_VALUE,
+        currentValue: calculatedSubtotal
+      });
     }
     
     // Second pass: atomically reduce stock using findByIdAndUpdate to prevent race conditions
@@ -131,7 +145,6 @@ exports.createOrder = async (req, res) => {
       // Use product price
       const price = product.price;
       const subtotal = price * quantity;
-      calculatedSubtotal += subtotal;
       
       processedItems.push({
         productId: product._id,

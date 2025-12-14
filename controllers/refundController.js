@@ -89,132 +89,57 @@ exports.initiateRefund = async (req, res) => {
       });
     }
     
-    // Check payment method and process accordingly
-    let refundResult;
+    // Process online payment refund via Razorpay
+    console.log('Processing online payment refund via Razorpay');
     
-    if (order.paymentMethod === 'COD') {
-      console.log('Processing COD refund manually');
+    // Online Payment - Use Razorpay refund API
+    if (!order.razorpayPaymentId) {
+      return res.status(400).json({
+        success: false,
+        message: 'No payment ID found. Cannot process online refund.'
+      });
+    }
+    
+    try {
+      // Call Razorpay refund API
+      const refundResult = await razorpayService.refundPayment(
+        order.razorpayPaymentId,
+        amountToRefund
+      );
       
-      // COD Order - Manual refund process
-      if (!refundMethod || !['Bank Transfer', 'UPI', 'Cash', 'Store Credit'].includes(refundMethod)) {
-        return res.status(400).json({
-          success: false,
-          message: 'Please specify refund method: Bank Transfer, UPI, Cash, or Store Credit'
-        });
-      }
+      console.log('Razorpay refund successful:', refundResult.id);
       
-      // For Bank Transfer or UPI, validate bank details
-      if (refundMethod === 'Bank Transfer' || refundMethod === 'UPI') {
-        const finalBankDetails = bankDetails || order.userId?.refundBankDetails;
-        
-        if (!validateBankDetails(finalBankDetails, refundMethod)) {
-          return res.status(400).json({
-            success: false,
-            message: `Invalid or incomplete bank details for ${refundMethod}. Please provide valid details.`,
-            requiresBankDetails: true,
-            details: {
-              method: refundMethod,
-              required: refundMethod === 'Bank Transfer' 
-                ? ['accountHolderName', 'bankName', 'accountNumber', 'ifscCode']
-                : ['accountHolderName', 'upiId']
-            }
-          });
-        }
-        
-        // Update order with refund details
-        order.refundDetails = {
-          method: refundMethod,
-          amount: amountToRefund,
-          status: 'Processing',
-          bankDetails: {
-            accountHolderName: finalBankDetails.accountHolderName,
-            bankName: finalBankDetails.bankName,
-            accountNumber: finalBankDetails.accountNumber,
-            ifscCode: finalBankDetails.ifscCode,
-            upiId: finalBankDetails.upiId
-          },
-          transactionId: transactionId || null,
-          refundInitiatedAt: new Date(),
-          refundedBy: req.user._id,
-          notes: notes || 'COD order refund initiated',
-          retryCount: 0,
-          lastRetryAt: null
-        };
-      } else {
-        // Cash or Store Credit
-        order.refundDetails = {
-          method: refundMethod,
-          amount: amountToRefund,
-          status: 'Processing',
-          transactionId: transactionId || null,
-          refundInitiatedAt: new Date(),
-          refundedBy: req.user._id,
-          notes: notes || `${refundMethod} refund initiated`,
-          retryCount: 0,
-          lastRetryAt: null
-        };
-      }
+      // Update order with refund details
+      order.refundDetails = {
+        method: 'Razorpay',
+        amount: amountToRefund,
+        status: 'Processing',
+        razorpayRefundId: refundResult.id,
+        transactionId: refundResult.id,
+        refundInitiatedAt: new Date(),
+        refundedBy: req.user._id,
+        notes: notes || 'Online payment refund processed via Razorpay',
+        retryCount: 0,
+        lastRetryAt: null
+      };
       
       // Add to status history
       order.statusHistory.push({
         status: 'Refund Initiated',
         timestamp: new Date(),
-        note: `${refundMethod} refund of Rs.${amountToRefund} initiated by admin`,
+        note: `Razorpay refund of Rs.${amountToRefund} initiated. Refund ID: ${refundResult.id}`,
         initiatedBy: req.user._id
       });
       
-    } else {
-      console.log('Processing online payment refund via Razorpay');
+    } catch (error) {
+      console.error('Razorpay refund failed:', error.message);
       
-      // Online Payment - Use Razorpay refund API
-      if (!order.razorpayPaymentId) {
-        return res.status(400).json({
-          success: false,
-          message: 'No payment ID found. Cannot process online refund.'
-        });
-      }
-      
-      try {
-        // Call Razorpay refund API
-        refundResult = await razorpayService.refundPayment(
-          order.razorpayPaymentId,
-          amountToRefund
-        );
-        
-        console.log('Razorpay refund successful:', refundResult.id);
-        
-        // Update order with refund details
-        order.refundDetails = {
-          method: 'Razorpay',
-          amount: amountToRefund,
-          status: 'Processing',
-          razorpayRefundId: refundResult.id,
-          transactionId: refundResult.id,
-          refundInitiatedAt: new Date(),
-          refundedBy: req.user._id,
-          notes: notes || 'Online payment refund processed via Razorpay',
-          retryCount: 0,
-          lastRetryAt: null
-        };
-        
-        // Add to status history
-        order.statusHistory.push({
-          status: 'Refund Initiated',
-          timestamp: new Date(),
-          note: `Razorpay refund of Rs.${amountToRefund} initiated. Refund ID: ${refundResult.id}`,
-          initiatedBy: req.user._id
-        });
-        
-      } catch (error) {
-        console.error('Razorpay refund failed:', error.message);
-        
-        return res.status(500).json({
-          success: false,
-          message: 'Failed to process Razorpay refund',
-          error: error.message,
-          errorCode: 'RAZORPAY_REFUND_FAILED'
-        });
-      }
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to process Razorpay refund',
+        error: error.message,
+        errorCode: 'RAZORPAY_REFUND_FAILED'
+      });
     }
     
     await order.save();
