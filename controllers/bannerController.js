@@ -1,5 +1,8 @@
 const Banner = require('../models/Banner');
-const s3Service = require('../config/s3');
+const { PutObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
+const { s3Client, S3_BUCKET } = require('../config/s3');
+const sharp = require('sharp');
+const crypto = require('crypto');
 
 exports.createBanner = async (req, res) => {
   try {
@@ -15,7 +18,17 @@ exports.createBanner = async (req, res) => {
 
       let videoFileUrl = '';
       if (req.file) {
-        videoFileUrl = await s3Service.uploadFile(req.file, 'banners/videos');
+        const fileKey = `banners/videos/${crypto.randomBytes(16).toString('hex')}-${Date.now()}.${req.file.mimetype.split('/')[1]}`;
+        
+        const uploadParams = {
+          Bucket: S3_BUCKET,
+          Key: fileKey,
+          Body: req.file.buffer,
+          ContentType: req.file.mimetype
+        };
+        
+        await s3Client.send(new PutObjectCommand(uploadParams));
+        videoFileUrl = `https://${S3_BUCKET}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${fileKey}`;
       }
 
       const banner = await Banner.create({
@@ -44,7 +57,17 @@ exports.createBanner = async (req, res) => {
       });
     }
 
-    const imageUrl = await s3Service.uploadFile(req.file, 'banners/images');
+    const fileKey = `banners/images/${crypto.randomBytes(16).toString('hex')}-${Date.now()}.${req.file.mimetype.split('/')[1]}`;
+    
+    const uploadParams = {
+      Bucket: S3_BUCKET,
+      Key: fileKey,
+      Body: req.file.buffer,
+      ContentType: req.file.mimetype
+    };
+    
+    await s3Client.send(new PutObjectCommand(uploadParams));
+    const imageUrl = `https://${S3_BUCKET}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${fileKey}`;
 
     const banner = await Banner.create({
       title,
@@ -150,10 +173,12 @@ exports.updateBanner = async (req, res) => {
 
     if (mediaType && mediaType !== banner.mediaType) {
       if (banner.mediaType === 'image' && banner.image) {
-        await s3Service.deleteFile(banner.image);
+        const oldKey = banner.image.split('.amazonaws.com/')[1];
+        await s3Client.send(new DeleteObjectCommand({ Bucket: S3_BUCKET, Key: oldKey }));
         banner.image = '';
       } else if (banner.mediaType === 'video' && banner.videoFile) {
-        await s3Service.deleteFile(banner.videoFile);
+        const oldKey = banner.videoFile.split('.amazonaws.com/')[1];
+        await s3Client.send(new DeleteObjectCommand({ Bucket: S3_BUCKET, Key: oldKey }));
         banner.videoFile = '';
       }
       banner.mediaType = mediaType;
@@ -162,14 +187,32 @@ exports.updateBanner = async (req, res) => {
     if (req.file) {
       if (banner.mediaType === 'image') {
         if (banner.image) {
-          await s3Service.deleteFile(banner.image);
+          const oldKey = banner.image.split('.amazonaws.com/')[1];
+          await s3Client.send(new DeleteObjectCommand({ Bucket: S3_BUCKET, Key: oldKey }));
         }
-        banner.image = await s3Service.uploadFile(req.file, 'banners/images');
+        const fileKey = `banners/images/${crypto.randomBytes(16).toString('hex')}-${Date.now()}.${req.file.mimetype.split('/')[1]}`;
+        const uploadParams = {
+          Bucket: S3_BUCKET,
+          Key: fileKey,
+          Body: req.file.buffer,
+          ContentType: req.file.mimetype
+        };
+        await s3Client.send(new PutObjectCommand(uploadParams));
+        banner.image = `https://${S3_BUCKET}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${fileKey}`;
       } else if (banner.mediaType === 'video') {
         if (banner.videoFile) {
-          await s3Service.deleteFile(banner.videoFile);
+          const oldKey = banner.videoFile.split('.amazonaws.com/')[1];
+          await s3Client.send(new DeleteObjectCommand({ Bucket: S3_BUCKET, Key: oldKey }));
         }
-        banner.videoFile = await s3Service.uploadFile(req.file, 'banners/videos');
+        const fileKey = `banners/videos/${crypto.randomBytes(16).toString('hex')}-${Date.now()}.${req.file.mimetype.split('/')[1]}`;
+        const uploadParams = {
+          Bucket: S3_BUCKET,
+          Key: fileKey,
+          Body: req.file.buffer,
+          ContentType: req.file.mimetype
+        };
+        await s3Client.send(new PutObjectCommand(uploadParams));
+        banner.videoFile = `https://${S3_BUCKET}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${fileKey}`;
       }
     }
 
@@ -213,11 +256,21 @@ exports.deleteBanner = async (req, res) => {
     }
 
     if (banner.image) {
-      await s3Service.deleteFile(banner.image);
+      try {
+        const imageKey = banner.image.split('.amazonaws.com/')[1];
+        await s3Client.send(new DeleteObjectCommand({ Bucket: S3_BUCKET, Key: imageKey }));
+      } catch (error) {
+        console.error('Error deleting image from S3:', error);
+      }
     }
 
     if (banner.videoFile) {
-      await s3Service.deleteFile(banner.videoFile);
+      try {
+        const videoKey = banner.videoFile.split('.amazonaws.com/')[1];
+        await s3Client.send(new DeleteObjectCommand({ Bucket: S3_BUCKET, Key: videoKey }));
+      } catch (error) {
+        console.error('Error deleting video from S3:', error);
+      }
     }
 
     await Banner.findByIdAndDelete(req.params.id);
