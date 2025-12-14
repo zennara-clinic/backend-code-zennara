@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const upload = require('../config/multer');
-const { protect, adminProtect } = require('../middleware/auth');
+const { protect, protectAdmin } = require('../middleware/auth');
 const {
   createBanner,
   getAllBanners,
@@ -16,7 +16,7 @@ const {
 router.get('/active', getActiveBanners);
 
 router.use(protect);
-router.use(adminProtect);
+router.use(protectAdmin);
 
 router.post('/', upload.single('image'), createBanner);
 router.get('/', getAllBanners);

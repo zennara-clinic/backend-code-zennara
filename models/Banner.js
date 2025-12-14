@@ -6,9 +6,23 @@ const bannerSchema = new mongoose.Schema({
     required: true,
     trim: true
   },
+  mediaType: {
+    type: String,
+    enum: ['image', 'video'],
+    default: 'image',
+    required: true
+  },
   image: {
     type: String,
-    required: true
+    default: ''
+  },
+  videoFile: {
+    type: String,
+    default: ''
+  },
+  videoUrl: {
+    type: String,
+    default: ''
   },
   linkType: {
     type: String,

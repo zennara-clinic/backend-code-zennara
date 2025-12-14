@@ -3,7 +3,39 @@ const s3Service = require('../config/s3');
 
 exports.createBanner = async (req, res) => {
   try {
-    const { title, linkType, internalScreen, externalUrl, order } = req.body;
+    const { title, mediaType, videoUrl, linkType, internalScreen, externalUrl, order } = req.body;
+
+    if (mediaType === 'video') {
+      if (!videoUrl && !req.file) {
+        return res.status(400).json({
+          success: false,
+          message: 'Video URL or video file is required for video banners'
+        });
+      }
+
+      let videoFileUrl = '';
+      if (req.file) {
+        videoFileUrl = await s3Service.uploadFile(req.file, 'banners/videos');
+      }
+
+      const banner = await Banner.create({
+        title,
+        mediaType: 'video',
+        videoFile: videoFileUrl,
+        videoUrl: videoUrl || '',
+        linkType: linkType || 'none',
+        internalScreen: linkType === 'internal' ? internalScreen : '',
+        externalUrl: linkType === 'external' ? externalUrl : '',
+        order: order || 0,
+        isActive: true
+      });
+
+      return res.status(201).json({
+        success: true,
+        message: 'Video banner created successfully',
+        data: banner
+      });
+    }
 
     if (!req.file) {
       return res.status(400).json({
@@ -12,10 +44,11 @@ exports.createBanner = async (req, res) => {
       });
     }
 
-    const imageUrl = await s3Service.uploadFile(req.file, 'banners');
+    const imageUrl = await s3Service.uploadFile(req.file, 'banners/images');
 
     const banner = await Banner.create({
       title,
+      mediaType: 'image',
       image: imageUrl,
       linkType: linkType || 'none',
       internalScreen: linkType === 'internal' ? internalScreen : '',
@@ -104,7 +137,7 @@ exports.getBanner = async (req, res) => {
 
 exports.updateBanner = async (req, res) => {
   try {
-    const { title, linkType, internalScreen, externalUrl, order, isActive } = req.body;
+    const { title, mediaType, videoUrl, linkType, internalScreen, externalUrl, order, isActive } = req.body;
 
     const banner = await Banner.findById(req.params.id);
 
@@ -115,11 +148,33 @@ exports.updateBanner = async (req, res) => {
       });
     }
 
-    if (req.file) {
-      if (banner.image) {
+    if (mediaType && mediaType !== banner.mediaType) {
+      if (banner.mediaType === 'image' && banner.image) {
         await s3Service.deleteFile(banner.image);
+        banner.image = '';
+      } else if (banner.mediaType === 'video' && banner.videoFile) {
+        await s3Service.deleteFile(banner.videoFile);
+        banner.videoFile = '';
       }
-      banner.image = await s3Service.uploadFile(req.file, 'banners');
+      banner.mediaType = mediaType;
+    }
+
+    if (req.file) {
+      if (banner.mediaType === 'image') {
+        if (banner.image) {
+          await s3Service.deleteFile(banner.image);
+        }
+        banner.image = await s3Service.uploadFile(req.file, 'banners/images');
+      } else if (banner.mediaType === 'video') {
+        if (banner.videoFile) {
+          await s3Service.deleteFile(banner.videoFile);
+        }
+        banner.videoFile = await s3Service.uploadFile(req.file, 'banners/videos');
+      }
+    }
+
+    if (banner.mediaType === 'video' && videoUrl !== undefined) {
+      banner.videoUrl = videoUrl;
     }
 
     banner.title = title || banner.title;
@@ -159,6 +214,10 @@ exports.deleteBanner = async (req, res) => {
 
     if (banner.image) {
       await s3Service.deleteFile(banner.image);
+    }
+
+    if (banner.videoFile) {
+      await s3Service.deleteFile(banner.videoFile);
     }
 
     await Banner.findByIdAndDelete(req.params.id);
