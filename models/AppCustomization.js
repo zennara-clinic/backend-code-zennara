@@ -666,16 +666,19 @@ appCustomizationSchema.statics.getSettings = async function() {
 
 // Method to update settings
 appCustomizationSchema.methods.updateSettings = async function(updates, adminId) {
+  // Define which fields are nested objects vs root-level fields
+  const nestedObjectFields = ['homeScreen', 'consultationsScreen', 'appointmentsScreen', 'productsScreen', 'profileScreen'];
+  
   // Deep merge updates
-  Object.keys(updates).forEach(screen => {
-    if (this[screen] && typeof this[screen] === 'object' && !Array.isArray(this[screen])) {
+  Object.keys(updates).forEach(field => {
+    if (nestedObjectFields.includes(field) && updates[field] && typeof updates[field] === 'object') {
       // Handle nested objects (homeScreen, consultationsScreen, etc.)
-      Object.keys(updates[screen]).forEach(field => {
-        this[screen][field] = updates[screen][field];
+      Object.keys(updates[field]).forEach(subField => {
+        this[field][subField] = updates[field][subField];
       });
     } else {
-      // Handle root-level fields (appLogo, etc.)
-      this[screen] = updates[screen];
+      // Handle root-level fields (appLogo, termsOfService, privacyPolicy, etc.)
+      this[field] = updates[field];
     }
   });
 

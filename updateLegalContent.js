@@ -19,26 +19,18 @@ const updateLegalContent = async () => {
     } else {
       console.log('📄 Found existing settings, checking legal content...');
       
-      // Check if legal content needs updating
-      const needsUpdate = !settings.termsOfService || !settings.privacyPolicy || 
-                          settings.termsOfService.length < 1000 || 
-                          settings.privacyPolicy.length < 1000;
+      // Force update legal content with comprehensive versions
+      console.log('🔄 Force updating legal content with comprehensive versions...');
       
-      if (needsUpdate) {
-        console.log('🔄 Updating legal content with comprehensive versions...');
-        
-        // Get default values from schema
-        const defaultSettings = new AppCustomization();
-        settings.termsOfService = defaultSettings.termsOfService;
-        settings.privacyPolicy = defaultSettings.privacyPolicy;
-        settings.version += 1;
-        settings.lastUpdatedAt = new Date();
-        
-        await settings.save();
-        console.log('✅ Legal content updated successfully');
-      } else {
-        console.log('✓ Legal content already populated');
-      }
+      // Get default values from schema
+      const defaultSettings = new AppCustomization();
+      settings.termsOfService = defaultSettings.termsOfService;
+      settings.privacyPolicy = defaultSettings.privacyPolicy;
+      settings.version += 1;
+      settings.lastUpdatedAt = new Date();
+      
+      await settings.save();
+      console.log('✅ Legal content updated successfully');
     }
 
     console.log('\n📊 Current Legal Content Status:');
