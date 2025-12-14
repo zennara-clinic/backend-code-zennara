@@ -15,7 +15,7 @@ const {
 
 router.get('/active', getActiveBanners);
 
-router.use(protect);
+// Admin-only routes
 router.use(protectAdmin);
 
 router.post('/', upload.single('image'), createBanner);
