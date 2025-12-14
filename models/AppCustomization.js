@@ -235,6 +235,16 @@ const appCustomizationSchema = new mongoose.Schema({
     }
   },
 
+  // Legal Content
+  termsOfService: {
+    type: String,
+    default: ''
+  },
+  privacyPolicy: {
+    type: String,
+    default: ''
+  },
+
   // Last updated info
   lastUpdatedBy: {
     type: mongoose.Schema.Types.ObjectId,
