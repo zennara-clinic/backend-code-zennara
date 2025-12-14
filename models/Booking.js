@@ -59,10 +59,10 @@ const bookingSchema = new mongoose.Schema({
     required: true,
     index: true
   },
-  preferredTimeSlots: [{
+  preferredTimeSlot: {
     type: String,
     required: true
-  }],
+  },
 
   // Booking Status
   status: {

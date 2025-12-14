@@ -21,7 +21,7 @@ exports.createBooking = async (req, res) => {
       email,
       preferredLocation,
       preferredDate,
-      preferredTimeSlots
+      preferredTimeSlot
     } = req.body;
 
     // Validate consultation exists
@@ -52,7 +52,7 @@ exports.createBooking = async (req, res) => {
       branchId: branch._id,
       preferredLocation,
       preferredDate: new Date(preferredDate),
-      preferredTimeSlots,
+      preferredTimeSlot,
       status: 'Awaiting Confirmation'
     });
 
@@ -90,7 +90,7 @@ exports.createBooking = async (req, res) => {
           preferredDate: booking.preferredDate.toLocaleDateString('en-US', { 
             weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
           }),
-          timeSlots: booking.preferredTimeSlots.join(', '),
+          timeSlot: booking.preferredTimeSlot,
           location: booking.preferredLocation
         },
         booking.preferredLocation
@@ -111,7 +111,7 @@ exports.createBooking = async (req, res) => {
           date: booking.preferredDate.toLocaleDateString('en-US', { 
             weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
           }),
-          timeSlots: booking.preferredTimeSlots.join(', '),
+          timeSlot: booking.preferredTimeSlot,
           location: booking.preferredLocation
         }
       );
@@ -133,7 +133,7 @@ exports.createBooking = async (req, res) => {
           referenceNumber: booking.referenceNumber,
           treatment: consultation.name,
           date: formattedDate,
-          timeSlots: booking.preferredTimeSlots.join(', '),
+          timeSlot: booking.preferredTimeSlot,
           branchName: branch.name,
           branchAddress: branch.address.line1 + ', ' + branch.address.city
         }
@@ -333,7 +333,7 @@ exports.cancelBooking = async (req, res) => {
           date: booking.preferredDate.toLocaleDateString('en-US', { 
             weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
           }),
-          time: booking.preferredTimeSlots[0],
+          time: booking.preferredTimeSlot,
           location: booking.preferredLocation
         },
         booking.preferredLocation
@@ -354,7 +354,7 @@ exports.cancelBooking = async (req, res) => {
           date: booking.preferredDate.toLocaleDateString('en-US', { 
             weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
           }),
-          time: booking.preferredTimeSlots[0],
+          time: booking.preferredTimeSlot,
           location: booking.preferredLocation,
           reason: reason
         }
@@ -408,7 +408,7 @@ exports.rescheduleBooking = async (req, res) => {
     const oldDate = booking.preferredDate.toLocaleDateString('en-US', { 
       weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
     });
-    const oldTime = booking.preferredTimeSlots[0];
+    const oldTime = booking.preferredTimeSlot;
 
     booking.rescheduledFrom = {
       date: booking.preferredDate,
@@ -416,11 +416,11 @@ exports.rescheduleBooking = async (req, res) => {
     };
 
     booking.preferredDate = new Date(newDate);
-    booking.preferredTimeSlots = newTimeSlots;
+    booking.preferredTimeSlot = newTimeSlot;
     
     // Update confirmed date and time to the new rescheduled values
     booking.confirmedDate = new Date(newDate);
-    booking.confirmedTime = newTimeSlots[0]; // Use first time slot as confirmed time
+    booking.confirmedTime = newTimeSlot;
     
     booking.status = 'Rescheduled';
     booking.rescheduledAt = new Date();
@@ -458,7 +458,7 @@ exports.rescheduleBooking = async (req, res) => {
           newDate: booking.preferredDate.toLocaleDateString('en-US', { 
             weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
           }),
-          newTime: booking.preferredTimeSlots[0],
+          newTime: booking.preferredTimeSlot,
           location: booking.preferredLocation
         },
         booking.preferredLocation
@@ -481,7 +481,7 @@ exports.rescheduleBooking = async (req, res) => {
           newDate: booking.preferredDate.toLocaleDateString('en-US', { 
             weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
           }),
-          newTime: booking.preferredTimeSlots[0],
+          newTime: booking.preferredTimeSlot,
           location: booking.preferredLocation
         }
       );
@@ -556,7 +556,7 @@ exports.checkInBooking = async (req, res) => {
         booking.fullName,
         {
           treatment: booking.consultationId.name,
-          time: booking.preferredTimeSlots[0],
+          time: booking.preferredTimeSlot,
           location: booking.preferredLocation,
           waitTime: '5-10' // You can make this dynamic based on queue
         },
@@ -574,7 +574,7 @@ exports.checkInBooking = async (req, res) => {
         {
           patientName: booking.fullName,
           treatment: booking.consultationId.name,
-          time: booking.preferredTimeSlots[0],
+          time: booking.preferredTimeSlot,
           location: booking.preferredLocation,
           waitTime: '5-10'
         }
@@ -661,7 +661,7 @@ exports.checkOutBooking = async (req, res) => {
           date: booking.preferredDate.toLocaleDateString('en-US', { 
             weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
           }),
-          time: booking.preferredTimeSlots[0],
+          time: booking.preferredTimeSlot,
           location: booking.preferredLocation
         },
         booking.preferredLocation
@@ -1375,9 +1375,7 @@ exports.getAvailableTimeSlots = async (req, res) => {
     // Get booked slots
     const bookedSlots = [];
     bookings.forEach(booking => {
-      booking.preferredTimeSlots.forEach(slot => {
-        bookedSlots.push(slot);
-      });
+        bookedSlots.push(booking.preferredTimeSlot);
     });
 
     // Filter available slots

@@ -739,7 +739,7 @@ exports.verifyConsultationPayment = async (req, res) => {
       branchId: branch._id,
       preferredLocation: bookingData.preferredLocation,
       preferredDate: new Date(bookingData.preferredDate),
-      preferredTimeSlots: bookingData.preferredTimeSlots,
+      preferredTimeSlot: bookingData.preferredTimeSlot,
       status: 'Awaiting Confirmation',
       paymentId: payment._id,
       razorpayOrderId: razorpay_order_id,
@@ -783,7 +783,7 @@ exports.verifyConsultationPayment = async (req, res) => {
           preferredDate: booking.preferredDate.toLocaleDateString('en-US', { 
             weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
           }),
-          timeSlots: booking.preferredTimeSlots.join(', '),
+          timeSlot: booking.preferredTimeSlot,
           location: booking.preferredLocation
         },
         booking.preferredLocation
@@ -804,7 +804,7 @@ exports.verifyConsultationPayment = async (req, res) => {
           date: booking.preferredDate.toLocaleDateString('en-US', { 
             weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
           }),
-          timeSlots: booking.preferredTimeSlots.join(', '),
+          timeSlot: booking.preferredTimeSlot,
           location: booking.preferredLocation
         }
       );
@@ -826,7 +826,7 @@ exports.verifyConsultationPayment = async (req, res) => {
           referenceNumber: booking.referenceNumber,
           treatment: consultation.name,
           date: formattedDate,
-          timeSlots: booking.preferredTimeSlots.join(', '),
+          timeSlot: booking.preferredTimeSlot,
           branchName: branch.name,
           branchAddress: branch.address.line1 + ', ' + branch.address.city
         }
