@@ -193,6 +193,7 @@ app.use('/api/patient-consent-forms', require('./routes/patientConsentForm'));
 app.use('/api/service-cards', require('./routes/serviceCard'));
 app.use('/api/app-customization', require('./routes/appCustomizationRoutes'));
 app.use('/api/chat', require('./routes/chat'));
+app.use('/api/banners', require('./routes/banner'));
 
 /* ------------------------------ Health Check -------------------------------- */
 app.get('/', (req, res) => {
