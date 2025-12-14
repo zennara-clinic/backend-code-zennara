@@ -18,6 +18,22 @@ const appCustomizationSchema = new mongoose.Schema({
       enum: ['consultations', 'products', 'appointments', 'profile'],
       default: 'consultations'
     },
+    showLogoTagline: {
+      type: Boolean,
+      default: true
+    },
+    logoTaglineLine1: {
+      type: String,
+      default: 'Skin.'
+    },
+    logoTaglineLine2: {
+      type: String,
+      default: 'Aesthetics.'
+    },
+    logoTaglineLine3: {
+      type: String,
+      default: 'Wellness.'
+    },
     consultationsButtonText: {
       type: String,
       default: 'Book Consultation'
