@@ -97,7 +97,9 @@ const productOrderSchema = new mongoose.Schema({
   paymentMethod: {
     type: String,
     required: true,
-    enum: ['Razorpay', 'Online'],
+    // 'COD' = cash on delivery (createOrder defaults to it); 'Razorpay'/'Online'
+    // for prepaid. COD was missing here, so every cash order failed validation.
+    enum: ['Razorpay', 'Online', 'COD'],
     default: 'Razorpay'
   },
   paymentStatus: {
