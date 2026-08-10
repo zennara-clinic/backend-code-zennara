@@ -1013,12 +1013,11 @@ exports.uploadProfilePicture = async (req, res) => {
       });
     }
 
-    // Delete old profile picture from S3 if exists
-    if (user.profilePicture?.publicId) {
-      await deleteFromCloudinary(user.profilePicture.publicId);
-    }
+    const oldProfilePictureId = user.profilePicture?.publicId;
 
-    // Upload new image to S3
+    // Upload and persist the replacement before deleting the old object. The
+    // previous order left the database pointing at a deleted image whenever a
+    // new upload or S3 request failed halfway through.
     const result = await uploadToCloudinary(req.file.buffer, 'zennara/profiles');
 
     // Update user profile picture
@@ -1028,6 +1027,11 @@ exports.uploadProfilePicture = async (req, res) => {
     };
 
     await user.save({ validateModifiedOnly: true });
+
+    // Cleanup is best effort and happens only after the new photo is durable.
+    if (oldProfilePictureId && oldProfilePictureId !== result.public_id) {
+      await deleteFromCloudinary(oldProfilePictureId);
+    }
 
     res.status(200).json({
       success: true,

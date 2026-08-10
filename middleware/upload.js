@@ -48,7 +48,11 @@ const uploadToS3 = async (buffer, folder = 'profiles') => {
       Bucket: S3_BUCKET,
       Key: fileKey,
       Body: processedImage,
-      ContentType: 'image/jpeg'
+      ContentType: 'image/jpeg',
+      // Every upload has a content-address-like random key, so it is safe to
+      // retain on the device and CDN for a year. A changed picture gets a new
+      // URL and therefore cannot be hidden by this cache.
+      CacheControl: 'public, max-age=31536000, immutable'
     };
 
     await s3Client.send(new PutObjectCommand(uploadParams));
