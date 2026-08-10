@@ -1,4 +1,5 @@
 const { clinicDateParts, clinicDateTime, parseClockMinutes } = require('./bookingTime');
+const { SESSION_SLOT_MINUTES } = require('../config/scheduling');
 
 const formatSlot = (minutes) => {
   const hour = Math.floor(minutes / 60);
@@ -16,8 +17,8 @@ const getBranchSlotsForDate = (branch, dateValue) => {
 
   const open = parseClockMinutes(schedule.openTime);
   const close = parseClockMinutes(schedule.closeTime);
-  const duration = Number(branch.slotDuration);
-  if (open === null || close === null || !Number.isFinite(duration) || duration <= 0) return [];
+  const duration = SESSION_SLOT_MINUTES;
+  if (open === null || close === null) return [];
 
   const slots = [];
   for (let cursor = open; cursor + duration <= close; cursor += duration) {
@@ -26,7 +27,13 @@ const getBranchSlotsForDate = (branch, dateValue) => {
   return slots;
 };
 
-const validateBranchBooking = (branch, dateValue, requestedSlots, now = new Date()) => {
+/**
+ * Validate an hour-long session against the clinic's open/close boundary.
+ * Doctor calendars may legitimately start at 10:30, so this checks the whole
+ * 10:30–11:30 interval without requiring it to match the branch grid's 10:00,
+ * 11:00 starts. Treatment preferences use the stricter grid check below.
+ */
+const validateBranchSession = (branch, dateValue, requestedSlots, now = new Date()) => {
   const dateParts = clinicDateParts(dateValue);
   if (!dateParts) {
     return { ok: false, code: 'INVALID_BOOKING_DATE', message: 'Select a valid appointment date.' };
@@ -41,19 +48,23 @@ const validateBranchBooking = (branch, dateValue, requestedSlots, now = new Date
     };
   }
 
-  const available = getBranchSlotsForDate(branch, dateValue);
   const requested = Array.isArray(requestedSlots) ? requestedSlots.filter(Boolean) : [];
   if (!requested.length) {
     return { ok: false, code: 'TIME_REQUIRED', message: 'Select at least one appointment time.' };
   }
 
-  const availableMinutes = new Set(available.map(parseClockMinutes));
-  const invalid = requested.find((slot) => !availableMinutes.has(parseClockMinutes(slot)));
+  const open = parseClockMinutes(schedule.openTime);
+  const close = parseClockMinutes(schedule.closeTime);
+  const invalid = requested.find((slot) => {
+    const start = parseClockMinutes(slot);
+    return start === null || open === null || close === null
+      || start < open || start + SESSION_SLOT_MINUTES > close;
+  });
   if (invalid) {
     return {
       ok: false,
       code: 'TIME_OUTSIDE_CLINIC_HOURS',
-      message: 'One or more selected times are outside this clinic\'s current working hours.',
+      message: 'The full one-hour session must fit inside this clinic\'s working hours.',
     };
   }
 
@@ -69,7 +80,26 @@ const validateBranchBooking = (branch, dateValue, requestedSlots, now = new Date
     };
   }
 
-  return { ok: true, availableSlots: available };
+  return { ok: true };
 };
 
-module.exports = { getBranchSlotsForDate, validateBranchBooking };
+const validateBranchBooking = (branch, dateValue, requestedSlots, now = new Date()) => {
+  const session = validateBranchSession(branch, dateValue, requestedSlots, now);
+  if (!session.ok) return session;
+
+  const available = getBranchSlotsForDate(branch, dateValue);
+  const availableMinutes = new Set(available.map(parseClockMinutes));
+  const requested = requestedSlots.filter(Boolean);
+  const invalid = requested.find((slot) => !availableMinutes.has(parseClockMinutes(slot)));
+  if (invalid) {
+    return {
+      ok: false,
+      code: 'TIME_OUTSIDE_CLINIC_HOURS',
+      message: 'Select one of this clinic\'s available one-hour start times.',
+    };
+  }
+
+  return { ...session, availableSlots: available };
+};
+
+module.exports = { getBranchSlotsForDate, validateBranchBooking, validateBranchSession };

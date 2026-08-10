@@ -1,5 +1,5 @@
 const mongoose = require('mongoose');
-const { bookingScheduledAt } = require('../utils/bookingTime');
+const { bookingChangeAllowed } = require('../utils/bookingTime');
 
 const bookingSchema = new mongoose.Schema({
   // User Reference
@@ -292,21 +292,18 @@ bookingSchema.virtual('formattedDate').get(function() {
   });
 });
 
-// Method to check if booking can be cancelled
+// Guests can cancel or reschedule only while more than 24 hours remain. The
+// panel's admin routes stay separate so clinic staff can still help manually.
 bookingSchema.methods.canBeCancelled = function(now = new Date()) {
-  if (!['Awaiting Confirmation', 'Confirmed', 'Rescheduled'].includes(this.status)) {
-    return false;
-  }
-
-  const scheduledAt = bookingScheduledAt(this);
-  if (!scheduledAt) return false;
-  return scheduledAt.getTime() - now.getTime() > 24 * 60 * 60 * 1000;
+  return ['Awaiting Confirmation', 'Confirmed', 'Rescheduled'].includes(this.status)
+    && bookingChangeAllowed(this, now);
 };
 
 // Method to check if booking can be rescheduled. A guest can request a
 // reschedule on a confirmed appointment, or re-request while one is pending.
-bookingSchema.methods.canBeRescheduled = function() {
-  return ['Confirmed', 'Rescheduled', 'No Show'].includes(this.status);
+bookingSchema.methods.canBeRescheduled = function(now = new Date()) {
+  return ['Confirmed', 'Rescheduled'].includes(this.status)
+    && bookingChangeAllowed(this, now);
 };
 
 // Remember whether this save created the booking, so the post-save hook only

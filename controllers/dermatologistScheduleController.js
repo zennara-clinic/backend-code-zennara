@@ -13,12 +13,13 @@
  */
 const Doctor = require('../models/Doctor');
 const DermatologistSchedule = require('../models/DermatologistSchedule');
+const { SESSION_SLOT_MINUTES } = require('../config/scheduling');
 const {
   slotsForDate,
   availabilityRange,
   anySlotsForDate,
   anyAvailabilityRange,
-  whoIsFree,
+  whoIsFreeWithBranches,
   dateKey,
 } = require('../utils/dermatologistSlots');
 
@@ -49,10 +50,6 @@ async function canEdit(req, doctorId) {
 function validate(body) {
   const errors = [];
 
-  if (body.slotMinutes != null) {
-    const n = Number(body.slotMinutes);
-    if (!Number.isFinite(n) || n < 5 || n > 240) errors.push('slotMinutes must be between 5 and 240');
-  }
   if (body.leadTimeHours != null) {
     const n = Number(body.leadTimeHours);
     if (!Number.isFinite(n) || n < 0 || n > 720) errors.push('leadTimeHours must be between 0 and 720');
@@ -106,7 +103,9 @@ exports.getSchedule = async (req, res) => {
         dermatologist: doctor,
         // A dermatologist nobody has configured yet gets a blank week rather
         // than a 404, so the panel can render the editor instead of an error.
-        schedule: schedule ? { ...schedule, configured: true } : DermatologistSchedule.blank(doctorId),
+        schedule: schedule
+          ? { ...schedule, slotMinutes: SESSION_SLOT_MINUTES, configured: true }
+          : DermatologistSchedule.blank(doctorId),
         canEdit: await canEdit(req, doctorId),
       },
     });
@@ -133,8 +132,12 @@ exports.updateSchedule = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid schedule', errors });
     }
 
-    const update = { doctorId, updatedBy: req.admin?._id || null };
-    ['slotMinutes', 'leadTimeHours', 'horizonDays', 'isActive'].forEach((k) => {
+    const update = {
+      doctorId,
+      slotMinutes: SESSION_SLOT_MINUTES,
+      updatedBy: req.admin?._id || null,
+    };
+    ['leadTimeHours', 'horizonDays', 'isActive'].forEach((k) => {
       if (req.body[k] !== undefined) update[k] = req.body[k];
     });
     if (req.body.weekly !== undefined) {
@@ -155,7 +158,7 @@ exports.updateSchedule = async (req, res) => {
     return res.json({
       success: true,
       message: 'Availability updated',
-      data: { ...schedule, configured: true },
+      data: { ...schedule, slotMinutes: SESSION_SLOT_MINUTES, configured: true },
     });
   } catch (error) {
     console.error('updateSchedule error:', error);
@@ -272,12 +275,13 @@ exports.getFreeDermatologists = async (req, res) => {
       return fail(res, 400, 'time is required as HH:mm');
     }
 
-    const doctorIds = await whoIsFree(date, time, {
+    const matches = await whoIsFreeWithBranches(date, time, {
       branchId: branchId || null,
       branchName: branch || null,
     });
+    const doctorIds = [...new Set(matches.map((match) => match.doctorId))];
 
-    return res.json({ success: true, data: { date, time, doctorIds } });
+    return res.json({ success: true, data: { date, time, doctorIds, matches } });
   } catch (error) {
     console.error('getFreeDermatologists error:', error);
     return fail(res, 500, 'Could not load dermatologists');

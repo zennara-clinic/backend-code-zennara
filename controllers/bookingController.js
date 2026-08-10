@@ -8,6 +8,7 @@ const whatsappService = require('../services/whatsappService');
 const twilioVoiceService = require('../services/twilioVoiceService');
 const { bookingScheduledAt } = require('../utils/bookingTime');
 const { validateBranchBooking } = require('../utils/branchSchedule');
+const { SESSION_SLOT_MINUTES } = require('../config/scheduling');
 
 // @desc    Create new booking
 // @route   POST /api/bookings
@@ -322,11 +323,20 @@ exports.cancelBooking = async (req, res) => {
       });
     }
 
-    if (!['Awaiting Confirmation', 'Confirmed', 'Rescheduled'].includes(booking.status)) {
+    const cancellableStatuses = ['Awaiting Confirmation', 'Confirmed', 'Rescheduled'];
+    if (!cancellableStatuses.includes(booking.status)) {
       return res.status(400).json({
         success: false,
         code: 'BOOKING_NOT_CANCELLABLE',
         message: 'Booking cannot be cancelled at this stage'
+      });
+    }
+
+    if (!booking.canBeCancelled()) {
+      return res.status(409).json({
+        success: false,
+        code: 'CANCELLATION_WINDOW_CLOSED',
+        message: "Appointments can't be cancelled within 24 hours of the scheduled check-in time. Please contact the clinic for help."
       });
     }
 
@@ -335,15 +345,6 @@ exports.cancelBooking = async (req, res) => {
         success: false,
         code: 'CANCELLATION_REASON_REQUIRED',
         message: 'Select a reason for cancelling this appointment.'
-      });
-    }
-
-    const scheduledAt = bookingScheduledAt(booking);
-    if (!scheduledAt || !booking.canBeCancelled()) {
-      return res.status(409).json({
-        success: false,
-        code: 'CANCELLATION_WINDOW_CLOSED',
-        message: "We can't cancel appointments within 24 hours of the scheduled check-in time. Please contact the clinic for help."
       });
     }
 
@@ -444,10 +445,20 @@ exports.rescheduleBooking = async (req, res) => {
       });
     }
 
-    if (!booking.canBeRescheduled()) {
+    const reschedulableStatuses = ['Confirmed', 'Rescheduled'];
+    if (!reschedulableStatuses.includes(booking.status)) {
       return res.status(400).json({
         success: false,
+        code: 'BOOKING_NOT_RESCHEDULABLE',
         message: 'Booking cannot be rescheduled at this stage'
+      });
+    }
+
+    if (!booking.canBeRescheduled()) {
+      return res.status(409).json({
+        success: false,
+        code: 'RESCHEDULING_WINDOW_CLOSED',
+        message: "Appointments can't be rescheduled within 24 hours of the scheduled check-in time. Please contact the clinic for help."
       });
     }
 
@@ -1716,12 +1727,15 @@ exports.getAvailableTimeSlots = async (req, res) => {
       });
     }
 
-    // All available time slots (10 AM to 7 PM)
-    const allSlots = [
-      '10:00 AM', '11:00 AM', '12:00 PM',
-      '1:00 PM', '2:00 PM', '3:00 PM',
-      '4:00 PM', '5:00 PM', '6:00 PM', '7:00 PM'
-    ];
+    // Use the same hourly branch engine as the active treatment flow. This
+    // endpoint remains as a compatibility fallback for older mobile builds,
+    // so it must not carry a second hardcoded calendar.
+    const escaped = String(location).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const branch = await Branch.findOne({
+      name: { $regex: `^${escaped}$`, $options: 'i' },
+      isActive: true,
+    });
+    const allSlots = branch ? branch.getAvailableSlots(new Date(date)) : [];
 
     // Get bookings for the date and location
     const startDate = new Date(date);
@@ -1752,7 +1766,8 @@ exports.getAvailableTimeSlots = async (req, res) => {
         date,
         location,
         availableSlots,
-        bookedSlots
+        bookedSlots,
+        slotDuration: SESSION_SLOT_MINUTES,
       }
     });
   } catch (error) {

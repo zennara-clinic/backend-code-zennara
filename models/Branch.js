@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { SESSION_SLOT_MINUTES } = require('../config/scheduling');
 const { getBranchSlotsForDate } = require('../utils/branchSchedule');
 
 const branchSchema = new mongoose.Schema({
@@ -101,7 +102,7 @@ const branchSchema = new mongoose.Schema({
   // Slot Configuration
   slotDuration: {
     type: Number,
-    default: 30, // in minutes
+    default: SESSION_SLOT_MINUTES, // fixed platform-wide session length
     min: 15,
     max: 120
   },

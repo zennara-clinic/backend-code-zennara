@@ -18,6 +18,12 @@
  */
 const Booking = require('../models/Booking');
 const DermatologistSchedule = require('../models/DermatologistSchedule');
+const { SESSION_SLOT_MINUTES } = require('../config/scheduling');
+const {
+  clinicDateKey,
+  clinicDateTime,
+  parseClockMinutes,
+} = require('./bookingTime');
 
 const { toMinutes, toHHMM } = DermatologistSchedule;
 
@@ -37,16 +43,25 @@ const LIVE_STATUSES = [
 
 /** "2026-08-14" for a Date, in local clinic time — never toISOString(). */
 function dateKey(date) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
+  return clinicDateKey(date);
 }
 
-/** A local Date at midnight for a "YYYY-MM-DD" key. */
+/** The UTC instant corresponding to clinic-local midnight for a date key. */
 function fromKey(key) {
+  return clinicDateTime(key, '00:00');
+}
+
+function addDaysToKey(key, amount) {
   const [y, m, d] = String(key).split('-').map(Number);
-  return new Date(y, m - 1, d);
+  const next = new Date(Date.UTC(y, m - 1, d));
+  next.setUTCDate(next.getUTCDate() + amount);
+  return `${next.getUTCFullYear()}-${String(next.getUTCMonth() + 1).padStart(2, '0')}-${String(next.getUTCDate()).padStart(2, '0')}`;
+}
+
+/** Weekday for the written clinic date, independent of the server timezone. */
+function weekdayForKey(key) {
+  const [y, m, d] = String(key).split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).getUTCDay();
 }
 
 /** "10:30" → "10:30 AM", for anything that renders the slot directly. */
@@ -78,7 +93,7 @@ function rangesFor(schedule, key) {
     return { ranges: override.ranges, branchId: override.branchId ?? null, source: 'override', note: override.note || '' };
   }
 
-  const day = fromKey(key).getDay();
+  const day = weekdayForKey(key);
   const weekly = (schedule.weekly || []).filter((w) => w.day === day && w.ranges?.length);
   if (!weekly.length) {
     return { ranges: [], branchId: null, source: 'weekly', note: override?.note || '' };
@@ -105,7 +120,7 @@ function expand(range, slotMinutes) {
   return out;
 }
 
-/** Times already held by a live booking, as a Set of "HH:mm". */
+/** Starts already held by a live booking, as minutes from midnight. */
 async function bookedTimes(doctorId, key) {
   const day = fromKey(key);
   const next = new Date(day);
@@ -120,15 +135,26 @@ async function bookedTimes(doctorId, key) {
     .lean();
 
   const taken = new Set();
+  const hold = (value) => {
+    const minutes = parseClockMinutes(value);
+    if (minutes !== null) taken.add(minutes);
+  };
   rows.forEach((b) => {
     // `slotTime` is what the new flow writes. The other two are read so
     // appointments made before this existed still block their slot instead of
     // quietly reopening it to a second patient.
-    if (b.slotTime) taken.add(b.slotTime);
-    else if (b.confirmedTime) taken.add(b.confirmedTime);
-    else (b.preferredTimeSlots || []).forEach((t) => taken.add(t));
+    if (b.slotTime) hold(b.slotTime);
+    else if (b.confirmedTime) hold(b.confirmedTime);
+    else (b.preferredTimeSlots || []).forEach(hold);
   });
   return taken;
+}
+
+/** Two one-hour sessions conflict whenever their occupied ranges overlap. */
+function overlapsHeldSession(taken, start, duration = SESSION_SLOT_MINUTES) {
+  return [...taken].some(
+    (heldStart) => start < heldStart + duration && heldStart < start + duration,
+  );
 }
 
 /**
@@ -143,10 +169,10 @@ async function slotsForDate(doctorId, key, { branchId = null, now = new Date() }
   if (!schedule) return { date: key, configured: false, slots: [], reason: 'not-configured' };
   if (!schedule.isActive) return { date: key, configured: true, slots: [], reason: 'inactive' };
 
-  const horizonEnd = new Date(now);
-  horizonEnd.setDate(horizonEnd.getDate() + (schedule.horizonDays ?? 60));
+  const todayKey = dateKey(now);
+  const horizonEnd = fromKey(addDaysToKey(todayKey, schedule.horizonDays ?? 60));
   const day = fromKey(key);
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const todayStart = fromKey(todayKey);
 
   if (day < todayStart) return { date: key, configured: true, slots: [], reason: 'past' };
   if (day > horizonEnd) return { date: key, configured: true, slots: [], reason: 'beyond-horizon' };
@@ -170,7 +196,9 @@ async function slotsForDate(doctorId, key, { branchId = null, now = new Date() }
     return { date: key, configured: true, slots: [], reason: 'not-at-this-centre', note: resolved.note };
   }
 
-  const slotMinutes = schedule.slotMinutes ?? 30;
+  // Existing records may still carry the former 30-minute setting. The
+  // platform policy is authoritative, so reads become hourly immediately.
+  const slotMinutes = SESSION_SLOT_MINUTES;
   const earliest = new Date(now.getTime() + (schedule.leadTimeHours ?? 0) * 3600 * 1000);
   const taken = await bookedTimes(doctorId, key);
 
@@ -179,11 +207,10 @@ async function slotsForDate(doctorId, key, { branchId = null, now = new Date() }
   const starts = [...new Set(ranges.flatMap((r) => expand(r, slotMinutes)))].sort((a, b) => a - b);
 
   const slots = starts.map((minutes) => {
-    const at = new Date(day);
-    at.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
+    const at = clinicDateTime(key, toHHMM(minutes));
 
     const time = toHHMM(minutes);
-    const booked = taken.has(time);
+    const booked = overlapsHeldSession(taken, minutes, slotMinutes);
     const tooSoon = at < earliest;
 
     return {
@@ -234,19 +261,23 @@ async function availabilityRange(doctorId, fromKeyStr, toKeyStr, { branchId = nu
     const key = dateKey(new Date(b.preferredDate));
     if (!takenByDate.has(key)) takenByDate.set(key, new Set());
     const set = takenByDate.get(key);
-    if (b.slotTime) set.add(b.slotTime);
-    else if (b.confirmedTime) set.add(b.confirmedTime);
-    else (b.preferredTimeSlots || []).forEach((t) => set.add(t));
+    const hold = (value) => {
+      const minutes = parseClockMinutes(value);
+      if (minutes !== null) set.add(minutes);
+    };
+    if (b.slotTime) hold(b.slotTime);
+    else if (b.confirmedTime) hold(b.confirmedTime);
+    else (b.preferredTimeSlots || []).forEach(hold);
   });
 
-  const slotMinutes = schedule.slotMinutes ?? 30;
+  const slotMinutes = SESSION_SLOT_MINUTES;
   const earliest = new Date(now.getTime() + (schedule.leadTimeHours ?? 0) * 3600 * 1000);
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const horizonEnd = new Date(now);
-  horizonEnd.setDate(horizonEnd.getDate() + (schedule.horizonDays ?? 60));
+  const todayKey = dateKey(now);
+  const todayStart = fromKey(todayKey);
+  const horizonEnd = fromKey(addDaysToKey(todayKey, schedule.horizonDays ?? 60));
 
   const days = [];
-  for (let d = new Date(from); d <= to; d.setDate(d.getDate() + 1)) {
+  for (let d = new Date(from); d <= to; d.setUTCDate(d.getUTCDate() + 1)) {
     const key = dateKey(d);
     const day = new Date(d);
 
@@ -273,9 +304,8 @@ async function availabilityRange(doctorId, fromKeyStr, toKeyStr, { branchId = nu
 
     let free = 0;
     starts.forEach((minutes) => {
-      const at = new Date(day);
-      at.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
-      if (!taken.has(toHHMM(minutes)) && at >= earliest) free += 1;
+      const at = clinicDateTime(key, toHHMM(minutes));
+      if (!overlapsHeldSession(taken, minutes, slotMinutes) && at >= earliest) free += 1;
     });
 
     days.push({ date: key, open: free > 0, total: starts.length, free, note: resolved.note });
@@ -321,6 +351,64 @@ async function team(branchName = null) {
   return rows.filter(
     (d) => !d.availableCentres?.length || d.availableCentres.includes(branchName),
   );
+}
+
+const sameBranchName = (left, right) =>
+  String(left || '').trim().toLowerCase() === String(right || '').trim().toLowerCase();
+
+/**
+ * Every clinic where each free dermatologist can take the requested slot.
+ *
+ * The time-first flow is deliberately clinic-wide. Returning the matching
+ * clinic with the doctor prevents the client from guessing a branch after the
+ * slot was selected and then discovering at payment that the doctor was free
+ * somewhere else.
+ */
+async function whoIsFreeWithBranches(
+  key,
+  time,
+  { branchId = null, branchName = null, now = new Date() } = {},
+) {
+  const Branch = require('../models/Branch');
+  const doctors = await team();
+  if (!doctors.length) return [];
+
+  const branchQuery = { isActive: true };
+  if (branchId) branchQuery._id = branchId;
+  const branches = await Branch.find(branchQuery).select('_id name').lean();
+  const requestedBranches = branchName
+    ? branches.filter((branch) => sameBranchName(branch.name, branchName))
+    : branches;
+
+  const perDoctor = await Promise.all(
+    doctors.map(async (doctor) => {
+      const assigned = requestedBranches.filter(
+        (branch) =>
+          !doctor.availableCentres?.length
+          || doctor.availableCentres.some((name) => sameBranchName(name, branch.name)),
+      );
+
+      const checks = await Promise.all(
+        assigned.map(async (branch) => ({
+          branch,
+          check: await isSlotBookable(doctor.doctorId, key, time, {
+            branchId: branch._id,
+            now,
+          }),
+        })),
+      );
+
+      return checks
+        .filter(({ check }) => check.ok)
+        .map(({ branch }) => ({
+          doctorId: doctor.doctorId,
+          branchId: String(branch._id),
+          branchName: branch.name,
+        }));
+    }),
+  );
+
+  return perDoctor.flat();
 }
 
 /**
@@ -371,7 +459,7 @@ async function anySlotsForDate(key, { branchId = null, branchName = null, now = 
       booked: s.freeWith.length === 0 && !s.tooSoon,
     }));
 
-  return { date: key, configured: true, slots };
+  return { date: key, configured: true, slotMinutes: SESSION_SLOT_MINUTES, slots };
 }
 
 /** Day states across a range for the whole team — open if anyone is free. */
@@ -396,17 +484,19 @@ async function anyAvailabilityRange(fromKeyStr, toKeyStr, { branchId = null, bra
 
   return {
     configured: true,
+    slotMinutes: SESSION_SLOT_MINUTES,
     days: [...merged.values()].sort((a, b) => a.date.localeCompare(b.date)),
   };
 }
 
 /** Who can take this exact date and time. */
 async function whoIsFree(key, time, { branchId = null, branchName = null, now = new Date() } = {}) {
-  const doctors = await team(branchName);
-  const checks = await Promise.all(
-    doctors.map((d) => isSlotBookable(d.doctorId, key, time, { branchId, now })),
-  );
-  return doctors.filter((_, i) => checks[i].ok).map((d) => d.doctorId);
+  const matches = await whoIsFreeWithBranches(key, time, {
+    branchId,
+    branchName,
+    now,
+  });
+  return [...new Set(matches.map((match) => match.doctorId))];
 }
 
 module.exports = {
@@ -414,6 +504,7 @@ module.exports = {
   anySlotsForDate,
   anyAvailabilityRange,
   whoIsFree,
+  whoIsFreeWithBranches,
   dateKey,
   fromKey,
   label,

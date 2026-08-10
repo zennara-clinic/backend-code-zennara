@@ -1,4 +1,5 @@
 const Branch = require('../models/Branch');
+const { SESSION_SLOT_MINUTES } = require('../config/scheduling');
 
 /**
  * Mongoose validation failures are the caller's fault, not the server's.
@@ -33,7 +34,10 @@ exports.getAllBranches = async (req, res) => {
     res.status(200).json({
       success: true,
       count: branches.length,
-      data: branches
+      data: branches.map((branch) => ({
+        ...branch,
+        slotDuration: SESSION_SLOT_MINUTES,
+      }))
     });
   } catch (error) {
     console.error('Error fetching branches:', error);
@@ -61,7 +65,10 @@ exports.getBranchById = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: branch
+      data: {
+        ...branch.toObject(),
+        slotDuration: SESSION_SLOT_MINUTES,
+      }
     });
   } catch (error) {
     console.error('Error fetching branch:', error);
@@ -112,7 +119,7 @@ exports.getBranchSlots = async (req, res) => {
         branchName: branch.name,
         date: selectedDate,
         slots: slots,
-        slotDuration: branch.slotDuration
+        slotDuration: SESSION_SLOT_MINUTES
       }
     });
   } catch (error) {
@@ -128,7 +135,10 @@ exports.getBranchSlots = async (req, res) => {
 // Create new branch (Admin only)
 exports.createBranch = async (req, res) => {
   try {
-    const branchData = req.body;
+    const branchData = {
+      ...req.body,
+      slotDuration: SESSION_SLOT_MINUTES,
+    };
     
     // Check if branch with same name exists
     const existingBranch = await Branch.findOne({ 
@@ -164,7 +174,10 @@ exports.createBranch = async (req, res) => {
 exports.updateBranch = async (req, res) => {
   try {
     const { id } = req.params;
-    const updateData = req.body;
+    const updateData = {
+      ...req.body,
+      slotDuration: SESSION_SLOT_MINUTES,
+    };
 
     // If name is being updated, check for duplicates
     if (updateData.name) {

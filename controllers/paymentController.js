@@ -6,7 +6,8 @@ const Address = require('../models/Address');
 const User = require('../models/User');
 const razorpayService = require('../services/razorpayService');
 const NotificationHelper = require('../utils/notificationHelper');
-const { validateBranchBooking } = require('../utils/branchSchedule');
+const { validateBranchBooking, validateBranchSession } = require('../utils/branchSchedule');
+const { clinicDateKey } = require('../utils/bookingTime');
 const { computeOrderPricing } = require('../utils/orderPricing');
 
 class PaymentFlowError extends Error {
@@ -1101,7 +1102,9 @@ exports.createConsultationPayment = async (req, res) => {
       });
     }
 
-    const scheduleCheck = validateBranchBooking(
+    const scheduleCheck = (bookingData.slotTime && bookingData.specialistId
+      ? validateBranchSession
+      : validateBranchBooking)(
       branch,
       bookingData.preferredDate,
       requestedTimes
@@ -1112,6 +1115,26 @@ exports.createConsultationPayment = async (req, res) => {
         code: scheduleCheck.code,
         message: scheduleCheck.message,
       });
+    }
+
+    // A time-first result carries the exact clinic where this dermatologist
+    // is free. Re-check that pairing before opening Razorpay, rather than
+    // capturing payment and discovering the mismatch during verification.
+    if (bookingData.slotTime && bookingData.specialistId) {
+      const { isSlotBookable } = require('../utils/dermatologistSlots');
+      const key = clinicDateKey(bookingData.preferredDate);
+      const check = key
+        ? await isSlotBookable(bookingData.specialistId, key, bookingData.slotTime, {
+            branchId: branch._id,
+          })
+        : { ok: false, reason: 'invalid-date' };
+      if (!check.ok) {
+        return res.status(409).json({
+          success: false,
+          code: 'DERMATOLOGIST_SLOT_UNAVAILABLE',
+          message: 'This dermatologist is no longer available at that clinic and time. Please choose another option.',
+        });
+      }
     }
     
     /*
@@ -1303,7 +1326,9 @@ exports.verifyConsultationPayment = async (req, res) => {
     const requestedTimes = bookingData.slotTime
       ? [bookingData.slotTime]
       : bookingData.preferredTimeSlots;
-    const scheduleCheck = validateBranchBooking(
+    const scheduleCheck = (bookingData.slotTime && bookingData.specialistId
+      ? validateBranchSession
+      : validateBranchBooking)(
       branch,
       bookingData.preferredDate,
       requestedTimes
@@ -1341,8 +1366,8 @@ exports.verifyConsultationPayment = async (req, res) => {
      */
     const slotTime = bookingData.slotTime || null;
     if (slotTime && bookingData.specialistId) {
-      const { isSlotBookable, dateKey } = require('../utils/dermatologistSlots');
-      const key = dateKey(new Date(bookingData.preferredDate));
+      const { isSlotBookable } = require('../utils/dermatologistSlots');
+      const key = clinicDateKey(bookingData.preferredDate);
       const check = await isSlotBookable(bookingData.specialistId, key, slotTime, {
         branchId: branch._id,
       });

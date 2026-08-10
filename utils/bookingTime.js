@@ -1,5 +1,6 @@
 const CLINIC_TIME_ZONE = 'Asia/Kolkata';
 const CLINIC_UTC_OFFSET_MINUTES = 330;
+const BOOKING_CHANGE_CUTOFF_HOURS = 24;
 
 const datePartsFormatter = new Intl.DateTimeFormat('en-CA', {
   timeZone: CLINIC_TIME_ZONE,
@@ -26,6 +27,12 @@ const clinicDateParts = (value) => {
     day: Number(parts.day),
     weekday: String(parts.weekday || '').toLowerCase(),
   };
+};
+
+const clinicDateKey = (value) => {
+  const parts = clinicDateParts(value);
+  if (!parts) return null;
+  return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
 };
 
 const parseClockMinutes = (value) => {
@@ -83,9 +90,20 @@ const bookingScheduledAt = (booking) => {
   return preferred.length ? clinicDateTime(date, preferred[0].time) : null;
 };
 
+/** Cancellation and rescheduling both close 24 hours before check-in. */
+const bookingChangeAllowed = (booking, now = new Date()) => {
+  const scheduledAt = bookingScheduledAt(booking);
+  if (!scheduledAt) return false;
+  return scheduledAt.getTime() - now.getTime()
+    > BOOKING_CHANGE_CUTOFF_HOURS * 60 * 60 * 1000;
+};
+
 module.exports = {
+  BOOKING_CHANGE_CUTOFF_HOURS,
   CLINIC_TIME_ZONE,
+  bookingChangeAllowed,
   bookingScheduledAt,
+  clinicDateKey,
   clinicDateParts,
   clinicDateTime,
   parseClockMinutes,

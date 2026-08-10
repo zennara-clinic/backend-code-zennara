@@ -11,6 +11,7 @@
     "seed:brands-formulations": "node seedBrandsFormulations.js",
     "seed:vendors": "node scripts/seedVendors.js",
     "seed:consultations": "node scripts/seedConsultations.js",
+    "test:scheduling": "node --test tests/scheduling.test.js",
     "clear:orders": "node clearOrders.js"
   },
   "keywords": [

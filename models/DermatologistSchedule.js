@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { SESSION_SLOT_MINUTES } = require('../config/scheduling');
 
 /**
  * When a dermatologist is bookable, and for how long each appointment runs.
@@ -17,8 +18,8 @@ const mongoose = require('mongoose');
  *
  * An override with `unavailable` clears the day. An override with ranges
  * replaces that weekday's ranges for that date only. Nothing is stored per
- * slot: slots are derived from the ranges at read time by the slot engine, so
- * changing `slotMinutes` reshapes the day without a migration.
+ * slot: slots are derived from the ranges at read time by the slot engine.
+ * The platform-wide session policy fixes every slot at one hour.
  *
  * Times are "HH:mm" in clinic-local time and dates are "YYYY-MM-DD" strings,
  * deliberately not `Date`. A slot at 10:00 means 10:00 on the clinic wall
@@ -108,10 +109,10 @@ const dermatologistScheduleSchema = new mongoose.Schema(
       trim: true,
       index: true,
     },
-    /** Appointment length. Ranges are cut into slots this long. */
+    /** Persisted for compatibility; the slot engine enforces the one-hour policy. */
     slotMinutes: {
       type: Number,
-      default: 30,
+      default: SESSION_SLOT_MINUTES,
       min: 5,
       max: 240,
     },
@@ -176,7 +177,7 @@ dermatologistScheduleSchema.statics.toHHMM = function (minutes) {
 dermatologistScheduleSchema.statics.blank = function (doctorId) {
   return {
     doctorId,
-    slotMinutes: 30,
+    slotMinutes: SESSION_SLOT_MINUTES,
     leadTimeHours: 4,
     horizonDays: 60,
     weekly: [],
