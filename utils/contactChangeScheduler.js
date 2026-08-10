@@ -1,7 +1,54 @@
 const cron = require('node-cron');
 const ContactChangeRequest = require('../models/ContactChangeRequest');
 const User = require('../models/User');
+const { sendContactUpdatedEmail } = require('./emailService');
+const whatsappService = require('../services/whatsappService');
 const logger = require('./logger');
+
+const isPlaceholderEmail = (e) => !e || /@guest\.zennara\.in$/i.test(e);
+const maskEmail = (e) => {
+  if (!e) return '';
+  const [name, domain] = e.split('@');
+  return `${name.slice(0, 1)}${'•'.repeat(Math.max(2, name.length - 1))}@${domain || ''}`;
+};
+
+/**
+ * Tell the customer the change went through. Email change → confirm to the new
+ * address + a security alert to the old one; phone change → confirm by email
+ * and WhatsApp the new number. All best-effort; a failure never matters here.
+ */
+async function notifyApplied(user, request) {
+  try {
+    if (request.type === 'email') {
+      await sendContactUpdatedEmail(request.newValue, user.fullName, {
+        type: 'email',
+        detail: request.newValue,
+      });
+      if (!isPlaceholderEmail(request.currentValue)) {
+        await sendContactUpdatedEmail(request.currentValue, user.fullName, {
+          type: 'email',
+          alert: true,
+          detail: maskEmail(request.newValue),
+        });
+      }
+    } else {
+      if (!isPlaceholderEmail(user.email)) {
+        await sendContactUpdatedEmail(user.email, user.fullName, {
+          type: 'phone',
+          detail: `+91 ${request.newValue}`,
+        });
+      }
+      whatsappService
+        .sendMessage(
+          request.newValue,
+          'Your Zennara mobile number has been updated successfully — this number is now linked to your account.'
+        )
+        .catch(() => {});
+    }
+  } catch (error) {
+    logger.warn('contact-change confirmation failed (non-blocking)', { error: error.message });
+  }
+}
 
 /**
  * Apply every contact change whose scheduled time has passed. Idempotent and
@@ -52,8 +99,10 @@ async function applyDueContactChanges() {
       await request.save();
       applied += 1;
       logger.info('Applied scheduled contact change', { userId: user._id, type: request.type });
-      // The app refreshes the profile from /auth/me on focus, so the new value
-      // shows up on its own — no separate push needed here.
+
+      // Confirm to the customer automatically (email + WhatsApp). Best-effort —
+      // the change is already saved; a notification failure changes nothing.
+      await notifyApplied(user, request);
     } catch (error) {
       request.status = 'failed';
       request.failureReason = error.message;

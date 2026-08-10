@@ -113,6 +113,40 @@ exports.sendOTPEmail = async (email, fullName, otp, branch = 'Zennara Clinic') =
 };
 
 /**
+ * Confirm a completed email/phone change to the customer. Two modes:
+ *   - default → "your <thing> was updated successfully" (to the new/current contact)
+ *   - alert   → "your <thing> was changed" security notice (sent to the OLD email)
+ *
+ * Best-effort: it never throws, so a failed notification can't undo the change
+ * the scheduler already applied.
+ */
+exports.sendContactUpdatedEmail = async (email, fullName, { type, alert = false, detail = '' } = {}) => {
+  try {
+    if (!email) return;
+    const GREEN = '#032F22';
+    const label = type === 'email' ? 'email address' : 'mobile number';
+    const title = alert ? `Your ${label} was changed` : `Your ${label} was updated`;
+    const lead = alert
+      ? `The ${label} on your Zennara account was just changed${detail ? ` (to ${detail})` : ''}. ` +
+        `If this was you, no action is needed. If you didn't request this, please contact the clinic straight away.`
+      : `Your Zennara account ${label} has been updated successfully${detail ? ` to <strong>${detail}</strong>` : ''}. ` +
+        `You'll use it to sign in and receive updates from now on.`;
+    const html = `
+      <div style="font-family:Arial,Helvetica,sans-serif;max-width:520px;margin:0 auto;padding:28px 24px;color:#111714;">
+        <h2 style="color:${GREEN};font-size:20px;margin:0 0 14px;">${title}</h2>
+        <p style="font-size:14px;line-height:22px;color:#4F5853;margin:0 0 14px;">Hi ${fullName || 'there'},</p>
+        <p style="font-size:14px;line-height:22px;color:#4F5853;margin:0 0 18px;">${lead}</p>
+        <p style="font-size:12.5px;line-height:20px;color:#7A827E;margin:22px 0 0;">— Team Zennara</p>
+      </div>`;
+    const subject = alert ? `Zennara: your ${label} was changed` : `Zennara: your ${label} was updated`;
+    await sendEmail(email, subject, html);
+    console.log(`✅ Contact-updated email sent (${alert ? 'alert' : 'confirm'})`);
+  } catch (error) {
+    console.error('❌ Contact-updated email failed:', error.message);
+  }
+};
+
+/**
  * Email the user a readable summary of everything Zennara holds about them
  * (a DPDPA data-access request). Plain, human-readable HTML — not a raw JSON
  * dump — so the person can actually understand what we have.
