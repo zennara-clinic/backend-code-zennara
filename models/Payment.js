@@ -58,7 +58,9 @@ const paymentSchema = new mongoose.Schema({
 // Indexes for better query performance
 paymentSchema.index({ userId: 1, createdAt: -1 });
 paymentSchema.index({ status: 1, createdAt: -1 });
-paymentSchema.index({ razorpayOrderId: 1 });
-paymentSchema.index({ razorpayPaymentId: 1 });
+paymentSchema.index(
+  { razorpayPaymentId: 1 },
+  { unique: true, sparse: true, name: 'one_payment_record_per_razorpay_payment' }
+);
 
 module.exports = mongoose.model('Payment', paymentSchema);

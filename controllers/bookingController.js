@@ -6,6 +6,8 @@ const emailService = require('../utils/emailService');
 const NotificationHelper = require('../utils/notificationHelper');
 const whatsappService = require('../services/whatsappService');
 const twilioVoiceService = require('../services/twilioVoiceService');
+const { bookingScheduledAt } = require('../utils/bookingTime');
+const { validateBranchBooking } = require('../utils/branchSchedule');
 
 // @desc    Create new booking
 // @route   POST /api/bookings
@@ -33,6 +35,16 @@ exports.createBooking = async (req, res) => {
       });
     }
 
+    // A treatment set to charge for online booking must go through payment —
+    // this direct, pay-at-clinic path is only for those with the toggle off
+    // (or no price). Prevents bypassing the payment gate from a client.
+    if (consultation.chargeOnlineBooking !== false && consultation.price > 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'This treatment requires online payment. Please complete checkout to book.'
+      });
+    }
+
     // Find branch by name
     const branch = await Branch.findOne({ name: preferredLocation, isActive: true });
     if (!branch) {
@@ -42,7 +54,23 @@ exports.createBooking = async (req, res) => {
       });
     }
 
-    // Create booking with pre-save hook for reference number
+    const scheduleCheck = validateBranchBooking(
+      branch,
+      preferredDate,
+      preferredTimeSlots
+    );
+    if (!scheduleCheck.ok) {
+      return res.status(409).json({
+        success: false,
+        code: scheduleCheck.code,
+        message: scheduleCheck.message
+      });
+    }
+
+    // Create booking with pre-save hook for reference number.
+    // `amount` is required by the model — for this pay-at-clinic path it records
+    // the treatment price the guest will settle at the clinic (0 if priced on
+    // consultation). paymentStatus stays 'pending' (nothing was paid online).
     const booking = new Booking({
       userId: req.user._id,
       consultationId,
@@ -53,6 +81,7 @@ exports.createBooking = async (req, res) => {
       preferredLocation,
       preferredDate: new Date(preferredDate),
       preferredTimeSlots,
+      amount: consultation.price || 0,
       status: 'Awaiting Confirmation'
     });
 
@@ -293,15 +322,33 @@ exports.cancelBooking = async (req, res) => {
       });
     }
 
-    if (!booking.canBeCancelled()) {
+    if (!['Awaiting Confirmation', 'Confirmed', 'Rescheduled'].includes(booking.status)) {
       return res.status(400).json({
         success: false,
+        code: 'BOOKING_NOT_CANCELLABLE',
         message: 'Booking cannot be cancelled at this stage'
       });
     }
 
+    if (!reason || typeof reason !== 'string' || !reason.trim()) {
+      return res.status(400).json({
+        success: false,
+        code: 'CANCELLATION_REASON_REQUIRED',
+        message: 'Select a reason for cancelling this appointment.'
+      });
+    }
+
+    const scheduledAt = bookingScheduledAt(booking);
+    if (!scheduledAt || !booking.canBeCancelled()) {
+      return res.status(409).json({
+        success: false,
+        code: 'CANCELLATION_WINDOW_CLOSED',
+        message: "We can't cancel appointments within 24 hours of the scheduled check-in time. Please contact the clinic for help."
+      });
+    }
+
     booking.status = 'Cancelled';
-    booking.cancellationReason = reason;
+    booking.cancellationReason = reason.trim();
     booking.cancelledAt = new Date();
 
     await booking.save();
@@ -404,25 +451,26 @@ exports.rescheduleBooking = async (req, res) => {
       });
     }
 
-    // Store old date/time
-    const oldDate = booking.preferredDate.toLocaleDateString('en-US', { 
-      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
+    // Remember the ORIGINAL confirmed slot, so the clinic can revert to it if it
+    // declines the request.
+    const originalDate = booking.confirmedDate || booking.preferredDate;
+    const originalTime = booking.confirmedTime || booking.preferredTimeSlots[0];
+    const oldDate = originalDate.toLocaleDateString('en-US', {
+      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
     });
-    const oldTime = booking.preferredTimeSlots[0];
+    const oldTime = originalTime;
 
-    booking.rescheduledFrom = {
-      date: booking.preferredDate,
-      time: oldTime
-    };
+    booking.rescheduledFrom = { date: originalDate, time: originalTime };
 
+    // This is a REQUEST: put the new times in as preferred and drop the
+    // confirmed slot so the appointment goes back to "awaiting confirmation of
+    // the new time" (status Rescheduled). The clinic then accepts or declines.
     booking.preferredDate = new Date(newDate);
     booking.preferredTimeSlots = newTimeSlots;
-    
-    // Update confirmed date and time to the new rescheduled values
-    booking.confirmedDate = new Date(newDate);
-    booking.confirmedTime = newTimeSlots[0]; // Use first time slot as confirmed time
-    
+    booking.confirmedDate = undefined;
+    booking.confirmedTime = undefined;
     booking.status = 'Rescheduled';
+    booking.rescheduleRejected = false;
     booking.rescheduledAt = new Date();
 
     await booking.save();
@@ -437,10 +485,10 @@ exports.rescheduleBooking = async (req, res) => {
         userId: booking.userId,
         patientName: booking.fullName,
         consultation: { name: booking.consultationId.name },
-        confirmedDate: booking.confirmedDate,
-        confirmedTime: booking.confirmedTime
+        confirmedDate: booking.preferredDate,
+        confirmedTime: booking.preferredTimeSlots[0]
       });
-      console.log('🔔 Booking reschedule notification created');
+      console.log('🔔 Booking reschedule request notification created');
     } catch (notifError) {
       console.error('⚠️ Failed to create notification:', notifError.message);
     }
@@ -492,7 +540,7 @@ exports.rescheduleBooking = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: 'Booking rescheduled successfully',
+      message: 'Reschedule requested — the clinic will confirm one of your new times shortly.',
       data: booking
     });
   } catch (error) {
@@ -501,6 +549,52 @@ exports.rescheduleBooking = async (req, res) => {
       success: false,
       message: 'Failed to reschedule booking'
     });
+  }
+};
+
+// @desc    Reject a guest's reschedule request (Admin) → revert to original slot
+// @route   PUT /api/bookings/admin/:id/reject-reschedule
+// @access  Private (Admin)
+exports.rejectReschedule = async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) {
+      return res.status(404).json({ success: false, message: 'Booking not found' });
+    }
+    if (booking.status !== 'Rescheduled') {
+      return res.status(400).json({ success: false, message: 'No reschedule request is pending on this booking' });
+    }
+
+    // Put the appointment back on its original confirmed slot.
+    const original = booking.rescheduledFrom || {};
+    if (original.date) {
+      booking.confirmedDate = original.date;
+      booking.confirmedTime = original.time;
+      booking.preferredDate = original.date;
+      booking.preferredTimeSlots = original.time ? [original.time] : booking.preferredTimeSlots;
+    }
+    booking.status = 'Confirmed';
+    booking.rescheduleRejected = true;
+    await booking.save();
+    await booking.populate('consultationId', 'name');
+
+    try {
+      await NotificationHelper.create({
+        userId: booking.userId,
+        type: 'booking',
+        title: 'Reschedule Not Possible',
+        message: `We couldn't reschedule your appointment for ${booking.consultationId?.name || 'your appointment'}. Your original time still stands — or you can cancel and book a new one.`,
+        relatedId: booking._id,
+        relatedModel: 'Booking',
+        priority: 'high',
+        metadata: { bookingId: booking._id }
+      });
+    } catch (e) { console.error('⚠️ reschedule-reject notification failed:', e.message); }
+
+    res.status(200).json({ success: true, message: 'Reschedule declined — original time kept', data: booking });
+  } catch (error) {
+    console.error('❌ Reject reschedule error:', error);
+    res.status(500).json({ success: false, message: 'Failed to reject the reschedule' });
   }
 };
 
@@ -1159,6 +1253,9 @@ exports.checkOutBookingAdmin = async (req, res) => {
 
     booking.status = 'Completed';
     booking.checkOutTime = new Date();
+    if (booking.checkInTime) {
+      booking.sessionDuration = Math.max(0, Math.round((booking.checkOutTime - booking.checkInTime) / 60000));
+    }
 
     await booking.save();
 
@@ -1233,6 +1330,272 @@ exports.checkOutBookingAdmin = async (req, res) => {
       success: false,
       message: 'Failed to check out booking'
     });
+  }
+};
+
+/* ===========================================================================
+ * Visit codes — the guest reads a code to reception, who verifies it in the
+ * panel. The code appears in the app (and on email + WhatsApp) 1 hour before
+ * the appointment (check-in), and again once the guest is checked in (check-out).
+ * ======================================================================== */
+
+const HM_RE = /^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i;
+
+/** Parse "9:00 AM" / "14:30" / "09:00" into {h, m}, or null. */
+function parseTimeToHM(value) {
+  const m = String(value || '').trim().match(HM_RE);
+  if (!m) return null;
+  let h = parseInt(m[1], 10);
+  const min = parseInt(m[2], 10);
+  const ap = m[3] ? m[3].toUpperCase() : null;
+  if (ap === 'PM' && h < 12) h += 12;
+  if (ap === 'AM' && h === 12) h = 0;
+  return { h, m: min };
+}
+
+/** The appointment's start Date, from the confirmed (or preferred) date + time. */
+function appointmentStart(booking) {
+  const dateSrc = booking.confirmedDate || booking.preferredDate;
+  if (!dateSrc) return null;
+  const d = new Date(dateSrc);
+  const timeStr = booking.confirmedTime || booking.slotTime ||
+    (booking.preferredTimeSlots && booking.preferredTimeSlots[0]);
+  const hm = parseTimeToHM(timeStr);
+  if (hm) d.setHours(hm.h, hm.m, 0, 0);
+  return d;
+}
+
+const genVisitCode = () => String(Math.floor(100000 + Math.random() * 900000));
+
+/** Send a freshly generated code to the guest by email + WhatsApp (non-blocking). */
+async function deliverVisitCode(booking, kind, code) {
+  const label = kind === 'check-in' ? 'check-in' : 'check-out';
+  try {
+    await emailService.sendVisitCodeEmail(booking.email, booking.fullName, {
+      code,
+      kind: label,
+      referenceNumber: booking.referenceNumber,
+      treatment: booking.consultationId && booking.consultationId.name,
+      location: booking.preferredLocation,
+    });
+  } catch (e) {
+    console.error('⚠️ Visit-code email failed:', e.message);
+  }
+  try {
+    const tail = kind === 'check-out' ? 'to complete your visit' : 'to check in';
+    await whatsappService.sendMessage(
+      booking.mobileNumber,
+      `Your Zennara ${label} code is ${code}. Show it at reception ${tail}. (Ref ${booking.referenceNumber})`,
+    );
+  } catch (e) {
+    console.error('⚠️ Visit-code WhatsApp failed:', e.message);
+  }
+}
+
+// @desc    Get / generate the guest's current visit code
+// @route   GET /api/bookings/:id/visit-code
+// @access  Private (owner)
+exports.getVisitCode = async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id).populate('consultationId', 'name');
+    if (!booking) {
+      return res.status(404).json({ success: false, message: 'Booking not found' });
+    }
+    if (String(booking.userId) !== String(req.user._id)) {
+      return res.status(403).json({ success: false, message: 'Not your booking' });
+    }
+
+    // Check-out stage — the guest is in the chair.
+    if (booking.status === 'In Progress') {
+      let fresh = false;
+      if (!booking.checkOutCode) {
+        booking.checkOutCode = genVisitCode();
+        booking.checkOutCodeAt = new Date();
+        await booking.save();
+        fresh = true;
+      }
+      if (fresh) deliverVisitCode(booking, 'check-out', booking.checkOutCode);
+      return res.status(200).json({
+        success: true,
+        data: { stage: 'checkout', code: booking.checkOutCode, message: 'Read this code to reception to complete your visit.' },
+      });
+    }
+
+    if (booking.status === 'Completed') {
+      return res.status(200).json({ success: true, data: { stage: 'done', message: 'This visit is complete.' } });
+    }
+    if (booking.status === 'Cancelled') {
+      return res.status(200).json({ success: true, data: { stage: 'none', message: 'No check-in code for this appointment.' } });
+    }
+    if (booking.status === 'Awaiting Confirmation') {
+      return res.status(200).json({ success: true, data: { stage: 'pending', message: 'Your booking is awaiting clinic confirmation.' } });
+    }
+    if (booking.status === 'Rescheduled') {
+      return res.status(200).json({ success: true, data: { stage: 'pending', message: 'Your reschedule request is awaiting clinic confirmation.' } });
+    }
+
+    // Confirmed / No Show (late arrival) — the check-in code opens 1 hour before
+    // the slot and stays available so staff can still check a late guest in with
+    // it (verify-checkin also accepts No Show).
+    const start = appointmentStart(booking);
+    const WINDOW = 60 * 60 * 1000;
+    if (start && Date.now() < start.getTime() - WINDOW) {
+      return res.status(200).json({
+        success: true,
+        data: {
+          stage: 'early',
+          availableAt: new Date(start.getTime() - WINDOW).toISOString(),
+          message: 'Your check-in code appears 1 hour before your appointment.',
+        },
+      });
+    }
+
+    let fresh = false;
+    if (!booking.checkInCode) {
+      booking.checkInCode = genVisitCode();
+      booking.checkInCodeAt = new Date();
+      await booking.save();
+      fresh = true;
+    }
+    if (fresh) deliverVisitCode(booking, 'check-in', booking.checkInCode);
+    return res.status(200).json({
+      success: true,
+      data: { stage: 'checkin', code: booking.checkInCode, message: 'Show this code at reception to check in.' },
+    });
+  } catch (error) {
+    console.error('❌ Get visit code error:', error);
+    res.status(500).json({ success: false, message: 'Could not load your visit code.' });
+  }
+};
+
+// @desc    Staff verifies the guest's check-in code → In Progress
+// @route   PUT /api/bookings/admin/:id/verify-checkin
+// @access  Private (Admin)
+exports.verifyCheckInCode = async (req, res) => {
+  try {
+    const code = String((req.body && req.body.code) || '').trim();
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) {
+      return res.status(404).json({ success: false, message: 'Booking not found' });
+    }
+    if (!['Confirmed', 'No Show'].includes(booking.status)) {
+      return res.status(400).json({ success: false, message: 'Only confirmed bookings can be checked in' });
+    }
+    if (!booking.checkInCode) {
+      return res.status(400).json({ success: false, message: "The guest hasn't generated a check-in code yet — ask them to open the appointment in the Zennara app." });
+    }
+    if (code !== booking.checkInCode) {
+      return res.status(400).json({ success: false, message: "That code doesn't match. Please ask the guest to read it again." });
+    }
+
+    booking.status = 'In Progress';
+    booking.checkInTime = new Date();
+    booking.checkInCode = null;
+    booking.checkInCodeAt = null;
+    await booking.save();
+    await booking.populate('consultationId', 'name');
+
+    try {
+      await NotificationHelper.bookingCheckedIn({
+        _id: booking._id,
+        patientName: booking.fullName,
+        consultation: { name: booking.consultationId.name },
+        checkInTime: booking.checkInTime,
+      });
+    } catch (e) { console.error('⚠️ check-in notification failed:', e.message); }
+
+    try {
+      await emailService.sendCheckInSuccessful(booking.email, booking.fullName, {
+        treatment: booking.consultationId.name,
+        time: booking.confirmedTime || booking.preferredTimeSlots[0],
+        location: booking.preferredLocation,
+        waitTime: '5-10',
+      }, booking.preferredLocation);
+    } catch (e) { console.error('⚠️ check-in email failed:', e.message); }
+
+    try {
+      await whatsappService.sendCheckInSuccessful(booking.mobileNumber, {
+        patientName: booking.fullName,
+        treatment: booking.consultationId.name,
+        time: booking.confirmedTime || booking.preferredTimeSlots[0],
+        location: booking.preferredLocation,
+        waitTime: '5-10',
+      });
+    } catch (e) { console.error('⚠️ check-in WhatsApp failed:', e.message); }
+
+    res.status(200).json({ success: true, message: 'Guest checked in', data: booking });
+  } catch (error) {
+    console.error('❌ Verify check-in error:', error);
+    res.status(500).json({ success: false, message: 'Failed to check in' });
+  }
+};
+
+// @desc    Staff verifies the guest's check-out code → Completed
+// @route   PUT /api/bookings/admin/:id/verify-checkout
+// @access  Private (Admin)
+exports.verifyCheckOutCode = async (req, res) => {
+  try {
+    const code = String((req.body && req.body.code) || '').trim();
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) {
+      return res.status(404).json({ success: false, message: 'Booking not found' });
+    }
+    if (booking.status !== 'In Progress') {
+      return res.status(400).json({ success: false, message: 'Only in-progress bookings can be checked out' });
+    }
+    if (!booking.checkOutCode) {
+      return res.status(400).json({ success: false, message: "The guest hasn't generated a check-out code yet — ask them to open the appointment in the Zennara app." });
+    }
+    if (code !== booking.checkOutCode) {
+      return res.status(400).json({ success: false, message: "That code doesn't match. Please ask the guest to read it again." });
+    }
+
+    booking.status = 'Completed';
+    booking.checkOutTime = new Date();
+    if (booking.checkInTime) {
+      booking.sessionDuration = Math.max(0, Math.round((booking.checkOutTime - booking.checkInTime) / 60000));
+    }
+    booking.checkOutCode = null;
+    booking.checkOutCodeAt = null;
+    await booking.save();
+    await booking.populate('consultationId', 'name');
+
+    const dateLabel = (booking.confirmedDate || booking.preferredDate)
+      .toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+
+    try {
+      await NotificationHelper.bookingCompleted({
+        _id: booking._id,
+        userId: booking.userId,
+        patientName: booking.fullName,
+        consultation: { name: booking.consultationId.name },
+        checkOutTime: booking.checkOutTime,
+      });
+    } catch (e) { console.error('⚠️ completion notification failed:', e.message); }
+
+    try {
+      await emailService.sendAppointmentCompleted(booking.email, booking.fullName, {
+        treatment: booking.consultationId.name,
+        date: dateLabel,
+        location: booking.preferredLocation,
+      }, booking.preferredLocation);
+    } catch (e) { console.error('⚠️ completion email failed:', e.message); }
+
+    try {
+      await whatsappService.sendAppointmentCompleted(booking.mobileNumber, {
+        patientName: booking.fullName,
+        treatment: booking.consultationId.name,
+        date: dateLabel,
+        location: booking.preferredLocation,
+        sessionDuration: booking.sessionDuration,
+        bookingId: booking._id,
+      });
+    } catch (e) { console.error('⚠️ completion WhatsApp failed:', e.message); }
+
+    res.status(200).json({ success: true, message: 'Guest checked out — visit complete', data: booking });
+  } catch (error) {
+    console.error('❌ Verify check-out error:', error);
+    res.status(500).json({ success: false, message: 'Failed to check out' });
   }
 };
 
@@ -1398,5 +1761,251 @@ exports.getAvailableTimeSlots = async (req, res) => {
       success: false,
       message: 'Failed to fetch available slots'
     });
+  }
+};
+
+// @desc    Create a booking from the panel (walk-in or phone booking)
+// @route   POST /api/bookings/admin
+// @access  Private (Admin)
+//
+// Reception needs to put a guest in the book without going through the app's
+// pay-then-book flow. The guest may not exist yet, so this resolves — or
+// creates — a User from the phone number, which is also what links them to the
+// app later.
+exports.createBookingAdmin = async (req, res) => {
+  try {
+    const {
+      consultationId,
+      fullName,
+      mobileNumber,
+      email,
+      preferredLocation,
+      preferredDate,
+      preferredTimeSlots,
+      specialistId,
+      specialistName,
+      specialistTier,
+      amount,
+      paymentStatus,
+      notes,
+      confirmNow,
+      userId,
+    } = req.body;
+
+    if (!consultationId || !fullName || !mobileNumber || !preferredLocation || !preferredDate) {
+      return res.status(400).json({
+        success: false,
+        message: 'consultationId, fullName, mobileNumber, preferredLocation and preferredDate are required',
+      });
+    }
+
+    const consultation = await Consultation.findById(consultationId);
+    if (!consultation) {
+      return res.status(404).json({ success: false, message: 'Service not found' });
+    }
+
+    const branch = await Branch.findOne({ name: preferredLocation, isActive: true });
+    if (!branch) {
+      return res.status(404).json({ success: false, message: 'Branch not found or inactive' });
+    }
+
+    // Resolve the guest: explicit id, then phone, then email, else create one.
+    let user = null;
+    if (userId) user = await User.findById(userId);
+    if (!user) user = await User.findOne({ phone: mobileNumber });
+    if (!user && email) user = await User.findOne({ email: String(email).toLowerCase() });
+
+    let createdUser = false;
+    if (!user) {
+      // A walk-in has no email until they give one; synthesise a unique
+      // placeholder so the account can exist and be claimed later.
+      const safeEmail = email
+        ? String(email).toLowerCase()
+        : `walkin.${mobileNumber.replace(/\D/g, '')}@zennara.local`;
+
+      user = await User.create({
+        fullName,
+        email: safeEmail,
+        phone: mobileNumber,
+        location: preferredLocation,
+        dateOfBirth: req.body.dateOfBirth || '',
+        gender: req.body.gender || 'Other',
+        isVerified: false,
+        isActive: true,
+      });
+      createdUser = true;
+    }
+
+    const slots = Array.isArray(preferredTimeSlots) && preferredTimeSlots.length
+      ? preferredTimeSlots
+      : [req.body.confirmedTime].filter(Boolean);
+
+    if (!slots.length) {
+      return res.status(400).json({
+        success: false,
+        message: 'At least one preferred time slot is required',
+      });
+    }
+
+    const booking = new Booking({
+      userId: user._id,
+      consultationId,
+      fullName,
+      mobileNumber,
+      email: user.email,
+      branchId: branch._id,
+      preferredLocation,
+      preferredDate: new Date(preferredDate),
+      preferredTimeSlots: slots,
+      specialistId: specialistId || undefined,
+      specialistName: specialistName || undefined,
+      specialistTier: specialistTier || undefined,
+      amount: amount !== undefined && amount !== null ? Number(amount) : consultation.price,
+      paymentStatus: paymentStatus || 'pending',
+      status: confirmNow ? 'Confirmed' : 'Awaiting Confirmation',
+      notes: notes || undefined,
+      adminNotes: `Created at reception by ${req.admin?.email || 'admin'}`,
+    });
+
+    if (confirmNow) {
+      booking.confirmedDate = new Date(preferredDate);
+      booking.confirmedTime = slots[0];
+    }
+
+    await booking.save();
+    await booking.populate('consultationId', 'name category price image');
+    await booking.populate('userId', 'fullName email phone patientId');
+
+    try {
+      await NotificationHelper.bookingCreated({
+        _id: booking._id,
+        userId: booking.userId._id || booking.userId,
+        patientName: booking.fullName,
+        consultation: { name: consultation.name },
+        branch: { name: branch.name },
+        appointmentDate: booking.preferredDate,
+      });
+    } catch (notifError) {
+      console.error('⚠️ Failed to create notification:', notifError.message);
+    }
+
+    // Best-effort confirmations — a messaging outage must not lose the booking.
+    try {
+      await whatsappService.sendBookingConfirmation(booking.mobileNumber, {
+        patientName: booking.fullName,
+        referenceNumber: booking.referenceNumber,
+        treatment: consultation.name,
+        date: booking.preferredDate.toLocaleDateString('en-US', {
+          weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+        }),
+        timeSlots: booking.preferredTimeSlots.join(', '),
+        location: booking.preferredLocation,
+      });
+    } catch (whatsappError) {
+      console.error('WhatsApp send failed, booking still created:', whatsappError.message);
+    }
+
+    if (email) {
+      try {
+        await emailService.sendAppointmentBookingConfirmation(
+          booking.email,
+          booking.fullName,
+          {
+            referenceNumber: booking.referenceNumber,
+            treatment: consultation.name,
+            category: consultation.category,
+            preferredDate: booking.preferredDate.toLocaleDateString('en-US', {
+              weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+            }),
+            timeSlots: booking.preferredTimeSlots.join(', '),
+            location: booking.preferredLocation,
+          },
+          booking.preferredLocation,
+        );
+      } catch (emailError) {
+        console.error('Email send failed, booking still created:', emailError.message);
+      }
+    }
+
+    return res.status(201).json({
+      success: true,
+      message: createdUser
+        ? `Booking created and a new patient record was opened for ${fullName}.`
+        : 'Booking created successfully',
+      data: booking,
+      meta: { createdUser, patientId: user.patientId },
+    });
+  } catch (error) {
+    console.error('❌ Admin create booking error:', error);
+    if (error.name === 'ValidationError') {
+      return res.status(400).json({
+        success: false,
+        message: Object.values(error.errors).map((e) => e.message).join(', '),
+      });
+    }
+    return res.status(500).json({
+      success: false,
+      message: error.message || 'Failed to create booking',
+    });
+  }
+};
+
+// @desc    Reschedule a booking from the panel
+// @route   PUT /api/bookings/admin/:id/reschedule
+// @access  Private (Admin)
+exports.rescheduleBookingAdmin = async (req, res) => {
+  try {
+    const { preferredDate, confirmedTime, preferredTimeSlots, reason } = req.body;
+
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) {
+      return res.status(404).json({ success: false, message: 'Booking not found' });
+    }
+
+    if (['Cancelled', 'Completed', 'No Show'].includes(booking.status)) {
+      return res.status(400).json({
+        success: false,
+        message: `A ${booking.status.toLowerCase()} booking cannot be rescheduled`,
+      });
+    }
+
+    if (!preferredDate) {
+      return res.status(400).json({ success: false, message: 'A new date is required' });
+    }
+
+    booking.rescheduledFrom = {
+      date: booking.confirmedDate || booking.preferredDate,
+      time: booking.confirmedTime || booking.preferredTimeSlots?.[0],
+    };
+    booking.rescheduledAt = new Date();
+    booking.preferredDate = new Date(preferredDate);
+    if (Array.isArray(preferredTimeSlots) && preferredTimeSlots.length) {
+      booking.preferredTimeSlots = preferredTimeSlots;
+    }
+    if (confirmedTime) {
+      booking.confirmedDate = new Date(preferredDate);
+      booking.confirmedTime = confirmedTime;
+      booking.status = 'Confirmed';
+    } else {
+      booking.status = 'Rescheduled';
+      booking.confirmedDate = undefined;
+      booking.confirmedTime = undefined;
+    }
+    if (reason) {
+      booking.adminNotes = `${booking.adminNotes ? `${booking.adminNotes}\n` : ''}Rescheduled: ${reason}`;
+    }
+
+    await booking.save();
+    await booking.populate('consultationId', 'name category price image');
+    await booking.populate('userId', 'fullName email phone patientId');
+
+    return res.status(200).json({
+      success: true,
+      message: 'Booking rescheduled',
+      data: booking,
+    });
+  } catch (error) {
+    console.error('❌ Admin reschedule error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to reschedule booking' });
   }
 };

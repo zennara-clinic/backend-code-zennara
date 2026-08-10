@@ -18,6 +18,25 @@ const consultationSchema = new mongoose.Schema({
     required: true,
     index: true
   },
+  /**
+   * Level 1 — ServiceType.name ("Skin", "Hair", "Skin & Hair", …).
+   *
+   * Optional so the pre-taxonomy entries that are being retired still
+   * validate; everything created from the clinic's service list carries one.
+   */
+  type: {
+    type: String,
+    default: null,
+    trim: true,
+    index: true
+  },
+  /**
+   * Level 2 — the treatment category ("Laser Treatments", "Chemical Peels").
+   *
+   * This used to hold what was effectively a type (SKIN, HAIR, ANTI AGEING).
+   * The 2026-08-07 restructure moved that meaning up into `type` and gave this
+   * field the clinic's real category names.
+   */
   category: {
     type: String,
     required: true,
@@ -63,7 +82,17 @@ const consultationSchema = new mongoose.Schema({
   }],
   image: {
     type: String,
-    required: true
+    /**
+     * Optional since the 2026-08-07 restructure.
+     *
+     * The clinic's service list has 61 sub-categories; only 22 arrived with a
+     * photograph. Requiring one meant the taxonomy could not be loaded at all
+     * until every image existed. Both clients already branch on an empty
+     * value — the app card falls back to a branded sage panel, and the panel
+     * flags the entry as needing a photo — so a blank is a known state rather
+     * than a broken one.
+     */
+    default: ''
   },
   media: [{
     type: {
@@ -104,6 +133,13 @@ const consultationSchema = new mongoose.Schema({
     type: Boolean,
     default: false,
     index: true
+  },
+  // When true, booking this treatment in the app charges the price up front
+  // (Razorpay). When false, the guest books directly and pays at the clinic.
+  // Consultations (dermatologist flow) always charge and ignore this.
+  chargeOnlineBooking: {
+    type: Boolean,
+    default: true
   },
   isPopular: {
     type: Boolean,

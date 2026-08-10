@@ -216,7 +216,11 @@ const getAppointmentReminderTemplate = (fullName, appointmentData, branch = 'Zen
             <div class="detail-row">
               <span class="detail-label">Location</span>
               <span class="detail-value">${appointmentData.location}</span>
-            </div>
+            </div>${appointmentData.address ? `
+            <div class="detail-row">
+              <span class="detail-label">Address</span>
+              <span class="detail-value">${appointmentData.address}</span>
+            </div>` : ''}
             <div class="detail-row">
               <span class="detail-label">Contact</span>
               <span class="detail-value">${appointmentData.contactNumber}</span>

@@ -296,10 +296,12 @@ exports.adminVerifyOTP = async (req, res) => {
         token,
         expiresAt,
         admin: {
+          _id: admin._id,
           id: admin._id,
           email: admin.email,
           name: admin.name,
           role: admin.role,
+          isActive: admin.isActive,
           isVerified: admin.isVerified
         }
       }
@@ -441,11 +443,17 @@ exports.getAdminProfile = async (req, res) => {
     res.status(200).json({
       success: true,
       data: {
+        // `_id` as well as `id`: clients that store this record alongside
+        // documents from other endpoints compare on `_id`, and returning only
+        // `id` left those comparisons undefined.
+        _id: admin._id,
         id: admin._id,
         email: admin.email,
         name: admin.name,
         role: admin.role,
+        isActive: admin.isActive,
         isVerified: admin.isVerified,
+        lastLogin: admin.lastLogin,
         createdAt: admin.createdAt
       }
     });

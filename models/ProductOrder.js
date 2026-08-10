@@ -181,7 +181,19 @@ const productOrderSchema = new mongoose.Schema({
   },
   razorpayOrderId: String,
   razorpayPaymentId: String,
-  razorpaySignature: String
+  razorpaySignature: String,
+
+  // Zenoti write-back (Phase 2): the product invoice this order created in the
+  // CRM, and its sync status, for idempotency + observability.
+  zenotiInvoiceId: { type: String, default: null },
+  zenotiSyncStatus: {
+    type: String,
+    enum: ['pending', 'synced', 'failed', 'skipped', 'dryrun', null],
+    default: null
+  },
+  zenotiSyncError: { type: String, default: null },
+  zenotiSyncedAt: { type: Date, default: null },
+
 }, {
   timestamps: true
 });
@@ -192,7 +204,7 @@ productOrderSchema.pre('save', async function(next) {
     const count = await this.constructor.countDocuments();
     this.orderNumber = `ORD${Date.now()}${String(count + 1).padStart(4, '0')}`;
   }
-  
+
   // Add initial status to history only if new and history is empty
   if (this.isNew && this.statusHistory.length === 0) {
     this.statusHistory.push({
@@ -201,8 +213,23 @@ productOrderSchema.pre('save', async function(next) {
       note: 'Order placed'
     });
   }
-  
+
+  // Remember first-save for the post-save Zenoti push.
+  this._wasNew = this.isNew;
+
   next();
+});
+
+// Push a newly-created order to Zenoti as a product invoice. Fire-and-forget and
+// gated by ZENOTI_WRITE_MODE — a CRM failure never affects the order itself.
+productOrderSchema.post('save', function (doc) {
+  if (!doc._wasNew) return;
+  if (doc.zenotiInvoiceId) return;
+  setImmediate(() => {
+    try {
+      require('../services/zenotiWriteService').syncOrder(doc._id).catch(() => {});
+    } catch (_) { /* never let CRM wiring affect order creation */ }
+  });
 });
 
 // Indexes
@@ -210,5 +237,13 @@ productOrderSchema.index({ userId: 1, createdAt: -1 });
 productOrderSchema.index({ orderNumber: 1 }, { unique: true });
 productOrderSchema.index({ orderStatus: 1 });
 productOrderSchema.index({ paymentStatus: 1 });
+productOrderSchema.index(
+  { razorpayOrderId: 1 },
+  { unique: true, sparse: true, name: 'one_product_order_per_razorpay_order' }
+);
+productOrderSchema.index(
+  { razorpayPaymentId: 1 },
+  { unique: true, sparse: true, name: 'one_product_order_per_razorpay_payment' }
+);
 
 module.exports = mongoose.model('ProductOrder', productOrderSchema);

@@ -53,3 +53,30 @@ exports.adminSensitiveOperationsLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false
 });
+
+// Prevent an authenticated client or retry loop from creating large numbers of
+// abandoned gateway orders. Verification gets a higher ceiling for safe
+// network retries and duplicate callbacks.
+exports.paymentOrderLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 20,
+  message: {
+    success: false,
+    message: 'Too many payment attempts. Please wait a few minutes and try again.',
+    code: 'PAYMENT_RATE_LIMITED'
+  },
+  standardHeaders: true,
+  legacyHeaders: false
+});
+
+exports.paymentVerificationLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 60,
+  message: {
+    success: false,
+    message: 'Too many payment verification attempts. Please wait and retry.',
+    code: 'PAYMENT_VERIFICATION_RATE_LIMITED'
+  },
+  standardHeaders: true,
+  legacyHeaders: false
+});

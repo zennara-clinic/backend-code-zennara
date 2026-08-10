@@ -1,4 +1,5 @@
 const ProductOrder = require('../models/ProductOrder');
+const Payment = require('../models/Payment');
 const User = require('../models/User');
 const razorpayService = require('../services/razorpayService');
 const whatsappService = require('../services/whatsappService');
@@ -77,9 +78,18 @@ exports.initiateRefund = async (req, res) => {
         message: 'Refund is already in progress for this order'
       });
     }
+
+    if (order.refundDetails?.status === 'Completed') {
+      return res.status(400).json({
+        success: false,
+        message: 'A refund has already been completed for this order'
+      });
+    }
     
     // Determine refund amount
-    const amountToRefund = refundAmount || order.pricing.total;
+    const amountToRefund = refundAmount === undefined || refundAmount === null
+      ? Number(order.pricing.total)
+      : Number(refundAmount);
     
     // Validate refund amount
     if (!validateRefundAmount(amountToRefund, order.pricing.total)) {
@@ -175,6 +185,31 @@ exports.initiateRefund = async (req, res) => {
       }
       
       try {
+        // Acquire a database lock before the external API call. Two admin taps
+        // must never create two refunds for the same payment.
+        const lock = await ProductOrder.updateOne(
+          {
+            _id: order._id,
+            paymentStatus: { $ne: 'Refunded' },
+            'refundDetails.status': { $ne: 'Processing' },
+          },
+          {
+            $set: {
+              'refundDetails.status': 'Processing',
+              'refundDetails.amount': amountToRefund,
+              'refundDetails.method': 'Razorpay',
+              'refundDetails.refundInitiatedAt': new Date(),
+              'refundDetails.refundedBy': req.user._id,
+            },
+          }
+        );
+        if (lock.modifiedCount !== 1) {
+          return res.status(409).json({
+            success: false,
+            message: 'A refund is already being processed for this order',
+          });
+        }
+
         // Call Razorpay refund API
         refundResult = await razorpayService.refundPayment(
           order.razorpayPaymentId,
@@ -184,18 +219,28 @@ exports.initiateRefund = async (req, res) => {
         console.log('Razorpay refund successful:', refundResult.id);
         
         // Update order with refund details
+        const refundCompleted = refundResult.status === 'processed';
         order.refundDetails = {
           method: 'Razorpay',
           amount: amountToRefund,
-          status: 'Processing',
+          status: refundCompleted ? 'Completed' : 'Processing',
           razorpayRefundId: refundResult.id,
           transactionId: refundResult.id,
           refundInitiatedAt: new Date(),
+          refundCompletedAt: refundCompleted ? new Date() : undefined,
           refundedBy: req.user._id,
           notes: notes || 'Online payment refund processed via Razorpay',
           retryCount: 0,
           lastRetryAt: null
         };
+
+        if (refundCompleted && amountToRefund >= Number(order.pricing.total)) {
+          order.paymentStatus = 'Refunded';
+          await Payment.findOneAndUpdate(
+            { razorpayPaymentId: order.razorpayPaymentId },
+            { status: 'refunded' }
+          );
+        }
         
         // Add to status history
         order.statusHistory.push({
@@ -207,10 +252,29 @@ exports.initiateRefund = async (req, res) => {
         
       } catch (error) {
         console.error('Razorpay refund failed:', error.message);
+
+        // Once Razorpay has returned a refund ID, never unlock the row for a
+        // blind retry just because our local save failed; that could refund the
+        // customer twice. Leave it Processing for webhook reconciliation.
+        await ProductOrder.findByIdAndUpdate(order._id, {
+          $set: refundResult?.id
+            ? {
+                'refundDetails.status': 'Processing',
+                'refundDetails.razorpayRefundId': refundResult.id,
+                'refundDetails.transactionId': refundResult.id,
+                'refundDetails.failureReason': `Local reconciliation pending: ${error.message}`,
+              }
+            : {
+                'refundDetails.status': 'Failed',
+                'refundDetails.failureReason': error.message,
+              },
+        }).catch(() => {});
         
         return res.status(500).json({
           success: false,
-          message: 'Failed to process Razorpay refund',
+          message: refundResult?.id
+            ? 'Refund was accepted by Razorpay but local reconciliation is pending'
+            : 'Failed to process Razorpay refund',
           error: error.message,
           errorCode: 'RAZORPAY_REFUND_FAILED'
         });
@@ -311,6 +375,13 @@ exports.completeRefund = async (req, res) => {
         success: false,
         message: 'No pending refund found for this order',
         currentStatus: order.refundDetails?.status || 'None'
+      });
+    }
+
+    if (order.refundDetails.method === 'Razorpay') {
+      return res.status(400).json({
+        success: false,
+        message: 'Razorpay refunds are completed only from the verified gateway status',
       });
     }
     

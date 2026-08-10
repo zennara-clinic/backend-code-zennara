@@ -1,120 +1,128 @@
 const mongoose = require('mongoose');
 
+/**
+ * Universal Patient Consent Form
+ *
+ * Digital version of Zennara's paper "UNIVERSAL PATIENT CONSENT FORM" (page 7 of
+ * the clinic booklet). One form covers every treatment/procedure — the patient
+ * fills it once per procedure, confirms each of the seven sections, and signs.
+ *
+ * The section confirmations are stored as booleans; the wording the patient
+ * agreed to is pinned by `formVersion` and rendered identically in the app and
+ * the admin panel (see the app's constants/consentForm.ts). This keeps the
+ * legal record honest even if the copy is reworded in a later version.
+ *
+ * Legacy fields (acknowledgements / termsAndConditions) from the earlier consent
+ * screen are kept but optional so old records still load and validate.
+ */
 const patientConsentFormSchema = new mongoose.Schema({
-  // User Reference
+  // --- References -----------------------------------------------------------
   userId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
     required: true,
     index: true
   },
-
-  // Booking Reference
   bookingId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Booking'
   },
-
-  // Pre-Consult Form Reference (optional)
   preConsultFormId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'PreConsultForm'
   },
 
-  // Patient Information
+  // Which wording the patient agreed to (pins the legal text).
+  formVersion: {
+    type: String,
+    default: 'universal-v1'
+  },
+
+  // --- Patient information (top of the form) --------------------------------
   patientName: {
     type: String,
     required: true,
     trim: true
   },
-
-  // Doctor and Treatment Information
-  doctorName: {
+  dateOfBirth: {
+    type: Date,
+    default: null
+  },
+  age: {
+    type: Number,
+    default: null
+  },
+  gender: {
     type: String,
-    required: true,
+    enum: ['Male', 'Female', 'Other', null],
+    default: null
+  },
+  mobile: {
+    type: String,
+    default: null,
     trim: true
   },
+
+  // --- Treatment / doctor ---------------------------------------------------
+  // Universal consent applies to every treatment/package, so this is not a
+  // per-treatment field any more — it defaults and is no longer required.
   treatmentProcedure: {
     type: String,
-    required: true,
+    required: false,
+    default: 'All treatments & packages',
     trim: true
   },
+  doctorName: {
+    type: String,
+    required: false,
+    default: 'To Be Assigned',
+    trim: true
+  },
+  clinicName: {
+    type: String,
+    default: 'ZENNARA Clinics'
+  },
 
-  // Consent Date
   consentDate: {
     type: Date,
     default: Date.now,
     required: true
   },
 
-  // Acknowledgements
-  acknowledgements: {
-    hadOpportunityToAskQuestions: {
-      type: Boolean,
-      default: true
-    },
-    questionsAnsweredSatisfactorily: {
-      type: Boolean,
-      default: true
-    },
-    noObjectionToClinicalRecordUse: {
-      type: Boolean,
-      default: true
-    },
-    notHoldingClinicResponsible: {
-      type: Boolean,
-      default: true
-    },
-    variableResultsExplained: {
-      type: Boolean,
-      default: true
-    },
-    improvementNotGuaranteed: {
-      type: Boolean,
-      default: true
-    }
+  // --- The seven sections (each a single confirmation) ----------------------
+  sections: {
+    // 1. Understanding of Treatment
+    understandingOfTreatment: { type: Boolean, default: false },
+    // 2. Risks, Side Effects & Limitations
+    risksSideEffects: { type: Boolean, default: false },
+    // 3. Medical Disclosure
+    medicalDisclosure: { type: Boolean, default: false },
+    // 4. Use of Clinical Records (records + photos for medical documentation)
+    clinicalRecords: { type: Boolean, default: false },
+    // 5. Financial Terms
+    financialTerms: { type: Boolean, default: false },
+    // 6. Liability Clause
+    liabilityClause: { type: Boolean, default: false },
+    // 7. Declaration & Consent
+    declaration: { type: Boolean, default: false }
   },
 
-  // Terms & Conditions Agreement
-  termsAndConditions: {
-    noRefundPolicy: {
-      type: Boolean,
-      default: false,
-      required: true
-    },
-    nonTransferableServices: {
-      type: Boolean,
-      default: false,
-      required: true
-    },
-    treatmentExpiry: {
-      accepted: {
-        type: Boolean,
-        default: false,
-        required: true
-      },
-      expiryDetails: {
-        type: String,
-        default: 'Treatments of 3-6 sessions will expire after 12 months. Treatments of 7-10 sessions will expire after 18 months.'
-      }
-    },
-    noRefundOnDateChange: {
-      type: Boolean,
-      default: false,
-      required: true
-    }
+  // Optional, opt-in — the photo notes marketing use needs *separate* consent.
+  marketingPhotoConsent: {
+    type: Boolean,
+    default: false
   },
 
-  // Consent to Treatment
+  // Overall consent to treatment (mirrors section 7 / declaration).
   consentGiven: {
     type: Boolean,
     default: false,
     required: true
   },
 
-  // Signatures
+  // --- Signatures -----------------------------------------------------------
   patientSignature: {
-    type: String, // base64 or URL
+    type: String, // typed name "Name|Style" or base64/URL
     required: true
   },
   patientSignedAt: {
@@ -122,26 +130,38 @@ const patientConsentFormSchema = new mongoose.Schema({
     default: Date.now
   },
   doctorSignature: {
-    type: String, // base64 or URL
+    type: String,
     default: null
   },
   doctorSignedAt: {
     type: Date,
     default: null
   },
+  clinicStamp: {
+    type: String, // note / reference / image URL added by the clinic
+    default: null
+  },
 
-  // Form Status
+  // --- Status & clinic notes ------------------------------------------------
   status: {
     type: String,
     enum: ['Pending', 'Signed', 'Approved', 'Archived'],
-    default: 'Pending',
+    default: 'Signed',
     index: true
   },
-
-  // Additional Notes
   clinicNotes: {
     type: String,
     default: null
+  },
+
+  // --- Legacy (kept optional for older records / the retired consent screen) -
+  acknowledgements: {
+    type: mongoose.Schema.Types.Mixed,
+    default: undefined
+  },
+  termsAndConditions: {
+    type: mongoose.Schema.Types.Mixed,
+    default: undefined
   }
 
 }, {
@@ -154,13 +174,19 @@ patientConsentFormSchema.index({ bookingId: 1 });
 patientConsentFormSchema.index({ preConsultFormId: 1 });
 patientConsentFormSchema.index({ consentDate: -1 });
 
-// Method to check if all required consents are given
-patientConsentFormSchema.methods.hasAllRequiredConsents = function() {
-  return this.termsAndConditions.noRefundPolicy &&
-         this.termsAndConditions.nonTransferableServices &&
-         this.termsAndConditions.treatmentExpiry.accepted &&
-         this.termsAndConditions.noRefundOnDateChange &&
-         this.consentGiven;
+// True only when every section is confirmed and consent is given.
+patientConsentFormSchema.methods.hasAllRequiredConsents = function () {
+  const s = this.sections || {};
+  return Boolean(
+    s.understandingOfTreatment &&
+    s.risksSideEffects &&
+    s.medicalDisclosure &&
+    s.clinicalRecords &&
+    s.financialTerms &&
+    s.liabilityClause &&
+    s.declaration &&
+    this.consentGiven
+  );
 };
 
 module.exports = mongoose.model('PatientConsentForm', patientConsentFormSchema);

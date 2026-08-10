@@ -300,6 +300,38 @@ exports.getAllForms = async (req, res) => {
   }
 };
 
+// @desc    Get a single pre-consult form with patient context (Admin)
+// @route   GET /api/pre-consult-forms/admin/:id
+// @access  Private/Admin
+exports.getAdminFormById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const form = await PreConsultForm.findById(id)
+      .populate('userId', 'fullName email phone patientId')
+      .populate('bookingId', 'referenceNumber preferredDate status');
+
+    if (!form) {
+      return res.status(404).json({
+        success: false,
+        message: 'Form not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: form.toObject()
+    });
+  } catch (error) {
+    console.error('Error fetching pre-consult form (admin):', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch pre-consult form',
+      error: error.message
+    });
+  }
+};
+
 // @desc    Update form status (Admin)
 // @route   PATCH /api/admin/pre-consult-forms/:id/status
 // @access  Private/Admin

@@ -27,17 +27,35 @@ const { setupSocketIO } = require('./services/socketService');
 const app = express();
 const server = http.createServer(app);
 
+/* ------------------------------ Allowed origins ------------------------------ */
+/*
+ * There is one clinic panel now — the unified panel in `Panels/`. The legacy
+ * admin panel's deployed origin used to be hard-coded here; it is no longer
+ * trusted. Set PANEL_ORIGINS in the environment to wherever the unified panel
+ * is deployed (comma-separated for staging plus production), for example:
+ *
+ *   PANEL_ORIGINS=https://panel.zennara.in,https://staging-panel.zennara.in
+ *
+ * Local development ports and the Expo dev server are always allowed.
+ */
+const PANEL_ORIGINS = (process.env.PANEL_ORIGINS || '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean);
+
+const DEV_ORIGINS = [
+  'http://localhost:5173',   // unified panel (Vite)
+  'http://localhost:8081',   // Expo Metro
+  'http://localhost:19006',  // Expo web
+  'http://localhost:19000',  // Expo alternative
+];
+
+const ALLOWED_ORIGINS = [...PANEL_ORIGINS, ...DEV_ORIGINS];
+
 // Socket.IO setup with CORS
 const io = new Server(server, {
   cors: {
-    origin: [
-      'https://admin.sizid.com', 
-      'http://localhost:5173', 
-      'http://localhost:8081',
-      'http://localhost:19006', // Expo web default port
-      'http://localhost:19000', // Expo alternative port
-      'exp://192.168.1.100:8081',
-    ],
+    origin: ALLOWED_ORIGINS,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE']
   },
@@ -64,7 +82,14 @@ app.use(helmet({
       styleSrc: ["'self'", "'unsafe-inline'"],
       scriptSrc: ["'self'"],
       imgSrc: ["'self'", "data:", "https:", "blob:"],
-      connectSrc: ["'self'", "https://api.sizid.com", "wss://api.sizid.com"],
+      // Applies to pages this API serves itself (the status page). Set
+      // API_PUBLIC_URL to this service's own public origin.
+      connectSrc: [
+        "'self'",
+        ...(process.env.API_PUBLIC_URL
+          ? [process.env.API_PUBLIC_URL, process.env.API_PUBLIC_URL.replace(/^https?:/, 'wss:')]
+          : []),
+      ],
       fontSrc: ["'self'", "data:"],
       objectSrc: ["'none'"],
       mediaSrc: ["'self'"],
@@ -100,14 +125,10 @@ app.use(mongoSanitize({
 // Log suspicious activity
 app.use(logSuspiciousActivity);
 
-// Allow ONLY your admin app (recommended)
+// Allow the unified panel and the mobile app only — see ALLOWED_ORIGINS above.
 app.use(cors({
   origin: [
-    'https://admin.sizid.com',
-    'http://localhost:5173', 
-    'http://localhost:8081',
-    'http://localhost:19006', // Expo web default port
-    'http://localhost:19000', // Expo alternative port
+    ...ALLOWED_ORIGINS,
     /^http:\/\/localhost:\d+$/, // Allow any localhost port for development
     /^http:\/\/192\.168\.\d+\.\d+:\d+$/, // Allow local network IPs for mobile testing
   ],
@@ -124,7 +145,15 @@ app.use(cors({
 app.options('*', cors());
 
 /* ------------------------------ Core Middleware ------------------------------ */
-app.use(express.json({ limit: '10mb' }));
+// Stash the raw request body so webhook handlers (e.g. Razorpay) can verify the
+// signature against the exact bytes that were signed — re-stringifying the
+// parsed JSON does not reliably reproduce them. Cheap: just keeps the buffer.
+app.use(express.json({
+  limit: '10mb',
+  verify: (req, _res, buf) => {
+    req.rawBody = buf;
+  },
+}));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 /* --------------------------- Connect services/jobs --------------------------- */
@@ -161,6 +190,8 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/privacy', require('./routes/privacy'));
 app.use('/api/admin/auth', require('./routes/adminAuth'));
 app.use('/api/admin/users', require('./routes/user'));
+app.use('/api/admin/staff', require('./routes/admin/staffRoutes'));
+app.use('/api/admin/audit-logs', require('./routes/admin/auditLogRoutes'));
 app.use('/api/admin/products', require('./routes/adminProducts'));
 app.use('/api/admin/product-orders', require('./routes/adminOrders'));
 app.use('/api/admin/brands', require('./routes/brand'));
@@ -168,9 +199,15 @@ app.use('/api/admin/formulations', require('./routes/formulation'));
 app.use('/api/admin/coupons', require('./routes/coupon'));
 app.use('/api/addresses', require('./routes/address'));
 app.use('/api/consultations', require('./routes/consultation'));
+app.use('/api/consultation-notes', require('./routes/consultationNote'));
 app.use('/api/bookings', require('./routes/booking'));
 app.use('/api/branches', require('./routes/branch'));
+app.use('/api/doctors', require('./routes/doctor'));
+app.use('/api/doctor-fee-requests', require('./routes/doctorFeeRequest'));
+app.use('/api/dermatologist-availability', require('./routes/dermatologistAvailability'));
+app.use('/api/dermatologists', require('./routes/dermatologistSchedule'));
 app.use('/api/support', require('./routes/support'));
+app.use('/api/service-types', require('./routes/serviceType'));
 app.use('/api/categories', require('./routes/category'));
 app.use('/api/packages', require('./routes/package'));
 app.use('/api/package-assignments', require('./routes/packageAssignment'));
@@ -193,6 +230,8 @@ app.use('/api/patient-consent-forms', require('./routes/patientConsentForm'));
 app.use('/api/service-cards', require('./routes/serviceCard'));
 app.use('/api/app-customization', require('./routes/appCustomizationRoutes'));
 app.use('/api/chat', require('./routes/chat'));
+app.use('/api/zenoti', require('./routes/zenoti'));
+app.use('/api/admin/zenoti', require('./routes/adminZenoti'));
 
 /* ------------------------------ Health Check -------------------------------- */
 app.get('/', (req, res) => {
@@ -259,6 +298,52 @@ app.use((err, req, res, next) => {
 /* --------------------------------- 404 -------------------------------------- */
 app.use((req, res) => {
   res.status(404).json({ success: false, message: 'Route not found' });
+});
+
+/* ---------------------- Survive transient network faults --------------------- */
+/*
+ * The background jobs (booking cleanup, the No Show checker) query Mongo on a
+ * timer. When the host's network drops — a laptop sleeping, wifi switching —
+ * those queries reject with MongoServerSelectionError / ENOTFOUND. Node has
+ * exited the process on an unhandled rejection since v15, so a momentary DNS
+ * failure was taking the whole API down and leaving the app showing
+ * "No internet connection" until someone restarted it by hand.
+ *
+ * Mongoose reconnects on its own once DNS recovers, so the right response to a
+ * network fault is to log it and keep serving, not to die.
+ */
+const TRANSIENT = /ENOTFOUND|EAI_AGAIN|ECONNRESET|ETIMEDOUT|ECONNREFUSED|MongoServerSelectionError|MongoNetworkError|querySrv/i;
+
+const isTransient = (error) =>
+  TRANSIENT.test(error?.name || '') || TRANSIENT.test(error?.message || '');
+
+process.on('unhandledRejection', (reason) => {
+  if (isTransient(reason)) {
+    logger.warn('Transient network fault in a background task — staying up', {
+      error: reason?.message,
+    });
+    return;
+  }
+  logger.error('Unhandled promise rejection', {
+    error: reason?.message,
+    stack: reason?.stack,
+  });
+});
+
+process.on('uncaughtException', (error) => {
+  if (isTransient(error)) {
+    logger.warn('Transient network fault — staying up', { error: error.message });
+    return;
+  }
+  // A genuine programming fault leaves the process in an unknown state. Log it
+  // and go down so the supervisor restarts on clean state.
+  logger.error('Uncaught exception — shutting down', {
+    error: error.message,
+    stack: error.stack,
+  });
+  server.close(() => process.exit(1));
+  // Don't hang forever if connections refuse to drain.
+  setTimeout(() => process.exit(1), 10000).unref();
 });
 
 /* --------------------------------- Listen ----------------------------------- */

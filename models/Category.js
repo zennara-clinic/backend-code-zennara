@@ -12,6 +12,22 @@ const categorySchema = new mongoose.Schema({
     unique: true,
     lowercase: true
   },
+  /**
+   * Level 1 of the taxonomy this category sits under, by ServiceType.name
+   * (e.g. "Skin"). Stored as the name rather than an id so a category read
+   * needs no populate — the same trade-off Doctor.availableCentres makes.
+   */
+  type: {
+    type: String,
+    default: null,
+    trim: true,
+    index: true
+  },
+  /** Order within its type, in the app and the panel. */
+  displayOrder: {
+    type: Number,
+    default: 0
+  },
   description: {
     type: String,
     default: ''

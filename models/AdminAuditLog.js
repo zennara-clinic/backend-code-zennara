@@ -46,10 +46,60 @@ const AdminAuditLogSchema = new mongoose.Schema({
       'ADMIN_ROLE_CHANGED',
       'ADMIN_DEACTIVATED',
       
+      // Booking / front desk
+      'BOOKING_CONFIRMED',
+      'BOOKING_CHECKED_IN',
+      'BOOKING_CHECKED_OUT',
+      'BOOKING_CANCELLED',
+      'BOOKING_NO_SHOW',
+      'BOOKING_CREATED',
+      'BOOKING_RESCHEDULED',
+
+      // Catalogue (services, categories, packages, coupons)
+      'CATALOGUE_CREATED',
+      'CATALOGUE_UPDATED',
+      'CATALOGUE_DELETED',
+      'CATALOGUE_STATUS_CHANGED',
+
+      // Doctors
+      'DOCTOR_CREATED',
+      'DOCTOR_UPDATED',
+      'DOCTOR_DELETED',
+      'DOCTOR_STATUS_CHANGED',
+      'DOCTOR_FEE_REQUESTED',
+      'DOCTOR_FEE_APPROVED',
+      'DOCTOR_FEE_REJECTED',
+
+      // Branches
+      'BRANCH_CREATED',
+      'BRANCH_UPDATED',
+      'BRANCH_DELETED',
+      'BRANCH_STATUS_CHANGED',
+
+      // Inventory & vendors
+      'INVENTORY_CREATED',
+      'INVENTORY_UPDATED',
+      'INVENTORY_DELETED',
+      'VENDOR_CREATED',
+      'VENDOR_UPDATED',
+      'VENDOR_DELETED',
+
+      // Reviews & support
+      'REVIEW_APPROVED',
+      'REVIEW_REJECTED',
+      'REVIEW_DELETED',
+      'SUPPORT_UPDATED',
+
+      // Clinical
+      'PRESCRIPTION_SAVED',
+      'CONSENT_SIGNED',
+      'FORM_STATUS_CHANGED',
+
       // Settings
       'SETTINGS_UPDATED',
       'CONFIG_CHANGED',
-      
+      'APP_CUSTOMIZATION_UPDATED',
+
       // Security
       'UNAUTHORIZED_ACCESS_ATTEMPT',
       'PERMISSION_DENIED',
@@ -59,7 +109,11 @@ const AdminAuditLogSchema = new mongoose.Schema({
   resource: {
     type: String,
     required: true,
-    enum: ['AUTH', 'PRODUCT', 'ORDER', 'USER', 'ADMIN', 'SETTINGS', 'SECURITY']
+    enum: [
+      'AUTH', 'PRODUCT', 'ORDER', 'USER', 'ADMIN', 'SETTINGS', 'SECURITY',
+      'BOOKING', 'CATALOGUE', 'DOCTOR', 'BRANCH', 'INVENTORY', 'VENDOR',
+      'REVIEW', 'SUPPORT', 'CLINICAL',
+    ]
   },
   resourceId: {
     type: String, // ID of affected resource (order ID, product ID, etc.)

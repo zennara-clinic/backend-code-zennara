@@ -4,8 +4,10 @@ const {
   createSupportMessage,
   getUserSupportMessages,
   getSupportMessage,
+  getAllSupportMessages,
+  updateSupportMessageStatus,
 } = require('../controllers/supportController');
-const { protect } = require('../middleware/auth');
+const { protect, protectAdmin, auditLog } = require('../middleware/auth');
 
 // Public/Private route - works for both logged in and guest users
 // If token is present, it will be associated with user, otherwise treated as guest
@@ -18,12 +20,19 @@ router.post('/', (req, res, next) => {
   next();
 }, createSupportMessage);
 
+// Admin routes — declared before /:id so "admin" is never read as a message id.
+router.get('/admin/all', protectAdmin, getAllSupportMessages);
+router.patch(
+  '/admin/:id/status',
+  protectAdmin,
+  auditLog('SUPPORT_UPDATED', 'SUPPORT'),
+  updateSupportMessageStatus,
+);
+// Kept for older callers that used PUT.
+router.put('/admin/:id/status', protectAdmin, updateSupportMessageStatus);
+
 // User routes (protected)
 router.get('/my-messages', protect, getUserSupportMessages);
 router.get('/:id', protect, getSupportMessage);
-
-// TODO: Admin routes will be added when admin authentication is implemented
-// router.get('/admin/all', protect, adminProtect, getAllSupportMessages);
-// router.put('/admin/:id/status', protect, adminProtect, updateSupportMessageStatus);
 
 module.exports = router;

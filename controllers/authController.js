@@ -1,20 +1,151 @@
 const User = require('../models/User');
 const Token = require('../models/Token');
+const SignupVerification = require('../models/SignupVerification');
 const SecurityLog = require('../models/SecurityLog');
 const Booking = require('../models/Booking');
 const ProductOrder = require('../models/ProductOrder');
 const PackageAssignment = require('../models/PackageAssignment');
+const { ageFromDateOfBirth } = require('../utils/dateOfBirth');
 const jwt = require('jsonwebtoken');
-const { sendOTPEmail, sendWelcomeEmail } = require('../utils/emailService');
+const { sendOTPEmail, sendWelcomeEmail, sendDataExportEmail } = require('../utils/emailService');
 const { uploadToCloudinary, deleteFromCloudinary } = require('../middleware/upload');
 const whatsappService = require('../services/whatsappService');
+const zenotiSync = require('../services/zenotiSyncService');
 const logger = require('../utils/logger');
 const { filterFields, validateOwnership } = require('../middleware/securityMiddleware');
+
+const serializeUser = (user) => ({
+  id: user._id,
+  email: user.email,
+  fullName: user.fullName,
+  phone: user.phone,
+  location: user.location,
+  dateOfBirth: user.dateOfBirth,
+  gender: user.gender,
+  memberType: user.memberType || 'Regular Member',
+  zenMembershipStartDate: user.zenMembershipStartDate || null,
+  zenMembershipExpiryDate: user.zenMembershipExpiryDate || null,
+  zenMembershipAutoRenew: Boolean(user.zenMembershipAutoRenew),
+  medicalHistory: user.medicalHistory || '',
+  drugAllergies: user.drugAllergies || '',
+  dietaryPreferences: user.dietaryPreferences || [],
+  smoking: user.smoking || '',
+  drinking: user.drinking || '',
+  additionalInfo: user.additionalInfo || '',
+  profilePicture: user.profilePicture?.url || null,
+  isVerified: Boolean(user.isVerified),
+  // Zenoti linkage — lets the app know this customer's history lives in the CRM
+  // and can be fetched via /api/zenoti/*.
+  source: user.source || 'app',
+  zenotiLinked: Boolean(user.zenotiGuestId),
+  createdAt: user.createdAt,
+});
+
+// @desc    Send an OTP before creating a new account
+// @route   POST /api/auth/signup/send-otp
+// @access  Public
+exports.sendSignupOTP = async (req, res) => {
+  try {
+    const { phone } = req.body;
+    const existingUser = await User.exists({ phone });
+    if (existingUser) {
+      return res.status(409).json({
+        success: false,
+        message: 'Phone number already registered',
+      });
+    }
+
+    let verification = await SignupVerification.findOne({ phone });
+    if (
+      verification?.updatedAt &&
+      Date.now() - verification.updatedAt.getTime() < 30 * 1000
+    ) {
+      return res.status(429).json({
+        success: false,
+        message: 'Please wait 30 seconds before requesting another OTP.',
+      });
+    }
+
+    if (!verification) verification = new SignupVerification({ phone });
+    const otp = Math.floor(1000 + Math.random() * 9000).toString();
+    verification.setOTP(otp);
+    await verification.save();
+
+    const whatsappResult = await whatsappService.sendOTP(phone, otp, 5);
+    if (!whatsappResult.success) {
+      await SignupVerification.deleteOne({ _id: verification._id }).catch(() => {});
+      logger.error('Signup OTP WhatsApp delivery failed', {
+        phone,
+        error: whatsappResult.error,
+      });
+      return res.status(502).json({
+        success: false,
+        message: 'Could not send the OTP on WhatsApp. Please try again.',
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: 'OTP sent successfully on WhatsApp',
+    });
+  } catch (error) {
+    logger.error('Signup OTP request failed', { error: error.message });
+    return res.status(500).json({
+      success: false,
+      message: 'Could not send the OTP. Please try again.',
+    });
+  }
+};
+
+// @desc    Verify a new account's phone and issue a short-lived signup proof
+// @route   POST /api/auth/signup/verify-otp
+// @access  Public
+exports.verifySignupOTP = async (req, res) => {
+  try {
+    const { phone, otp } = req.body;
+    const verification = await SignupVerification.findOne({ phone });
+    if (!verification) {
+      return res.status(400).json({
+        success: false,
+        message: 'No OTP found. Please request a new one.',
+      });
+    }
+
+    const result = verification.verifyOTP(otp);
+    await verification.save();
+    if (!result.success) {
+      return res.status(400).json({ success: false, message: result.message });
+    }
+
+    const verificationToken = jwt.sign(
+      {
+        purpose: 'signup',
+        phone,
+        signupVerificationId: verification._id.toString(),
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: '20m' }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: 'Phone number verified',
+      verificationToken,
+    });
+  } catch (error) {
+    logger.error('Signup OTP verification failed', { error: error.message });
+    return res.status(500).json({
+      success: false,
+      message: 'Could not verify the OTP. Please try again.',
+    });
+  }
+};
 
 // @desc    Register new user
 // @route   POST /api/auth/signup
 // @access  Public
 exports.signup = async (req, res) => {
+  let consumedVerificationId = null;
   try {
     const { 
       email, 
@@ -24,7 +155,8 @@ exports.signup = async (req, res) => {
       dateOfBirth, 
       gender,
       privacyPolicyAccepted,
-      termsAccepted 
+      termsAccepted,
+      verificationToken,
     } = req.body;
 
     // Check if all required fields are present
@@ -43,6 +175,44 @@ exports.signup = async (req, res) => {
       });
     }
 
+    const age = ageFromDateOfBirth(dateOfBirth);
+    if (age === null || age > 120) {
+      return res.status(400).json({
+        success: false,
+        code: 'INVALID_DATE_OF_BIRTH',
+        message: 'Please enter a valid date of birth.'
+      });
+    }
+    if (age < 18) {
+      return res.status(400).json({
+        success: false,
+        code: 'AGE_RESTRICTION',
+        message: 'You must be at least 18 years old to create an account.'
+      });
+    }
+
+    let verification;
+    try {
+      const proof = jwt.verify(verificationToken || '', process.env.JWT_SECRET);
+      if (proof.purpose !== 'signup' || proof.phone !== phone || !proof.signupVerificationId) {
+        throw new Error('Verification proof does not match this phone number');
+      }
+      verification = await SignupVerification.findOne({
+        _id: proof.signupVerificationId,
+        phone,
+        verifiedAt: { $ne: null },
+        usedAt: null,
+        expiresAt: { $gt: new Date() },
+      });
+      if (!verification) throw new Error('Verification proof is no longer valid');
+    } catch {
+      return res.status(400).json({
+        success: false,
+        code: 'PHONE_VERIFICATION_REQUIRED',
+        message: 'Please verify your phone number before creating an account.',
+      });
+    }
+
     // Check if user already exists
     const existingUser = await User.findOne({ 
       $or: [{ email }, { phone }] 
@@ -57,6 +227,22 @@ exports.signup = async (req, res) => {
       });
     }
 
+    // Consume the proof atomically. Two simultaneous requests using the same
+    // verified phone must never create two accounts.
+    const consumedVerification = await SignupVerification.findOneAndUpdate(
+      { _id: verification._id, usedAt: null },
+      { $set: { usedAt: new Date() } },
+      { new: true }
+    );
+    if (!consumedVerification) {
+      return res.status(400).json({
+        success: false,
+        code: 'PHONE_VERIFICATION_REQUIRED',
+        message: 'This phone verification has already been used. Please verify again.',
+      });
+    }
+    consumedVerificationId = consumedVerification._id;
+
     // Get user's IP address
     const ipAddress = req.ip || req.connection.remoteAddress || req.headers['x-forwarded-for'];
 
@@ -69,15 +255,16 @@ exports.signup = async (req, res) => {
       dateOfBirth,
       gender,
       memberType: 'Regular Member', // All new users start as Regular Members
+      phoneVerified: true,
       privacyPolicyConsent: {
         accepted: true,
-        version: '1.0',
+        version: '2026-08-09',
         acceptedAt: new Date(),
         ipAddress: ipAddress
       },
       termsOfServiceConsent: {
         accepted: true,
-        version: '1.0',
+        version: '2026-08-09',
         acceptedAt: new Date(),
         ipAddress: ipAddress
       },
@@ -106,6 +293,12 @@ exports.signup = async (req, res) => {
       }
     });
   } catch (error) {
+    if (consumedVerificationId) {
+      await SignupVerification.updateOne(
+        { _id: consumedVerificationId },
+        { $set: { usedAt: null } }
+      ).catch(() => {});
+    }
     console.error('❌ Registration failed:', error);
     console.error('❌ Error name:', error.name);
     console.error('❌ Error message:', error.message);
@@ -210,12 +403,28 @@ exports.login = async (req, res) => {
     }
 
     // Find user by phone
-    const user = await User.findOne({ phone: phone });
+    let user = await User.findOne({ phone: phone });
+
+    // Not a local account yet — but they may already be a Zenoti (clinic) guest.
+    // Existing Zennara customers live in Zenoti, so if this number belongs to a
+    // Zenoti guest we mirror them into a local account on the fly and let them
+    // sign in without registering again.
+    if (!user) {
+      user = await zenotiSync.findOrProvisionByPhone(phone);
+    }
 
     if (!user) {
       return res.status(404).json({
         success: false,
         message: 'No account found with this phone number. Please sign up first.'
+      });
+    }
+
+    if (!user.isActive) {
+      return res.status(403).json({
+        success: false,
+        code: 'ACCOUNT_DEACTIVATED',
+        message: 'Your account has been deactivated. Please contact support.'
       });
     }
 
@@ -258,51 +467,60 @@ exports.login = async (req, res) => {
       });
     }
 
-    // Send OTP via email and WhatsApp
-    try {
-      // Send OTP via email
-      await sendOTPEmail(user.email, user.fullName, otp, user.location);
-      logger.info('OTP email sent', { email: user.email });
-      
-      // Send OTP via WhatsApp (non-blocking)
-      if (user.phone) {
-        try {
-          const whatsappResult = await whatsappService.sendOTP(user.phone, otp, 5);
-          
-          if (whatsappResult.success) {
-            logger.info('OTP WhatsApp sent', { phone: user.phone, messageSid: whatsappResult.messageSid });
-          } else {
-            logger.warn('WhatsApp OTP failed (non-blocking)', { error: whatsappResult.error, code: whatsappResult.code });
-            console.error('   Phone number:', user.phone);
-          }
-        } catch (whatsappError) {
-          console.error('WhatsApp OTP exception (non-blocking):', whatsappError.message);
-          // Don't fail the login if WhatsApp fails - email OTP is primary
-        }
-      } else {
-        console.log('No phone number available for WhatsApp OTP');
+    // Deliver the OTP. App accounts get it by email and WhatsApp; Zenoti guests
+    // with no real email on file get it by WhatsApp only (their placeholder
+    // address would just bounce). Login succeeds as long as at least one channel
+    // accepts the message.
+    const hasRealEmail = Boolean(user.email) && !user.email.endsWith('@guest.zennara.in');
+    let emailDelivered = false;
+    let whatsappDelivered = false;
+
+    if (hasRealEmail) {
+      try {
+        await sendOTPEmail(user.email, user.fullName, otp, user.location);
+        emailDelivered = true;
+        logger.info('OTP email sent', { email: user.email });
+      } catch (emailError) {
+        console.error('Email sending error:', emailError.message);
       }
-      
-      res.status(200).json({
-        success: true,
-        message: 'OTP sent successfully to your email and WhatsApp',
-        data: {
-          email: user.email,
-          phone: user.phone ? `******${user.phone.slice(-4)}` : null,
-          expiresIn: '5 minutes'
+    }
+
+    if (user.phone) {
+      try {
+        const whatsappResult = await whatsappService.sendOTP(user.phone, otp, 5);
+        if (whatsappResult.success) {
+          whatsappDelivered = true;
+          logger.info('OTP WhatsApp sent', { phone: user.phone, messageSid: whatsappResult.messageSid });
+        } else {
+          logger.warn('WhatsApp OTP failed', { error: whatsappResult.error, code: whatsappResult.code });
         }
-      });
-    } catch (emailError) {
-      console.error('Email sending error:', emailError);
-      // Clear OTP if email fails
+      } catch (whatsappError) {
+        console.error('WhatsApp OTP exception:', whatsappError.message);
+      }
+    }
+
+    // Nothing got through — don't leave a live OTP the user can never receive.
+    if (!emailDelivered && !whatsappDelivered) {
       user.clearOTP();
       await user.save({ validateModifiedOnly: true });
-      
-      res.status(500).json({
+      return res.status(500).json({
         success: false,
         message: 'Failed to send OTP. Please try again.'
       });
     }
+
+    const channels = [emailDelivered && 'email', whatsappDelivered && 'WhatsApp']
+      .filter(Boolean)
+      .join(' and ');
+    return res.status(200).json({
+      success: true,
+      message: `OTP sent successfully to your ${channels}`,
+      data: {
+        email: hasRealEmail ? user.email : null,
+        phone: user.phone ? `******${user.phone.slice(-4)}` : null,
+        expiresIn: '5 minutes'
+      }
+    });
   } catch (error) {
     console.error('❌ Login failed');
     res.status(500).json({
@@ -337,6 +555,14 @@ exports.verifyOTP = async (req, res) => {
       });
     }
 
+    if (!user.isActive) {
+      return res.status(403).json({
+        success: false,
+        code: 'ACCOUNT_DEACTIVATED',
+        message: 'Your account has been deactivated. Please contact support.'
+      });
+    }
+
     // Verify OTP (now returns detailed result)
     const verificationResult = user.verifyOTP(otp);
 
@@ -360,7 +586,7 @@ exports.verifyOTP = async (req, res) => {
 
     // Update user
     user.isVerified = true;
-    user.emailVerified = true; // Mark email as verified
+    user.phoneVerified = true;
     user.lastLogin = Date.now();
     user.appOpenCount = (user.appOpenCount || 0) + 1; // Increment app open count
     user.clearOTP();
@@ -389,8 +615,10 @@ exports.verifyOTP = async (req, res) => {
       { expiresIn: process.env.JWT_EXPIRE || '7d' }
     );
 
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7);
+    // Keep the persisted expiry and the mobile cache aligned with the JWT's
+    // actual exp claim, even when JWT_EXPIRE is changed from its 7-day default.
+    const decodedToken = jwt.decode(token);
+    const expiresAt = new Date(decodedToken.exp * 1000);
 
     // Save token to database
     const tokenDoc = new Token({
@@ -415,22 +643,20 @@ exports.verifyOTP = async (req, res) => {
 
     logger.info('User logged in successfully', { userId: user._id });
 
+    // For Zenoti-linked guests, freshen the local mirror from the CRM in the
+    // background so profile changes made at the clinic show up after login.
+    // Never block the login response on it.
+    if (user.zenotiGuestId) {
+      zenotiSync.syncLinkedUser(user).catch(() => {});
+    }
+
     res.status(200).json({
       success: true,
       message: 'Login successful',
       data: {
         token,
         expiresAt,
-        user: {
-          id: user._id,
-          email: user.email,
-          fullName: user.fullName,
-          phone: user.phone,
-          location: user.location,
-          dateOfBirth: user.dateOfBirth,
-          gender: user.gender,
-          isVerified: user.isVerified
-        }
+        user: serializeUser(user)
       }
     });
   } catch (error) {
@@ -464,6 +690,14 @@ exports.resendOTP = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'User not found'
+      });
+    }
+
+    if (!user.isActive) {
+      return res.status(403).json({
+        success: false,
+        code: 'ACCOUNT_DEACTIVATED',
+        message: 'Your account has been deactivated. Please contact support.'
       });
     }
 
@@ -611,28 +845,7 @@ exports.getMe = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: {
-        id: user._id,
-        email: user.email,
-        fullName: user.fullName,
-        phone: user.phone,
-        location: user.location,
-        dateOfBirth: user.dateOfBirth,
-        gender: user.gender,
-        memberType: user.memberType,
-        zenMembershipStartDate: user.zenMembershipStartDate,
-        zenMembershipExpiryDate: user.zenMembershipExpiryDate,
-        zenMembershipAutoRenew: user.zenMembershipAutoRenew,
-        medicalHistory: user.medicalHistory || '',
-        drugAllergies: user.drugAllergies || '',
-        dietaryPreferences: user.dietaryPreferences || [],
-        smoking: user.smoking || '',
-        drinking: user.drinking || '',
-        additionalInfo: user.additionalInfo || '',
-        profilePicture: user.profilePicture?.url || null,
-        isVerified: user.isVerified,
-        createdAt: user.createdAt
-      }
+      data: serializeUser(user)
     });
   } catch (error) {
     console.error('❌ Get profile failed:', error);
@@ -693,8 +906,21 @@ exports.updateProfile = async (req, res) => {
       });
     }
 
+    if (updateData.phone && updateData.phone !== existingUser.phone) {
+      const phoneOwner = await User.exists({
+        phone: updateData.phone,
+        _id: { $ne: existingUser._id },
+      });
+      if (phoneOwner) {
+        return res.status(409).json({
+          success: false,
+          message: 'Phone number already registered',
+        });
+      }
+    }
+
     // Only validate gender if it's being updated to a non-empty value
-    const validGenders = ['Male', 'Female', 'Other', 'Prefer not to say'];
+    const validGenders = ['Male', 'Female', 'Other'];
     if (updateData.gender && updateData.gender.length > 0 && !validGenders.includes(updateData.gender)) {
       console.log('⚠️  Invalid gender value:', updateData.gender);
       return res.status(400).json({
@@ -711,10 +937,10 @@ exports.updateProfile = async (req, res) => {
       existingUser.markModified(key);
     });
 
-    // Save with validation completely disabled to prevent any blocking
-    const savedUser = await existingUser.save({ 
-      validateBeforeSave: false
-    });
+    // Validate the fields this request changed. Disabling validation here let
+    // mobile profile writes put values into MongoDB that the admin/user model
+    // could not subsequently read or edit consistently.
+    await existingUser.save({ validateModifiedOnly: true });
 
     logger.info('User profile updated', { userId: req.user._id });
 
@@ -736,22 +962,7 @@ exports.updateProfile = async (req, res) => {
     res.status(200).json({
       success: true,
       message: 'Profile updated successfully',
-      data: {
-        id: updatedUser._id,
-        email: updatedUser.email,
-        fullName: updatedUser.fullName,
-        phone: updatedUser.phone,
-        location: updatedUser.location,
-        dateOfBirth: updatedUser.dateOfBirth,
-        gender: updatedUser.gender,
-        medicalHistory: updatedUser.medicalHistory || '',
-        drugAllergies: updatedUser.drugAllergies || '',
-        dietaryPreferences: updatedUser.dietaryPreferences || [],
-        smoking: updatedUser.smoking || '',
-        drinking: updatedUser.drinking || '',
-        additionalInfo: updatedUser.additionalInfo || '',
-        profilePicture: updatedUser.profilePicture?.url || null
-      }
+      data: serializeUser(updatedUser)
     });
   } catch (error) {
     console.error('❌ Update profile failed:', error);
@@ -1224,29 +1435,24 @@ exports.deleteAccount = async (req, res) => {
 // @desc    Export all user data (DPDPA 2023 - Right to Data Portability)
 // @route   GET /api/auth/export-data
 // @access  Private
-exports.exportUserData = async (req, res) => {
-  try {
-    const userId = req.user._id;
-    
-    console.log(`📦 Data export requested by user: ${userId}`);
-    
+/**
+ * Assemble a user's full data export (the DPDPA data-access payload).
+ * Shared by the download endpoint and the "email me my data" endpoint so the
+ * two never drift apart. Returns `null` if the user no longer exists.
+ */
+const buildUserExport = async (userId) => {
     // Gather all user-related data
     const user = await User.findById(userId)
       .select('-otp -otpExpiry -__v')
       .lean();
-    
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
-    }
+
+    if (!user) return null;
 
     // Get all related data
     const Address = require('../models/Address');
     const PreConsultForm = require('../models/PreConsultForm');
     const Review = require('../models/Review');
-    
+
     const [addresses, bookings, orders, packageAssignments, healthForms, securityLogs, reviews] = await Promise.all([
       Address.find({ userId }).lean(),
       Booking.find({ userId }).lean(),
@@ -1370,19 +1576,63 @@ exports.exportUserData = async (req, res) => {
       }
     };
 
-    console.log('✅ Data export compiled successfully');
+    return exportData;
+};
 
+exports.exportUserData = async (req, res) => {
+  try {
+    console.log(`📦 Data export requested by user: ${req.user._id}`);
+    const exportData = await buildUserExport(req.user._id);
+    if (!exportData) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+    console.log('✅ Data export compiled successfully');
     res.status(200).json({
       success: true,
       message: 'Your data has been exported successfully',
       data: exportData
     });
-
   } catch (error) {
     console.error('❌ Data export failed:', error);
     res.status(500).json({
       success: false,
       message: 'Failed to export data. Please try again or contact support.'
+    });
+  }
+};
+
+/**
+ * Email the signed-in user their own data export, to the address on file.
+ * The data never leaves Zennara except into the user's own inbox.
+ */
+exports.emailUserData = async (req, res) => {
+  try {
+    const exportData = await buildUserExport(req.user._id);
+    if (!exportData) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    const email = exportData.personalInformation?.email;
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: 'No email address is on your account. Add one in Personal Information first.'
+      });
+    }
+
+    await sendDataExportEmail(email, exportData.personalInformation?.fullName, exportData);
+    console.log(`📧 Data export emailed to ${email}`);
+
+    res.status(200).json({
+      success: true,
+      message: `Your data has been emailed to ${email}.`,
+      data: { email }
+    });
+  } catch (error) {
+    console.error('❌ Data export email failed:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Could not email your data right now. Please try again or contact support.'
     });
   }
 };

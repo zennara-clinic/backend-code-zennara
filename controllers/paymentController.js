@@ -1,29 +1,213 @@
 const Payment = require('../models/Payment');
+const mongoose = require('mongoose');
 const ProductOrder = require('../models/ProductOrder');
 const Product = require('../models/Product');
 const Address = require('../models/Address');
 const User = require('../models/User');
 const razorpayService = require('../services/razorpayService');
 const NotificationHelper = require('../utils/notificationHelper');
+const { validateBranchBooking } = require('../utils/branchSchedule');
+const { computeOrderPricing } = require('../utils/orderPricing');
+
+class PaymentFlowError extends Error {
+  constructor(status, message, code = 'PAYMENT_VERIFICATION_FAILED') {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
+const paymentErrorResponse = (res, error, fallbackMessage) => {
+  const status = error instanceof PaymentFlowError ? error.status : 500;
+  return res.status(status).json({
+    success: false,
+    code: error.code || 'PAYMENT_VERIFICATION_FAILED',
+    message: error instanceof PaymentFlowError ? error.message : fallbackMessage,
+  });
+};
+
+const expectedPaise = (payment) => Math.round(Number(payment.amount) * 100);
+
+/**
+ * Bind a Checkout response to this authenticated user's immutable Payment row,
+ * verify its signature using our order id, then confirm the gateway's own
+ * amount/currency/order/status before anything is fulfilled.
+ */
+async function verifyOwnedCapturedPayment(req, orderType) {
+  const webhookPayment = req.verifiedWebhookPayment;
+  const {
+    razorpay_order_id: bodyOrderId,
+    razorpay_payment_id: bodyPaymentId,
+    razorpay_signature: signature,
+  } = req.body || {};
+  const submittedOrderId = webhookPayment?.order_id || bodyOrderId;
+  const paymentId = webhookPayment?.id || bodyPaymentId;
+
+  if (!submittedOrderId || !paymentId || (!webhookPayment && !signature)) {
+    throw new PaymentFlowError(400, 'Complete Razorpay payment details are required');
+  }
+
+  const payment = await Payment.findOne({
+    razorpayOrderId: submittedOrderId,
+    userId: req.user._id,
+    orderType,
+  });
+  if (!payment) {
+    throw new PaymentFlowError(404, 'Payment record not found');
+  }
+  if (payment.status === 'refunded'
+      || ['processing', 'pending', 'processed'].includes(payment.metadata?.autoRefundStatus)) {
+    throw new PaymentFlowError(409, 'This payment is being refunded and cannot be fulfilled');
+  }
+
+  if (payment.razorpayPaymentId
+      && payment.razorpayPaymentId !== paymentId
+      && payment.status !== 'failed') {
+    throw new PaymentFlowError(409, 'This order is already linked to another payment');
+  }
+
+  let gatewayPayment;
+  if (webhookPayment) {
+    gatewayPayment = webhookPayment;
+  } else {
+    const signatureValid = razorpayService.verifySignature(
+      payment.razorpayOrderId,
+      paymentId,
+      signature
+    );
+    if (!signatureValid) {
+      throw new PaymentFlowError(400, 'Invalid payment signature');
+    }
+
+    try {
+      gatewayPayment = await razorpayService.fetchPayment(paymentId);
+      // Orders are configured for auto-capture. If the callback wins the race,
+      // capture the authorised payment now so fulfilment never runs on a mere
+      // authorisation. A concurrent auto-capture is harmless: refetch on error.
+      if (gatewayPayment.status === 'authorized') {
+        try {
+          gatewayPayment = await razorpayService.capturePayment(
+            paymentId,
+            payment.amount,
+            payment.currency
+          );
+        } catch (_) {
+          gatewayPayment = await razorpayService.fetchPayment(paymentId);
+        }
+      }
+    } catch (error) {
+      throw new PaymentFlowError(502, 'Could not confirm the payment with Razorpay. Please retry.');
+    }
+  }
+
+  if (gatewayPayment.order_id !== payment.razorpayOrderId) {
+    throw new PaymentFlowError(400, 'Razorpay order does not match this payment');
+  }
+  if (Number(gatewayPayment.amount) !== expectedPaise(payment)) {
+    throw new PaymentFlowError(409, 'Razorpay payment amount does not match the order');
+  }
+  if (String(gatewayPayment.currency || '').toUpperCase()
+      !== String(payment.currency || '').toUpperCase()) {
+    throw new PaymentFlowError(409, 'Razorpay payment currency does not match the order');
+  }
+  if (gatewayPayment.status !== 'captured') {
+    throw new PaymentFlowError(
+      409,
+      'Payment is not captured yet. Please retry in a moment.',
+      'PAYMENT_NOT_CAPTURED'
+    );
+  }
+
+  payment.razorpayPaymentId = paymentId;
+  if (signature) payment.razorpaySignature = signature;
+  payment.status = 'captured';
+  payment.method = gatewayPayment.method || payment.method;
+  await payment.save();
+
+  return payment;
+}
+
+const paymentMatchesEntity = (payment, entity) => (
+  entity
+  && entity.order_id === payment.razorpayOrderId
+  && Number(entity.amount) === expectedPaise(payment)
+  && String(entity.currency || '').toUpperCase() === String(payment.currency || '').toUpperCase()
+);
+
+async function markFulfilmentFailure(payment, kind, error) {
+  if (!payment) return;
+  payment.metadata = {
+    ...(payment.metadata || {}),
+    [`${kind}CreationFailed`]: true,
+    [`${kind}CreationError`]: String(error?.message || error || 'Unknown fulfilment error'),
+    failedAt: new Date().toISOString(),
+  };
+  payment.markModified('metadata');
+  await payment.save();
+}
+
+/** Refund a captured payment when its order/booking could not be created. */
+async function refundUnfulfilledPayment(payment, reason) {
+  if (!payment?.razorpayPaymentId || payment.status !== 'captured') return null;
+
+  const lock = await Payment.findOneAndUpdate(
+    {
+      _id: payment._id,
+      status: 'captured',
+      'metadata.autoRefundStatus': { $nin: ['processing', 'processed'] },
+    },
+    {
+      $set: {
+        'metadata.autoRefundStatus': 'processing',
+        'metadata.autoRefundReason': String(reason || 'Fulfilment failed'),
+        'metadata.autoRefundStartedAt': new Date().toISOString(),
+      },
+    },
+    { new: true }
+  );
+  if (!lock) return null;
+
+  let refund;
+  try {
+    refund = await razorpayService.refundPayment(lock.razorpayPaymentId);
+    const processed = refund.status === 'processed';
+    await Payment.findByIdAndUpdate(lock._id, {
+      $set: {
+        status: processed ? 'refunded' : 'captured',
+        'metadata.autoRefundStatus': processed ? 'processed' : 'pending',
+        'metadata.autoRefundId': refund.id,
+        'metadata.autoRefundUpdatedAt': new Date().toISOString(),
+      },
+    });
+    payment.status = processed ? 'refunded' : 'captured';
+    return refund;
+  } catch (error) {
+    // If Razorpay returned an ID, keep this locked for webhook reconciliation.
+    await Payment.findByIdAndUpdate(lock._id, {
+      $set: refund?.id
+        ? {
+            'metadata.autoRefundStatus': 'pending',
+            'metadata.autoRefundId': refund.id,
+            'metadata.autoRefundError': error.message,
+          }
+        : {
+            'metadata.autoRefundStatus': 'failed',
+            'metadata.autoRefundError': error.message,
+          },
+    }).catch(() => {});
+    throw error;
+  }
+}
 
 // @desc    Create Razorpay order for product purchase
 // @route   POST /api/payments/product/create
 // @access  Private
 exports.createProductOrderPayment = async (req, res) => {
   try {
-    const { amount, orderData } = req.body;
-    
+    const { orderData } = req.body;
+
     console.log('💳 Creating product payment order for user:', req.user._id);
-    console.log('💰 Amount:', amount);
-    
-    // Validate amount
-    if (!amount || amount <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid payment amount'
-      });
-    }
-    
+
     // Validate order data
     if (!orderData || !orderData.items || orderData.items.length === 0) {
       return res.status(400).json({
@@ -31,15 +215,43 @@ exports.createProductOrderPayment = async (req, res) => {
         message: 'Order data is required'
       });
     }
-    
+    if (orderData.items.length > 50
+        || orderData.items.some((item) => !mongoose.isValidObjectId(item.productId)
+          || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 100)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Cart contains an invalid item quantity'
+      });
+    }
+    if (!mongoose.isValidObjectId(orderData.addressId)
+        || !await Address.exists({ _id: orderData.addressId, userId: req.user._id })) {
+      return res.status(400).json({ success: false, message: 'Select a valid delivery address' });
+    }
+
+    // Authoritative charge amount — computed from the database, never from the
+    // client. The app used to send its own `amount`, so a tampered client could
+    // pay ₹1 for a full-value cart. That field is now ignored entirely.
+    const priced = await computeOrderPricing({
+      items: orderData.items,
+      couponCode: orderData.coupon?.code,
+    });
+    if (!priced.ok) {
+      return res.status(priced.status || 400).json({ success: false, message: priced.message });
+    }
+    const chargeAmount = priced.pricing.total;
+    if (!Number.isFinite(chargeAmount) || chargeAmount <= 0) {
+      return res.status(400).json({ success: false, message: 'Order total must be greater than zero' });
+    }
+    console.log('💰 Server-computed amount:', chargeAmount);
+
     // Generate receipt (max 40 chars for Razorpay)
     const timestamp = Date.now().toString().slice(-10);
     const userIdSuffix = req.user._id.toString().slice(-10);
     const receipt = `PROD_${timestamp}_${userIdSuffix}`;
-    
+
     // Create Razorpay order
     const razorpayOrder = await razorpayService.createOrder(
-      amount,
+      chargeAmount,
       'INR',
       receipt,
       {
@@ -48,18 +260,37 @@ exports.createProductOrderPayment = async (req, res) => {
         itemCount: orderData.items.length
       }
     );
-    
+
     // Create payment record in database
     const payment = await Payment.create({
       userId: req.user._id,
       orderType: 'ProductOrder',
       razorpayOrderId: razorpayOrder.id,
-      amount: amount,
+      amount: chargeAmount,
       currency: 'INR',
       status: 'created',
       metadata: {
         receipt: receipt,
-        orderData: orderData
+        // Keep only the immutable fulfilment inputs. The verify request is not
+        // allowed to replace these after the customer has paid.
+        orderData: {
+          items: orderData.items.map(({ productId, quantity }) => ({ productId, quantity })),
+          addressId: orderData.addressId,
+          coupon: priced.coupon || undefined,
+          notes: orderData.notes || '',
+        },
+        pricingSnapshot: {
+          pricing: priced.pricing,
+          coupon: priced.coupon,
+          items: priced.items.map(({ product, quantity }) => ({
+            productId: product._id,
+            productName: product.name,
+            productImage: product.image,
+            quantity,
+            price: product.price,
+            subtotal: product.price * quantity,
+          })),
+        },
       }
     });
     
@@ -79,8 +310,7 @@ exports.createProductOrderPayment = async (req, res) => {
     console.error('❌ Create product payment error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to create payment order',
-      error: error.message
+      message: 'Failed to create payment order'
     });
   }
 };
@@ -89,48 +319,45 @@ exports.createProductOrderPayment = async (req, res) => {
 // @route   POST /api/payments/product/verify
 // @access  Private
 exports.verifyProductPayment = async (req, res) => {
+  let payment;
   try {
-    const {
-      razorpay_order_id,
-      razorpay_payment_id,
-      razorpay_signature,
-      orderData
-    } = req.body;
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
     
     console.log('🔍 Verifying product payment:', razorpay_payment_id);
     
-    // Verify signature
-    const isValid = razorpayService.verifySignature(
-      razorpay_order_id,
-      razorpay_payment_id,
-      razorpay_signature
-    );
-    
-    if (!isValid) {
-      console.error('❌ Invalid payment signature');
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid payment signature'
+    payment = await verifyOwnedCapturedPayment(req, 'ProductOrder');
+    const orderData = payment.metadata?.orderData;
+    if (!orderData?.addressId || !Array.isArray(orderData.items)) {
+      throw new PaymentFlowError(422, 'Stored order details are incomplete');
+    }
+
+    /*
+     * Idempotency.
+     *
+     * Verify can arrive twice — a retried request, a double tap, a flaky
+     * network. Without this guard the second call decremented stock a second
+     * time and created a second ProductOrder against the same captured payment,
+     * so the guest was charged once and inventory was double-counted. Mirrors
+     * the consultation flow's guard.
+     */
+    const existingOrder = await ProductOrder.findOne({
+      razorpayOrderId: payment.razorpayOrderId,
+      userId: req.user._id,
+    })
+      .populate('userId', 'fullName email phone')
+      .populate('items.productId');
+
+    if (existingOrder) {
+      console.log('↩️  Product order already exists for this payment:', existingOrder.orderNumber);
+      return res.json({
+        success: true,
+        message: 'Payment already verified — your order is confirmed.',
+        data: existingOrder
       });
     }
-    
-    // Update payment record
-    const payment = await Payment.findOne({ razorpayOrderId: razorpay_order_id });
-    
-    if (!payment) {
-      return res.status(404).json({
-        success: false,
-        message: 'Payment record not found'
-      });
-    }
-    
-    payment.razorpayPaymentId = razorpay_payment_id;
-    payment.razorpaySignature = razorpay_signature;
-    payment.status = 'captured';
-    await payment.save();
-    
+
     console.log('✅ Payment verified and captured');
-    
+
     // Create product order
     console.log('📦 Creating product order...');
     
@@ -141,52 +368,57 @@ exports.verifyProductPayment = async (req, res) => {
     });
     
     if (!address) {
+      await markFulfilmentFailure(payment, 'order', 'Delivery address not found');
+      await refundUnfulfilledPayment(payment, 'Delivery address was unavailable after payment').catch(() => {});
       return res.status(404).json({
         success: false,
-        message: 'Address not found'
+        message: 'Your payment was received, but the address was unavailable. A full refund has been initiated.'
       });
     }
     
-    // Validate and process items
-    let calculatedSubtotal = 0;
-    
-    // First pass: validate all items
-    const itemsToProcess = [];
-    for (const item of orderData.items) {
-      if (!item.productId || !item.quantity || item.quantity <= 0) {
-        return res.status(400).json({
+    // Honour the exact server-side snapshot the customer paid for. This also
+    // prevents a price or coupon change during the Razorpay sheet from making
+    // the captured amount diverge from the eventual order.
+    let pricingSnapshot = payment.metadata?.pricingSnapshot;
+    if (!pricingSnapshot?.items || !pricingSnapshot?.pricing) {
+      // Compatibility for payment rows created by an older app/backend build.
+      const priced = await computeOrderPricing({
+        items: orderData.items,
+        couponCode: orderData.coupon?.code,
+      });
+      if (!priced.ok) {
+        await markFulfilmentFailure(payment, 'order', priced.message);
+        await refundUnfulfilledPayment(payment, priced.message).catch(() => {});
+        return res.status(422).json({
           success: false,
-          message: 'Invalid item data in cart'
+          message: 'Your payment was received, but the order could not be created. A full refund has been initiated.',
         });
       }
-      
-      const product = await Product.findById(item.productId);
-      
-      if (!product) {
-        return res.status(404).json({
-          success: false,
-          message: `Product not found: ${item.productId}`
-        });
-      }
-      
-      if (product.stock < item.quantity) {
-        return res.status(400).json({
-          success: false,
-          message: `Insufficient stock for ${product.name}. Available: ${product.stock}`,
-          availableStock: product.stock
-        });
-      }
-      
-      calculatedSubtotal += product.price * item.quantity;
-      itemsToProcess.push({ product, quantity: item.quantity });
+      pricingSnapshot = {
+        pricing: priced.pricing,
+        coupon: priced.coupon,
+        items: priced.items.map(({ product, quantity }) => ({
+          productId: product._id,
+          productName: product.name,
+          productImage: product.image,
+          quantity,
+          price: product.price,
+          subtotal: product.price * quantity,
+        })),
+      };
     }
-    
+    if (Number(pricingSnapshot.pricing.total) !== Number(payment.amount)) {
+      throw new PaymentFlowError(409, 'Stored order total does not match the captured payment');
+    }
+    const itemsToProcess = pricingSnapshot.items;
+
     // Second pass: atomically reduce stock
     const processedItems = [];
-    for (const { product, quantity } of itemsToProcess) {
+    for (const item of itemsToProcess) {
+      const { productId, quantity } = item;
       const updated = await Product.findOneAndUpdate(
         { 
-          _id: product._id, 
+          _id: productId,
           stock: { $gte: quantity },
           isActive: true 
         },
@@ -207,25 +439,28 @@ exports.verifyProductPayment = async (req, res) => {
             { $inc: { stock: processed.quantity } }
           );
         }
+
+        await markFulfilmentFailure(
+          payment,
+          'order',
+          `Stock changed for ${item.productName} after payment`
+        );
+        await refundUnfulfilledPayment(payment, `Stock changed for ${item.productName}`).catch(() => {});
         
         return res.status(400).json({
           success: false,
-          message: `Stock changed for ${product.name}. Please try again.`,
+          message: `Stock changed for ${item.productName}. A full refund has been initiated.`,
           requiresRefresh: true
         });
       }
-      
-      // Add processed item with complete information
-      const price = product.price;
-      const subtotal = price * quantity;
-      
+
       processedItems.push({
-        productId: product._id,
-        productName: product.name,
-        productImage: product.image,
-        quantity: quantity,
-        price: price,
-        subtotal: subtotal
+        productId,
+        productName: item.productName,
+        productImage: item.productImage,
+        quantity,
+        price: item.price,
+        subtotal: item.subtotal,
       });
     }
     
@@ -234,7 +469,9 @@ exports.verifyProductPayment = async (req, res) => {
     const orderNumber = `ORD${Date.now()}${String(orderCount + 1).padStart(4, '0')}`;
     
     // Create product order
-    const order = await ProductOrder.create({
+    let order;
+    try {
+      order = await ProductOrder.create({
       userId: req.user._id,
       orderNumber,
       items: processedItems,
@@ -249,13 +486,40 @@ exports.verifyProductPayment = async (req, res) => {
         postalCode: address.postalCode,
         country: address.country
       },
-      pricing: orderData.pricing,
-      coupon: orderData.coupon,
+      pricing: pricingSnapshot.pricing,
+      coupon: pricingSnapshot.coupon || undefined,
       paymentMethod: 'Razorpay',
       paymentStatus: 'Paid',
+      // Keep the Razorpay trail on the order so a refund or reconciliation can
+      // start from either side, and so the idempotency guard above can find it.
+      razorpayOrderId: razorpay_order_id,
+      razorpayPaymentId: razorpay_payment_id,
+      razorpaySignature: razorpay_signature,
       notes: orderData.notes || ''
-    });
-    
+      });
+    } catch (error) {
+      for (const processed of processedItems) {
+        await Product.findByIdAndUpdate(processed.productId, { $inc: { stock: processed.quantity } });
+      }
+      if (error?.code === 11000
+          && (error?.keyPattern?.razorpayOrderId || error?.keyPattern?.razorpayPaymentId)) {
+        const racedOrder = await ProductOrder.findOne({
+          razorpayOrderId: payment.razorpayOrderId,
+          userId: req.user._id,
+        });
+        if (racedOrder) {
+          payment.orderId = racedOrder._id;
+          await payment.save();
+          return res.json({
+            success: true,
+            message: 'Payment already verified — your order is confirmed.',
+            data: racedOrder,
+          });
+        }
+      }
+      throw error;
+    }
+
     // Link payment to order
     payment.orderId = order._id;
     await payment.save();
@@ -286,11 +550,11 @@ exports.verifyProductPayment = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Verify product payment error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to verify payment',
-      error: error.message
-    });
+    if (payment?.status === 'captured' && !payment.orderId) {
+      await markFulfilmentFailure(payment, 'order', error).catch(() => {});
+      await refundUnfulfilledPayment(payment, error.message).catch(() => {});
+    }
+    return paymentErrorResponse(res, error, 'Failed to verify payment');
   }
 };
 
@@ -342,7 +606,7 @@ exports.createMembershipPayment = async (req, res) => {
       metadata: {
         receipt: receipt,
         membershipType: 'Zen Member',
-        duration: '30 days'
+        duration: '1 year'
       }
     });
     
@@ -362,8 +626,7 @@ exports.createMembershipPayment = async (req, res) => {
     console.error('❌ Create membership payment error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to create membership payment',
-      error: error.message
+      message: 'Failed to create membership payment'
     });
   }
 };
@@ -373,67 +636,25 @@ exports.createMembershipPayment = async (req, res) => {
 // @access  Private
 exports.verifyMembershipPayment = async (req, res) => {
   try {
-    const {
-      razorpay_order_id,
-      razorpay_payment_id,
-      razorpay_signature
-    } = req.body;
+    const { razorpay_payment_id } = req.body;
     
     console.log('🔍 Verifying membership payment:', razorpay_payment_id);
     
-    // Verify signature
-    const isValid = razorpayService.verifySignature(
-      razorpay_order_id,
-      razorpay_payment_id,
-      razorpay_signature
-    );
-    
-    if (!isValid) {
-      console.error('❌ Invalid payment signature');
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid payment signature'
-      });
-    }
-    
-    // Update payment record
-    const payment = await Payment.findOne({ razorpayOrderId: razorpay_order_id });
-    
-    if (!payment) {
-      return res.status(404).json({
-        success: false,
-        message: 'Payment record not found'
-      });
-    }
-    
-    payment.razorpayPaymentId = razorpay_payment_id;
-    payment.razorpaySignature = razorpay_signature;
-    payment.status = 'captured';
-    await payment.save();
+    const payment = await verifyOwnedCapturedPayment(req, 'ZenMembership');
     
     console.log('✅ Membership payment verified');
-    
-    // Upgrade user to Zen Member
-    const user = await User.findById(req.user._id);
-    
+
+    // Activate the membership. Idempotent: a retried verify won't reset the
+    // dates, and the webhook runs this same path if this call never reaches us.
+    const user = await activateMembership(req.user._id, payment);
+
     if (!user) {
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
     }
-    
-    user.memberType = 'Zen Member';
-    user.zenMembershipStartDate = new Date();
-    // Set expiry to 1 year (365 days) from now for VIP Wellness Package
-    user.zenMembershipExpiryDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
-    user.zenMembershipAutoRenew = false; // One-time package, not recurring
-    
-    await user.save();
-    
-    console.log('👑 User upgraded to VIP Member (1 year):', user.email);
-    console.log('📅 Membership valid until:', user.zenMembershipExpiryDate.toLocaleDateString());
-    
+
     // Return updated user data
     const updatedUser = {
       id: user._id,
@@ -459,11 +680,7 @@ exports.verifyMembershipPayment = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Verify membership payment error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to verify membership payment',
-      error: error.message
-    });
+    return paymentErrorResponse(res, error, 'Failed to verify membership payment');
   }
 };
 
@@ -477,12 +694,16 @@ exports.handleWebhook = async (req, res) => {
     
     if (!webhookSecret) {
       console.error('❌ Webhook secret not configured');
-      return res.status(500).send('Webhook secret not configured');
+      return res.status(503).send('Webhook secret not configured');
     }
-    
-    // Verify webhook signature
+
+    // Razorpay signs the exact request bytes. A parsed/re-stringified object is
+    // not equivalent and must never be accepted as a fallback.
+    if (!Buffer.isBuffer(req.rawBody) || !signature) {
+      return res.status(400).send('Missing raw webhook body or signature');
+    }
     const isValid = razorpayService.verifyWebhookSignature(
-      JSON.stringify(req.body),
+      req.rawBody,
       signature,
       webhookSecret
     );
@@ -492,23 +713,40 @@ exports.handleWebhook = async (req, res) => {
       return res.status(400).send('Invalid signature');
     }
     
-    const event = req.body.event;
-    const payload = req.body.payload;
+    const event = req.body?.event;
+    const payload = req.body?.payload;
+    if (!event || !payload) return res.status(400).send('Invalid webhook payload');
     
     console.log('📨 Webhook received:', event);
     
     // Handle different webhook events
     switch (event) {
       case 'payment.captured':
+        if (!payload.payment?.entity) return res.status(400).send('Missing payment entity');
         await handlePaymentCaptured(payload.payment.entity);
         break;
       
       case 'payment.failed':
+        if (!payload.payment?.entity) return res.status(400).send('Missing payment entity');
         await handlePaymentFailed(payload.payment.entity);
+        break;
+
+      case 'refund.processed':
+        if (!payload.refund?.entity) return res.status(400).send('Missing refund entity');
+        await handleRefundProcessed(payload.refund.entity);
+        break;
+
+      case 'refund.failed':
+        if (!payload.refund?.entity) return res.status(400).send('Missing refund entity');
+        await handleRefundFailed(payload.refund.entity);
         break;
       
       case 'order.paid':
-        console.log('✅ Order paid event received');
+        if (payload.payment?.entity) {
+          await handlePaymentCaptured(payload.payment.entity);
+        } else {
+          console.log('✅ Order paid event received');
+        }
         break;
       
       default:
@@ -527,18 +765,107 @@ async function handlePaymentCaptured(paymentEntity) {
   try {
     console.log('✅ Payment captured:', paymentEntity.id);
     
+    /*
+     * Look up by order id as well as payment id.
+     *
+     * Razorpay's webhook can land before the app's verify call has run, and
+     * until then our record has no razorpayPaymentId — so a payment-id-only
+     * lookup found nothing and the webhook silently did nothing, losing the
+     * payment method along with it.
+     */
     const payment = await Payment.findOne({
-      razorpayPaymentId: paymentEntity.id
+      $or: [
+        { razorpayPaymentId: paymentEntity.id },
+        { razorpayOrderId: paymentEntity.order_id },
+      ],
     });
-    
+
     if (payment) {
-      payment.status = 'captured';
+      if (!paymentMatchesEntity(payment, paymentEntity)) {
+        throw new Error(`Gateway payment details do not match local payment ${payment._id}`);
+      }
+      if (payment.razorpayPaymentId
+          && payment.razorpayPaymentId !== paymentEntity.id
+          && payment.status !== 'failed') {
+        throw new Error(`Gateway order ${payment.razorpayOrderId} is linked to another payment`);
+      }
+
+      if (payment.status !== 'refunded') payment.status = 'captured';
       payment.method = paymentEntity.method;
+      payment.razorpayPaymentId = paymentEntity.id;
       await payment.save();
-      console.log('💾 Payment status updated to captured');
+      console.log('💾 Payment status updated to captured, method:', paymentEntity.method);
+
+      /*
+       * Fallback: finish a membership purchase from the webhook.
+       *
+       * The app normally activates the membership in /membership/verify, but if
+       * it's killed or loses network right after paying, that call never lands
+       * and the guest is charged without becoming a member. The webhook is the
+       * safety net — activateMembership is idempotent, so if verify already ran
+       * this does nothing.
+       *
+       * Product and consultation fulfilment use the same idempotent controller
+       * path as the app. This closes the "paid, then app closed" gap; unique
+       * gateway indexes make a simultaneous app verification safe.
+       */
+      if (payment.orderType === 'ZenMembership' && payment.status === 'captured') {
+        try {
+          await activateMembership(payment.userId, payment);
+        } catch (memErr) {
+          console.error('❌ Webhook membership activation failed:', memErr.message);
+          throw memErr;
+        }
+      } else if (payment.status === 'captured'
+          && !['processing', 'pending', 'processed'].includes(payment.metadata?.autoRefundStatus)
+          && !payment.orderId
+          && ['ProductOrder', 'Booking'].includes(payment.orderType)) {
+        await fulfilPaymentFromWebhook(payment, paymentEntity);
+      }
+    } else {
+      console.warn('⚠️ Webhook capture for an unknown payment:', paymentEntity.id, paymentEntity.order_id);
     }
   } catch (error) {
     console.error('❌ Error handling payment captured:', error);
+    throw error;
+  }
+}
+
+async function fulfilPaymentFromWebhook(payment, paymentEntity) {
+  let statusCode = 200;
+  const response = {
+    status(code) {
+      statusCode = code;
+      return this;
+    },
+    json(body) {
+      if (statusCode >= 500) {
+        throw new Error(`Webhook fulfilment failed with ${statusCode}: ${body?.message || 'unknown error'}`);
+      }
+      if (!body?.success) {
+        console.warn(
+          '⚠️ Webhook fulfilment did not complete:',
+          payment.orderType,
+          statusCode,
+          body?.code || body?.message
+        );
+      }
+      return body;
+    },
+  };
+  const request = {
+    user: { _id: payment.userId },
+    body: {
+      razorpay_order_id: paymentEntity.order_id,
+      razorpay_payment_id: paymentEntity.id,
+    },
+    verifiedWebhookPayment: paymentEntity,
+  };
+
+  if (payment.orderType === 'ProductOrder') {
+    await exports.verifyProductPayment(request, response);
+  } else if (payment.orderType === 'Booking') {
+    await exports.verifyConsultationPayment(request, response);
   }
 }
 
@@ -552,14 +879,159 @@ async function handlePaymentFailed(paymentEntity) {
     });
     
     if (payment) {
-      payment.status = 'failed';
+      // Webhook delivery order is not guaranteed. Never let a late failure
+      // event overwrite a payment we have already captured or refunded.
+      if (!['captured', 'refunded'].includes(payment.status)) payment.status = 'failed';
       payment.failureReason = paymentEntity.error_description || 'Payment failed';
+      payment.metadata = {
+        ...(payment.metadata || {}),
+        lastFailedPaymentId: paymentEntity.id,
+        lastFailedAt: new Date().toISOString(),
+      };
+      payment.markModified('metadata');
       await payment.save();
       console.log('💾 Payment status updated to failed');
     }
   } catch (error) {
     console.error('❌ Error handling payment failed:', error);
+    throw error;
   }
+}
+
+async function handleRefundProcessed(refundEntity) {
+  const payment = await Payment.findOne({
+    razorpayPaymentId: refundEntity.payment_id,
+    $or: [
+      { 'metadata.autoRefundId': refundEntity.id },
+      { 'metadata.autoRefundStatus': 'processing' },
+      { 'metadata.autoRefundStatus': 'pending' },
+    ],
+  });
+  if (payment) {
+    payment.status = 'refunded';
+    payment.metadata = {
+      ...(payment.metadata || {}),
+      autoRefundStatus: 'processed',
+      autoRefundId: refundEntity.id,
+      autoRefundUpdatedAt: new Date().toISOString(),
+    };
+    payment.markModified('metadata');
+    await payment.save();
+    return;
+  }
+
+  const order = await ProductOrder.findOne({
+    razorpayPaymentId: refundEntity.payment_id,
+    $or: [
+      { 'refundDetails.razorpayRefundId': refundEntity.id },
+      { 'refundDetails.status': 'Processing' },
+    ],
+  });
+  if (!order) {
+    console.warn('⚠️ Processed refund for an unknown order:', refundEntity.id);
+    return;
+  }
+
+  order.refundDetails.status = 'Completed';
+  order.refundDetails.razorpayRefundId = refundEntity.id;
+  order.refundDetails.refundCompletedAt = new Date();
+  order.refundDetails.transactionId = refundEntity.id;
+  if (Number(refundEntity.amount) >= Math.round(Number(order.pricing.total) * 100)) {
+    order.paymentStatus = 'Refunded';
+    await Payment.findOneAndUpdate(
+      { razorpayPaymentId: refundEntity.payment_id },
+      { status: 'refunded' }
+    );
+  }
+  await order.save();
+}
+
+async function handleRefundFailed(refundEntity) {
+  const payment = await Payment.findOne({
+    razorpayPaymentId: refundEntity.payment_id,
+    $or: [
+      { 'metadata.autoRefundId': refundEntity.id },
+      { 'metadata.autoRefundStatus': 'processing' },
+      { 'metadata.autoRefundStatus': 'pending' },
+    ],
+  });
+  if (payment) {
+    if (payment.status === 'refunded' || payment.metadata?.autoRefundStatus === 'processed') return;
+    payment.metadata = {
+      ...(payment.metadata || {}),
+      autoRefundStatus: 'failed',
+      autoRefundId: refundEntity.id,
+      autoRefundError: refundEntity.error_description || 'Razorpay refund failed',
+      autoRefundUpdatedAt: new Date().toISOString(),
+    };
+    payment.markModified('metadata');
+    await payment.save();
+    return;
+  }
+
+  const order = await ProductOrder.findOne({
+    razorpayPaymentId: refundEntity.payment_id,
+    $or: [
+      { 'refundDetails.razorpayRefundId': refundEntity.id },
+      { 'refundDetails.status': 'Processing' },
+    ],
+  });
+  if (!order) {
+    console.warn('⚠️ Failed refund for an unknown order:', refundEntity.id);
+    return;
+  }
+
+  if (order.refundDetails?.status === 'Completed') return;
+
+  order.refundDetails.status = 'Failed';
+  order.refundDetails.failureReason = refundEntity.error_description || 'Razorpay refund failed';
+  await order.save();
+}
+
+/**
+ * Activate (or re-affirm) a user's Zen membership from a captured payment.
+ *
+ * Idempotent by design so it can run from two places without double-applying:
+ *   - the client's /membership/verify call (the normal path), and
+ *   - the Razorpay webhook (the fallback, for when the app is killed or loses
+ *     network after paying but before verify runs).
+ *
+ * The `membershipActivated` flag on the payment is the guard: once set, a repeat
+ * call returns the user unchanged rather than resetting the start date or
+ * pushing the expiry out by another year.
+ *
+ * @param {String|ObjectId} userId
+ * @param {Object} payment - the Payment document (will be updated + saved)
+ * @returns {Promise<Object|null>} the user, or null if not found
+ */
+async function activateMembership(userId, payment) {
+  const user = await User.findById(userId);
+  if (!user) return null;
+
+  // Already applied for this payment — do not reset dates on a retry/webhook.
+  if (payment?.metadata?.membershipActivated) {
+    return user;
+  }
+
+  user.memberType = 'Zen Member';
+  user.zenMembershipStartDate = new Date();
+  // VIP Wellness Package is a one-time, 1-year (365-day) membership.
+  user.zenMembershipExpiryDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+  user.zenMembershipAutoRenew = false;
+  await user.save();
+
+  if (payment) {
+    payment.metadata = {
+      ...(payment.metadata || {}),
+      membershipActivated: true,
+      membershipActivatedAt: new Date().toISOString()
+    };
+    payment.markModified('metadata');
+    await payment.save();
+  }
+
+  console.log('👑 Zen membership activated for', user.email, '→', user.zenMembershipExpiryDate.toLocaleDateString());
+  return user;
 }
 
 // @desc    Create Razorpay order for consultation booking
@@ -572,10 +1044,26 @@ exports.createConsultationPayment = async (req, res) => {
     console.log('💳 Creating consultation payment order for user:', req.user._id);
     
     // Validate booking data
-    if (!bookingData || !consultationId) {
+    if (!bookingData || !mongoose.isValidObjectId(consultationId)) {
       return res.status(400).json({
         success: false,
         message: 'Booking data and consultation ID are required'
+      });
+    }
+    const preferredLocation = bookingData.preferredLocation || bookingData.location;
+    const requestedTimes = bookingData.slotTime
+      ? [bookingData.slotTime]
+      : bookingData.preferredTimeSlots;
+    if (!bookingData.fullName
+        || !(bookingData.mobileNumber || bookingData.mobile)
+        || !bookingData.email
+        || !bookingData.preferredDate
+        || !preferredLocation
+        || !Array.isArray(requestedTimes)
+        || requestedTimes.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Complete patient, clinic, date, and time details are required'
       });
     }
     
@@ -589,16 +1077,68 @@ exports.createConsultationPayment = async (req, res) => {
         message: 'Consultation not found'
       });
     }
+
+    // The clinic's backend-managed working days/hours are authoritative. Do
+    // this before creating a Razorpay order so a stale client cannot pay for a
+    // closed day or an old time range.
+    const Branch = require('../models/Branch');
+    let branch = preferredLocation
+      ? await Branch.findOne({ name: preferredLocation, isActive: true })
+      : null;
+    if (!branch && preferredLocation) {
+      const escaped = preferredLocation.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      branch = await Branch.findOne({
+        name: { $regex: escaped, $options: 'i' },
+        isActive: true,
+      });
+    }
+
+    if (!branch) {
+      return res.status(404).json({
+        success: false,
+        code: 'BRANCH_NOT_AVAILABLE',
+        message: 'The selected clinic is no longer available. Please choose another clinic.',
+      });
+    }
+
+    const scheduleCheck = validateBranchBooking(
+      branch,
+      bookingData.preferredDate,
+      requestedTimes
+    );
+    if (!scheduleCheck.ok) {
+      return res.status(409).json({
+        success: false,
+        code: scheduleCheck.code,
+        message: scheduleCheck.message,
+      });
+    }
     
-    const amount = consultation.price;
-    
+    /*
+     * What to charge.
+     *
+     * This used to be `consultation.price` — the catalogue row. That made the
+     * catalogue the authority on price, so an admin changing the fee in the
+     * panel (or approving a doctor's higher rate) did not change what the guest
+     * was actually charged. The resolver below asks, in order: this specialist's
+     * approved rate, then the tier's standard fee, then the catalogue.
+     */
+    const { resolveConsultationAmount } = require('../utils/consultationPricing');
+    const { amount, source } = await resolveConsultationAmount({
+      consultation,
+      specialistId: bookingData.specialistId,
+      specialistTier: bookingData.specialistTier,
+    });
+
     // Validate amount
     if (!amount || amount <= 0) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid consultation price'
+        message: 'This consultation has no price set. Please contact the clinic.'
       });
     }
+
+    console.log(`💰 Consultation amount ₹${amount} (resolved from: ${source})`);
     
     // Generate receipt (max 40 chars for Razorpay)
     const timestamp = Date.now().toString().slice(-10);
@@ -629,7 +1169,13 @@ exports.createConsultationPayment = async (req, res) => {
       metadata: {
         receipt: receipt,
         consultationId: consultationId,
-        bookingData: bookingData
+        bookingData: {
+          ...bookingData,
+          consultationId,
+          preferredLocation: branch.name,
+          consultationFee: amount,
+          totalAmount: amount,
+        }
       }
     });
     
@@ -650,8 +1196,7 @@ exports.createConsultationPayment = async (req, res) => {
     console.error('❌ Create consultation payment error:', error);
     res.status(500).json({
       success: false,
-      message: 'Failed to create payment order',
-      error: error.message
+      message: 'Failed to create payment order'
     });
   }
 };
@@ -660,74 +1205,200 @@ exports.createConsultationPayment = async (req, res) => {
 // @route   POST /api/payments/consultation/verify
 // @access  Private
 exports.verifyConsultationPayment = async (req, res) => {
+  let payment;
   try {
-    const {
-      razorpay_order_id,
-      razorpay_payment_id,
-      razorpay_signature,
-      bookingData
-    } = req.body;
+    const { razorpay_order_id, razorpay_payment_id } = req.body;
     
     console.log('🔍 Verifying consultation payment:', razorpay_payment_id);
     
-    // Verify signature
-    const isValid = razorpayService.verifySignature(
-      razorpay_order_id,
-      razorpay_payment_id,
-      razorpay_signature
-    );
-    
-    if (!isValid) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid payment signature'
-      });
+    payment = await verifyOwnedCapturedPayment(req, 'Booking');
+    const bookingData = payment.metadata?.bookingData;
+    if (!bookingData?.consultationId) {
+      throw new PaymentFlowError(422, 'Stored booking details are incomplete');
     }
     
-    // Find payment record
-    const payment = await Payment.findOne({ razorpayOrderId: razorpay_order_id });
-    
-    if (!payment) {
-      return res.status(404).json({
-        success: false,
-        message: 'Payment record not found'
-      });
-    }
-    
-    // Update payment status
-    payment.razorpayPaymentId = razorpay_payment_id;
-    payment.status = 'completed';
-    payment.completedAt = new Date();
-    await payment.save();
-    
-    console.log('✅ Payment verified and updated');
-    
-    // Create booking with payment details
     const Booking = require('../models/Booking');
     const Consultation = require('../models/Consultation');
     const Branch = require('../models/Branch');
-    
-    const consultation = await Consultation.findById(bookingData.consultationId);
-    const branch = await Branch.findOne({ name: bookingData.preferredLocation, isActive: true });
-    
-    if (!consultation || !branch) {
-      return res.status(404).json({
-        success: false,
-        message: 'Consultation or branch not found'
+
+    /*
+     * Idempotency.
+     *
+     * Verify can arrive twice — a retried request, a double tap, a flaky
+     * network. Without this check the second call created a second Booking
+     * against the same captured payment, so the guest was charged once and had
+     * two appointments.
+     */
+    const existing = await Booking.findOne({
+      razorpayOrderId: payment.razorpayOrderId,
+      userId: req.user._id,
+    })
+      .populate('consultationId', 'name category price image');
+
+    if (existing) {
+      console.log('↩️  Booking already exists for this order:', existing.referenceNumber);
+      return res.json({
+        success: true,
+        message: 'Payment already verified — this booking is confirmed.',
+        data: {
+          booking: existing,
+          payment: { id: payment._id, amount: payment.amount, status: payment.status },
+        },
       });
     }
-    
+
+    console.log('✅ Payment verified and captured');
+
+    // Older app builds send `location`/`mobile`; current ones send
+    // `preferredLocation`/`mobileNumber`. Accept both.
+    const preferredLocation = bookingData.preferredLocation || bookingData.location;
+    const mobileNumber = bookingData.mobileNumber || bookingData.mobile;
+
+    const consultation = await Consultation.findById(bookingData.consultationId);
+    // Branch names vary between "Jubilee Hills" and "Zennara Jubilee Hills"
+    // depending on where the app sourced the value — match tolerantly.
+    let branch = preferredLocation
+      ? await Branch.findOne({ name: preferredLocation, isActive: true })
+      : null;
+    if (!branch && preferredLocation) {
+      const escaped = preferredLocation.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      branch = await Branch.findOne({
+        name: { $regex: escaped, $options: 'i' },
+        isActive: true
+      });
+    }
+
+    if (!consultation || !branch) {
+      /*
+       * The money is already captured at this point, so a bad lookup must not
+       * end as a bare 404 with nothing on record — that is how a paid guest
+       * ends up with no appointment and no trail for support to follow.
+       * Flag it on the payment so it can be found and reconciled.
+       */
+      payment.metadata = {
+        ...(payment.metadata || {}),
+        bookingCreationFailed: true,
+        bookingCreationError: !consultation
+          ? `Consultation ${bookingData.consultationId} not found`
+          : `Branch "${preferredLocation}" not found or inactive`,
+        failedAt: new Date().toISOString(),
+      };
+      payment.markModified('metadata');
+      await payment.save();
+
+      await refundUnfulfilledPayment(payment, payment.metadata.bookingCreationError).catch(() => {});
+
+      console.error('🚨 Paid but no booking — payment', payment._id, payment.metadata.bookingCreationError);
+
+      return res.status(422).json({
+        success: false,
+        message:
+          'Your payment went through, but we could not confirm the appointment automatically. '
+          + 'A full refund has been initiated, and the clinic has been notified.',
+        data: { paymentId: payment._id, reference: payment.razorpayOrderId },
+      });
+    }
+
+
+    const requestedTimes = bookingData.slotTime
+      ? [bookingData.slotTime]
+      : bookingData.preferredTimeSlots;
+    const scheduleCheck = validateBranchBooking(
+      branch,
+      bookingData.preferredDate,
+      requestedTimes
+    );
+    if (!scheduleCheck.ok) {
+      payment.metadata = {
+        ...(payment.metadata || {}),
+        bookingCreationFailed: true,
+        bookingCreationError: scheduleCheck.message,
+        failedAt: new Date().toISOString(),
+      };
+      payment.markModified('metadata');
+      await payment.save();
+
+      await refundUnfulfilledPayment(payment, scheduleCheck.message).catch(() => {});
+
+      return res.status(422).json({
+        success: false,
+        code: scheduleCheck.code,
+        message:
+          'Your payment went through, but the clinic schedule changed before confirmation. '
+          + 'A full refund has been initiated, and the clinic will contact you if needed.',
+        data: { paymentId: payment._id, reference: payment.razorpayOrderId },
+      });
+    }
+
+    /*
+     * The slot the patient picked, re-checked here rather than trusted.
+     *
+     * Between the time picker answering "10:30 is free" and this line, the
+     * patient has been away in the Razorpay sheet — long enough for somebody
+     * else to take the slot. `slotTime` is only set for dermatologist
+     * consultations booked off a calendar; treatment bookings still carry
+     * `preferredTimeSlots` and no hard slot, so they skip all of this.
+     */
+    const slotTime = bookingData.slotTime || null;
+    if (slotTime && bookingData.specialistId) {
+      const { isSlotBookable, dateKey } = require('../utils/dermatologistSlots');
+      const key = dateKey(new Date(bookingData.preferredDate));
+      const check = await isSlotBookable(bookingData.specialistId, key, slotTime, {
+        branchId: branch._id,
+      });
+
+      if (!check.ok) {
+        payment.metadata = {
+          ...(payment.metadata || {}),
+          slotLostAfterPayment: true,
+          slotLostReason: check.reason,
+          requestedSlot: `${key} ${slotTime}`,
+          failedAt: new Date().toISOString(),
+        };
+        payment.markModified('metadata');
+        await payment.save();
+
+        await refundUnfulfilledPayment(payment, `Requested slot unavailable: ${check.reason}`).catch(() => {});
+
+        console.error('🚨 Paid but slot gone —', payment._id, key, slotTime, check.reason);
+
+        // Deliberately not silently rebooked onto another time: the patient
+        // chose this one, and moving them without asking is worse than a call.
+        return res.status(409).json({
+          success: false,
+          message:
+            'Your payment went through, but that time was taken while you were paying. '
+            + 'A full refund has been initiated. Please choose another time.',
+          data: { paymentId: payment._id, reference: payment.razorpayOrderId, reason: check.reason },
+        });
+      }
+    }
+
+    // A dermatologist consultation books a real, verified slot straight off the
+    // doctor's own calendar, so it is confirmed on the spot — the time the guest
+    // sees IS the appointment. Treatments (no hard slotTime, up to 3 preferred
+    // times) still go to the clinic to confirm one of them.
+    const isDermatologistSlot = !!(slotTime && bookingData.specialistId);
+
     const booking = new Booking({
       userId: req.user._id,
       consultationId: bookingData.consultationId,
       fullName: bookingData.fullName,
-      mobileNumber: bookingData.mobileNumber,
+      mobileNumber: mobileNumber,
       email: bookingData.email,
       branchId: branch._id,
-      preferredLocation: bookingData.preferredLocation,
+      preferredLocation: branch.name,
       preferredDate: new Date(bookingData.preferredDate),
-      preferredTimeSlots: bookingData.preferredTimeSlots,
-      status: 'Awaiting Confirmation',
+      // Keep both: the single reserved slot, and the older preferred-times
+      // list so reception screens written against it still render.
+      preferredTimeSlots: slotTime ? [slotTime] : bookingData.preferredTimeSlots,
+      slotTime,
+      specialistId: bookingData.specialistId,
+      specialistName: bookingData.specialistName,
+      specialistTier: bookingData.specialistTier,
+      status: isDermatologistSlot ? 'Confirmed' : 'Awaiting Confirmation',
+      confirmedDate: isDermatologistSlot ? new Date(bookingData.preferredDate) : undefined,
+      confirmedTime: isDermatologistSlot ? slotTime : undefined,
       paymentId: payment._id,
       razorpayOrderId: razorpay_order_id,
       razorpayPaymentId: razorpay_payment_id,
@@ -736,91 +1407,173 @@ exports.verifyConsultationPayment = async (req, res) => {
       paymentMethod: 'Razorpay',
       paidAt: new Date()
     });
-    
-    await booking.save();
+
+    try {
+      await booking.save();
+    } catch (err) {
+      /*
+       * The unique index is the real guard — two verifications racing both
+       * pass the check above and only one can insert. E11000 here means we
+       * lost that race.
+       */
+      if (err?.code === 11000
+          && (err?.keyPattern?.razorpayOrderId || err?.keyPattern?.razorpayPaymentId)) {
+        const racedBooking = await Booking.findOne({
+          razorpayOrderId: payment.razorpayOrderId,
+          userId: req.user._id,
+        }).populate('consultationId', 'name category price image');
+        if (racedBooking) {
+          payment.orderId = racedBooking._id;
+          await payment.save();
+          return res.json({
+            success: true,
+            message: 'Payment already verified — this booking is confirmed.',
+            data: {
+              booking: racedBooking,
+              payment: { id: payment._id, amount: payment.amount, status: payment.status },
+            },
+          });
+        }
+      }
+      if (err?.code === 11000) {
+        payment.metadata = {
+          ...(payment.metadata || {}),
+          slotLostAfterPayment: true,
+          slotLostReason: 'race',
+          requestedSlot: `${bookingData.preferredDate} ${slotTime}`,
+          failedAt: new Date().toISOString(),
+        };
+        payment.markModified('metadata');
+        await payment.save();
+
+        await refundUnfulfilledPayment(payment, 'The requested slot was taken during payment').catch(() => {});
+
+        console.error('🚨 Slot race lost —', payment._id, slotTime);
+
+        return res.status(409).json({
+          success: false,
+          message:
+            'Your payment went through, but that time was taken while you were paying. '
+            + 'A full refund has been initiated. Please choose another time.',
+          data: { paymentId: payment._id, reference: payment.razorpayOrderId, reason: 'race' },
+        });
+      }
+      throw err;
+    }
+    // Link the payment back to the booking. Booking.paymentId already pointed
+    // at the payment, but not the other way round, so a refund or a
+    // reconciliation starting from a Payment had no way to reach the booking.
+    payment.orderId = booking._id;
+    await payment.save();
+
     await booking.populate('consultationId', 'name category price image');
-    
+
     console.log('✅ Booking created with payment:', booking.referenceNumber);
     
-    // Create notification
+    // Create notification — a dermatologist slot is already confirmed, so it
+    // gets the "Appointment Confirmed" notification; a treatment (awaiting the
+    // clinic) gets "Booking Request Received".
     const NotificationHelper = require('../utils/notificationHelper');
     try {
-      await NotificationHelper.bookingCreated({
+      const notifData = {
         _id: booking._id,
         userId: booking.userId,
         patientName: booking.fullName,
         consultation: { name: consultation.name },
         branch: { name: branch.name },
         appointmentDate: booking.preferredDate
-      });
+      };
+      if (isDermatologistSlot) {
+        await NotificationHelper.bookingConfirmed({
+          ...notifData,
+          confirmedDate: booking.confirmedDate,
+          confirmedTime: booking.confirmedTime
+        });
+      } else {
+        await NotificationHelper.bookingCreated(notifData);
+      }
     } catch (notifError) {
       console.error('⚠️ Failed to create notification:', notifError.message);
     }
     
-    // Send booking confirmation email
-    const emailService = require('../utils/emailService');
-    try {
-      await emailService.sendAppointmentBookingConfirmation(
-        booking.email,
-        booking.fullName,
-        {
-          referenceNumber: booking.referenceNumber,
-          treatment: consultation.name,
-          category: consultation.category,
-          preferredDate: booking.preferredDate.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }),
-          timeSlots: booking.preferredTimeSlots.join(', '),
-          location: booking.preferredLocation
-        },
-        booking.preferredLocation
-      );
-    } catch (emailError) {
-      console.error('⚠️ Email sending failed:', emailError.message);
-    }
-    
-    // Send WhatsApp booking confirmation
-    const whatsappService = require('../services/whatsappService');
-    try {
-      await whatsappService.sendBookingConfirmation(
-        booking.mobileNumber,
-        {
-          patientName: booking.fullName,
-          referenceNumber: booking.referenceNumber,
-          treatment: consultation.name,
-          date: booking.preferredDate.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }),
-          timeSlots: booking.preferredTimeSlots.join(', '),
-          location: booking.preferredLocation
+    // External messages must not delay the payment response/webhook ACK. The
+    // durable booking already exists, so send them after the response path.
+    setImmediate(async () => {
+      const emailService = require('../utils/emailService');
+      try {
+        if (isDermatologistSlot) {
+          await emailService.sendAppointmentConfirmed(
+            booking.email,
+            booking.fullName,
+            {
+              referenceNumber: booking.referenceNumber,
+              treatment: consultation.name,
+              confirmedDate: booking.confirmedDate.toLocaleDateString('en-US', {
+                weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+              }),
+              confirmedTime: booking.confirmedTime,
+              location: booking.preferredLocation
+            },
+            booking.preferredLocation
+          );
+        } else {
+          await emailService.sendAppointmentBookingConfirmation(
+            booking.email,
+            booking.fullName,
+            {
+              referenceNumber: booking.referenceNumber,
+              treatment: consultation.name,
+              category: consultation.category,
+              preferredDate: booking.preferredDate.toLocaleDateString('en-US', {
+                weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+              }),
+              timeSlots: booking.preferredTimeSlots.join(', '),
+              location: booking.preferredLocation
+            },
+            booking.preferredLocation
+          );
         }
-      );
-    } catch (whatsappError) {
-      console.error('⚠️ WhatsApp sending failed:', whatsappError.message);
-    }
-    
-    // Make automated voice call
-    const twilioVoiceService = require('../services/twilioVoiceService');
-    try {
-      const formattedDate = booking.preferredDate.toLocaleDateString('en-US', { 
-        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-      });
-      
-      await twilioVoiceService.makeBookingConfirmationCall(
-        booking.mobileNumber,
-        {
-          patientName: booking.fullName,
-          referenceNumber: booking.referenceNumber,
-          treatment: consultation.name,
-          date: formattedDate,
-          timeSlots: booking.preferredTimeSlots.join(', '),
-          branchName: branch.name,
-          branchAddress: branch.address.line1 + ', ' + branch.address.city
-        }
-      );
-    } catch (voiceError) {
-      console.error('⚠️ Voice call failed:', voiceError.message);
-    }
+      } catch (error) {
+        console.error('⚠️ Email sending failed:', error.message);
+      }
+
+      try {
+        await require('../services/whatsappService').sendBookingConfirmation(
+          booking.mobileNumber,
+          {
+            patientName: booking.fullName,
+            referenceNumber: booking.referenceNumber,
+            treatment: consultation.name,
+            date: booking.preferredDate.toLocaleDateString('en-US', {
+              weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+            }),
+            timeSlots: booking.preferredTimeSlots.join(', '),
+            location: booking.preferredLocation
+          }
+        );
+      } catch (error) {
+        console.error('⚠️ WhatsApp sending failed:', error.message);
+      }
+
+      try {
+        await require('../services/twilioVoiceService').makeBookingConfirmationCall(
+          booking.mobileNumber,
+          {
+            patientName: booking.fullName,
+            referenceNumber: booking.referenceNumber,
+            treatment: consultation.name,
+            date: booking.preferredDate.toLocaleDateString('en-US', {
+              weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+            }),
+            timeSlots: booking.preferredTimeSlots.join(', '),
+            branchName: branch.name,
+            branchAddress: `${branch.address.line1}, ${branch.address.city}`
+          }
+        );
+      } catch (error) {
+        console.error('⚠️ Voice call failed:', error.message);
+      }
+    });
     
     res.json({
       success: true,
@@ -836,11 +1589,17 @@ exports.verifyConsultationPayment = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Verify consultation payment error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Payment verification failed',
-      error: error.message
-    });
+    if (payment?.status === 'captured' && !payment.orderId) {
+      const existingBooking = await require('../models/Booking').findOne({
+        razorpayOrderId: payment.razorpayOrderId,
+        userId: payment.userId,
+      }).catch(() => null);
+      if (!existingBooking) {
+        await markFulfilmentFailure(payment, 'booking', error).catch(() => {});
+        await refundUnfulfilledPayment(payment, error.message).catch(() => {});
+      }
+    }
+    return paymentErrorResponse(res, error, 'Payment verification failed');
   }
 };
 

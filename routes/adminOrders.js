@@ -51,11 +51,13 @@ router.delete('/:id',
 // Refund routes
 router.post('/:id/initiate-refund',
   requireRole('super_admin', 'admin'),
+  adminSensitiveOperationsLimiter,
   auditLog('REFUND_INITIATED', 'ORDER'),
   initiateRefund
 );
 router.put('/:id/complete-refund',
   requireRole('super_admin', 'admin'),
+  adminSensitiveOperationsLimiter,
   auditLog('REFUND_COMPLETED', 'ORDER'),
   completeRefund
 );

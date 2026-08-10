@@ -45,6 +45,7 @@ exports.createConsultation = async (req, res) => {
       image,
       rating,
       showPriceInApp,
+      chargeOnlineBooking,
       isPopular
     } = req.body;
 
@@ -78,6 +79,7 @@ exports.createConsultation = async (req, res) => {
       image,
       rating,
       showPriceInApp: showPriceInApp !== undefined ? showPriceInApp : false,
+      chargeOnlineBooking: chargeOnlineBooking !== undefined ? chargeOnlineBooking : true,
       isPopular: isPopular !== undefined ? isPopular : false
     });
 
@@ -341,6 +343,7 @@ exports.getConsultationStats = async (req, res) => {
 exports.getAllConsultations = async (req, res) => {
   try {
     const { 
+      type,
       category, 
       search, 
       minPrice, 
@@ -360,7 +363,12 @@ exports.getAllConsultations = async (req, res) => {
     // Build query
     let query = { isActive: true };
 
-    // Filter by category
+    // Level 1 of the taxonomy — Skin, Hair, Skin & Hair, Wellness, …
+    if (type && type !== 'All') {
+      query.type = type;
+    }
+
+    // Level 2 — the treatment category
     if (category && category !== 'All') {
       query.category = category;
     }

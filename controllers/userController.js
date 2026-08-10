@@ -65,8 +65,10 @@ exports.getAllUsers = async (req, res) => {
     // Format users data
     const formattedUsers = users.map(user => ({
       id: user._id,
+      _id: user._id,
       patientId: user.patientId || `PAT${String(user._id).slice(-6).toUpperCase()}`, // Use new patientId or fallback
       name: user.fullName,
+      fullName: user.fullName,
       email: user.email,
       phone: user.phone,
       location: user.location,
@@ -129,8 +131,10 @@ exports.getUserById = async (req, res) => {
 
     const formattedUser = {
       id: user._id,
+      _id: user._id,
       patientId: user.patientId || `PAT${String(user._id).slice(-6).toUpperCase()}`,
       name: user.fullName,
+      fullName: user.fullName,
       email: user.email,
       phone: user.phone,
       location: user.location,
@@ -183,6 +187,19 @@ exports.updateUser = async (req, res) => {
       });
     }
 
+    if (phone && phone !== user.phone) {
+      const phoneOwner = await User.exists({
+        phone,
+        _id: { $ne: user._id },
+      });
+      if (phoneOwner) {
+        return res.status(409).json({
+          success: false,
+          message: 'Phone number already registered',
+        });
+      }
+    }
+
     // Store old profile picture publicId for deletion
     const oldPublicId = user.profilePicture?.publicId;
 
@@ -232,7 +249,9 @@ exports.updateUser = async (req, res) => {
       message: 'User updated successfully',
       data: {
         id: user._id,
+        _id: user._id,
         name: user.fullName,
+        fullName: user.fullName,
         email: user.email,
         phone: user.phone,
         location: user.location,
@@ -367,8 +386,10 @@ exports.createUser = async (req, res) => {
     // Format response
     const formattedUser = {
       id: user._id,
+      _id: user._id,
       patientId: user.patientId,
       name: user.fullName,
+      fullName: user.fullName,
       email: user.email,
       phone: user.phone,
       location: user.location,
@@ -542,6 +563,7 @@ exports.toggleUserStatus = async (req, res) => {
       data: {
         userId: user._id,
         name: user.fullName,
+        fullName: user.fullName,
         isActive: user.isActive
       }
     });

@@ -37,6 +37,52 @@ const UserSchema = new mongoose.Schema({
     required: [true, 'Location is required'],
     trim: true
   },
+
+  // ---------------------------------------------------------------------------
+  // Zenoti CRM linkage
+  //
+  // Zennara's system of record for customers is the Zenoti CRM. When a guest who
+  // already exists in Zenoti signs in, we mirror a lightweight local account so
+  // the rest of the app (bookings, orders, packages — all keyed by our userId)
+  // keeps working, and link it back to Zenoti by guest id. Their live history
+  // (appointments, purchases, memberships, loyalty) is read from Zenoti on demand.
+  // ---------------------------------------------------------------------------
+  // Where this account originated. 'app' = registered through the mobile app;
+  // 'zenoti' = auto-provisioned on first login from an existing Zenoti guest.
+  source: {
+    type: String,
+    enum: ['app', 'zenoti'],
+    default: 'app'
+  },
+  // The Zenoti guest id this account is linked to (if any). Sparse + unique so
+  // two local accounts can never claim the same Zenoti guest.
+  zenotiGuestId: {
+    type: String,
+    default: null,
+    index: true,
+    sparse: true,
+    unique: true
+  },
+  // The guest's Zenoti home-center id, for center-scoped reads and defaults.
+  zenotiCenterId: {
+    type: String,
+    default: null
+  },
+  // When we last pulled this guest's profile from Zenoti.
+  zenotiSyncedAt: {
+    type: Date,
+    default: null
+  },
+  // Write-back status of the guest record in Zenoti (Phase 2 write-back).
+  zenotiSyncStatus: {
+    type: String,
+    enum: ['pending', 'synced', 'failed', 'skipped', 'dryrun', null],
+    default: null
+  },
+  zenotiSyncError: {
+    type: String,
+    default: null
+  },
   
   // Member Type - Only 2 types
   memberType: {
@@ -60,14 +106,19 @@ const UserSchema = new mongoose.Schema({
   },
   
   // Additional Details (from signup step 3)
+  //
+  // For accounts created through the app these are collected at signup and are
+  // required. Accounts auto-provisioned from a Zenoti guest (source === 'zenoti')
+  // may not have them yet — Zenoti often has no DOB on file — so they are only
+  // required for app-originated accounts and can be completed later in-app.
   dateOfBirth: {
     type: String,
-    required: [true, 'Date of birth is required']
+    required: [function () { return this.source !== 'zenoti'; }, 'Date of birth is required']
   },
   gender: {
     type: String,
-    required: [true, 'Gender is required'],
-    enum: ['Male', 'Female', 'Other', 'Prefer not to say']
+    required: [function () { return this.source !== 'zenoti'; }, 'Gender is required'],
+    enum: ['Male', 'Female', 'Other']
   },
   
   // Medical History & Lifestyle
@@ -319,6 +370,26 @@ UserSchema.pre('save', async function(next) {
     this.patientId = patientId;
   }
   next();
+});
+
+// Remember whether this save is the document's first, so the post-save hook can
+// tell a brand-new signup apart from a routine update.
+UserSchema.pre('save', function(next) {
+  this._wasNew = this.isNew;
+  next();
+});
+
+// When a NEW app account is created (and isn't already a linked Zenoti guest),
+// mirror it into Zenoti so every customer ends up in the CRM. Fire-and-forget:
+// the write service is gated by ZENOTI_WRITE_MODE and never throws here.
+UserSchema.post('save', function(doc) {
+  if (!doc._wasNew) return;
+  if (doc.zenotiGuestId) return; // already a Zenoti guest
+  setImmediate(() => {
+    try {
+      require('../services/zenotiWriteService').ensureGuest(doc).catch(() => {});
+    } catch (_) { /* never let CRM wiring affect account creation */ }
+  });
 });
 
 // Method to check rate limiting for OTP requests

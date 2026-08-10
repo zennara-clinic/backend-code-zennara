@@ -102,7 +102,7 @@ const sendEmail = async (to, subject, htmlContent) => {
 exports.sendOTPEmail = async (email, fullName, otp, branch = 'Zennara Clinic') => {
   try {
     const htmlContent = getOTPEmailTemplate(fullName, otp, branch);
-    
+
     const response = await sendEmail(email, 'Your Zennara Verification Code', htmlContent);
     console.log('✅ OTP email sent successfully');
     return response;
@@ -110,6 +110,105 @@ exports.sendOTPEmail = async (email, fullName, otp, branch = 'Zennara Clinic') =
     console.error('❌ Email sending failed');
     throw error;
   }
+};
+
+/**
+ * Email the user a readable summary of everything Zennara holds about them
+ * (a DPDPA data-access request). Plain, human-readable HTML — not a raw JSON
+ * dump — so the person can actually understand what we have.
+ */
+exports.sendDataExportEmail = async (email, fullName, exportData) => {
+  const GREEN = '#032F22';
+  const p = exportData.personalInformation || {};
+  const stats = exportData.statistics || {};
+  const appointments = exportData.appointments || [];
+  const orders = exportData.orders || [];
+  const addresses = exportData.addresses || [];
+  const packages = exportData.treatmentPackages || [];
+  const health = exportData.healthInformation || [];
+  const reviews = exportData.reviews || [];
+
+  const esc = (v) => (v === undefined || v === null || v === '' ? '—' : String(v));
+  const asDate = (v) =>
+    v ? new Date(v).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
+
+  const row = (label, value) =>
+    `<tr><td style="padding:7px 0;color:#7A827E;font-size:13px;">${label}</td>` +
+    `<td style="padding:7px 0;color:#111714;font-size:13px;font-weight:600;text-align:right;">${esc(value)}</td></tr>`;
+
+  const section = (title, inner) =>
+    `<h3 style="margin:26px 0 10px;color:${GREEN};font-size:15px;">${title}</h3>${inner}`;
+
+  const hasActivity =
+    appointments.length || orders.length || packages.length || health.length || reviews.length || addresses.length;
+
+  const apptTable = appointments.length
+    ? `<table style="width:100%;border-collapse:collapse;">${appointments.slice(0, 12).map((a) =>
+        `<tr><td style="padding:7px 8px;border-top:1px solid #eee;font-size:12.5px;">${esc(a.status)}</td>` +
+        `<td style="padding:7px 8px;border-top:1px solid #eee;font-size:12.5px;">${asDate(a.confirmedDate || a.date)}</td>` +
+        `<td style="padding:7px 8px;border-top:1px solid #eee;font-size:12.5px;">${esc(a.location)}</td></tr>`).join('')}</table>`
+    : '<p style="color:#7A827E;font-size:13px;margin:0;">No appointments on record.</p>';
+
+  const orderTable = orders.length
+    ? `<table style="width:100%;border-collapse:collapse;">${orders.slice(0, 12).map((o) =>
+        `<tr><td style="padding:7px 8px;border-top:1px solid #eee;font-size:12.5px;">#${esc(o.orderNumber)}</td>` +
+        `<td style="padding:7px 8px;border-top:1px solid #eee;font-size:12.5px;">${esc(o.status)}</td>` +
+        `<td style="padding:7px 8px;border-top:1px solid #eee;font-size:12.5px;text-align:right;">₹${esc(o.total)}</td></tr>`).join('')}</table>`
+    : '<p style="color:#7A827E;font-size:13px;margin:0;">No orders on record.</p>';
+
+  const body = `
+    ${section('Your profile', `<table style="width:100%;border-collapse:collapse;">
+      ${row('Name', p.fullName)}
+      ${row('Email', p.email)}
+      ${row('Phone', p.phone)}
+      ${row('Membership', p.memberType)}
+      ${row('Member since', asDate(p.accountCreated))}
+    </table>`)}
+
+    ${hasActivity ? `
+      ${section('At a glance', `<table style="width:100%;border-collapse:collapse;">
+        ${row('Appointments', appointments.length)}
+        ${row('Orders', orders.length)}
+        ${row('Treatment packages', packages.length)}
+        ${row('Saved addresses', addresses.length)}
+        ${row('Health forms', health.length)}
+        ${row('Reviews written', reviews.length)}
+      </table>`)}
+      ${section('Appointments', apptTable)}
+      ${section('Orders', orderTable)}
+    ` : `
+      <div style="margin:26px 0;padding:16px;border-radius:12px;background:#EFF3EE;">
+        <p style="margin:0;color:#111714;font-size:13.5px;line-height:20px;">
+          We don't hold much data on your account yet — just the basic profile above.
+          You haven't booked an appointment, placed an order or saved anything with us so far.
+        </p>
+      </div>
+    `}
+
+    <p style="margin:24px 0 0;color:#7A827E;font-size:11.5px;line-height:17px;">
+      Provided under the Digital Personal Data Protection Act, 2023. Clinical records are
+      retained as required by the Clinical Establishments Act. To correct or delete your data,
+      reply to this email or use Account Settings in the app.
+    </p>`;
+
+  const html = `
+  <div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;">
+    <div style="background:${GREEN};padding:22px 24px;border-radius:14px 14px 0 0;">
+      <div style="color:#ffffff;font-size:18px;font-weight:700;letter-spacing:0.5px;">ZENNARA</div>
+      <div style="color:#E0C391;font-size:12px;margin-top:2px;">Your data export</div>
+    </div>
+    <div style="padding:24px;border:1px solid #eee;border-top:0;border-radius:0 0 14px 14px;">
+      <p style="color:#111714;font-size:14px;">Hi ${esc(fullName || p.fullName || 'there')},</p>
+      <p style="color:#4F5853;font-size:13.5px;line-height:20px;">
+        Here's a summary of everything we hold about you at Zennara, as of ${asDate(new Date())}.
+      </p>
+      ${body}
+    </div>
+  </div>`;
+
+  const response = await sendEmail(email, 'Your Zennara data export', html);
+  console.log('✅ Data export email sent');
+  return response;
 };
 
 // Send Welcome Email
@@ -126,9 +225,79 @@ exports.sendWelcomeEmail = async (email, fullName, branch = 'Zennara Clinic') =>
   }
 };
 
+/**
+ * The clinic's full postal address for a branch name — so every appointment
+ * email carries the address the app's centre picker no longer shows.
+ * Returns '' when the branch can't be resolved; the email still sends.
+ */
+async function resolveClinicAddress(name) {
+  if (!name) return '';
+  try {
+    const Branch = require('../models/Branch');
+    const b = await Branch.findOne({ name }).lean();
+    const a = b && b.address;
+    if (!a) return '';
+    const cityLine = [a.city, a.state].filter(Boolean).join(', ');
+    const withPin = [cityLine, a.pincode].filter(Boolean).join(' ');
+    return [a.line1, a.line2, withPin].map((p) => (p || '').trim()).filter(Boolean).join(', ');
+  } catch (e) {
+    return '';
+  }
+}
+
+/** Fill `data.address` from the branch in `data.location`, if not already set. */
+async function withClinicAddress(data) {
+  if (data && !data.address) {
+    data.address = await resolveClinicAddress(data.location);
+  }
+  return data;
+}
+
+/**
+ * Email the guest their check-in / check-out code, shown as large digits they
+ * read to reception. `kind` is 'check-in' or 'check-out'.
+ */
+exports.sendVisitCodeEmail = async (email, fullName, { code, kind, referenceNumber, treatment, location }) => {
+  const GREEN = '#032F22';
+  const isOut = kind === 'check-out';
+  const title = isOut ? 'Your check-out code' : 'Your check-in code';
+  const intro = isOut
+    ? 'Read this code to reception to complete your visit.'
+    : 'Show this code at reception to check in for your appointment.';
+  const esc = (v) => (v === undefined || v === null || v === '' ? '' : String(v));
+
+  const html = `
+  <div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;">
+    <div style="background:${GREEN};padding:22px 24px;border-radius:14px 14px 0 0;">
+      <div style="color:#ffffff;font-size:18px;font-weight:700;letter-spacing:0.5px;">ZENNARA</div>
+      <div style="color:#E0C391;font-size:12px;margin-top:2px;">${title}</div>
+    </div>
+    <div style="padding:24px;border:1px solid #eee;border-top:0;border-radius:0 0 14px 14px;text-align:center;">
+      <p style="color:#111714;font-size:14px;text-align:left;">Hi ${esc(fullName) || 'there'},</p>
+      <p style="color:#4F5853;font-size:13.5px;line-height:20px;text-align:left;">${intro}</p>
+      <div style="margin:22px auto;display:inline-block;background:#EFF3EE;border-radius:14px;padding:18px 30px;">
+        <div style="font-size:34px;font-weight:800;letter-spacing:10px;color:${GREEN};">${esc(code)}</div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;margin-top:8px;">
+        ${treatment ? `<tr><td style="padding:6px 0;color:#7A827E;font-size:13px;text-align:left;">Appointment</td><td style="padding:6px 0;color:#111714;font-size:13px;font-weight:600;text-align:right;">${esc(treatment)}</td></tr>` : ''}
+        ${location ? `<tr><td style="padding:6px 0;color:#7A827E;font-size:13px;text-align:left;">Center</td><td style="padding:6px 0;color:#111714;font-size:13px;font-weight:600;text-align:right;">${esc(location)}</td></tr>` : ''}
+        ${referenceNumber ? `<tr><td style="padding:6px 0;color:#7A827E;font-size:13px;text-align:left;">Reference</td><td style="padding:6px 0;color:#111714;font-size:13px;font-weight:600;text-align:right;">${esc(referenceNumber)}</td></tr>` : ''}
+      </table>
+      <p style="color:#7A827E;font-size:11.5px;line-height:17px;margin-top:18px;text-align:left;">
+        Don't share this code with anyone except Zennara reception staff. It also appears on your appointment screen in the app.
+      </p>
+    </div>
+  </div>`;
+
+  const response = await sendEmail(email, `${title} — Zennara${referenceNumber ? ` [${referenceNumber}]` : ''}`, html);
+  console.log('✅ Visit code email sent');
+  return response;
+};
+
 // Send Appointment Booking Confirmation Email
 exports.sendAppointmentBookingConfirmation = async (email, fullName, bookingData, branch = 'Zennara Clinic') => {
   try {
+    await withClinicAddress(bookingData);
     const htmlContent = getAppointmentBookingConfirmationTemplate(fullName, bookingData, branch);
     
     const response = await sendEmail(email, `Appointment Booking Received [${bookingData.referenceNumber}]`, htmlContent);
@@ -143,6 +312,7 @@ exports.sendAppointmentBookingConfirmation = async (email, fullName, bookingData
 // Send Appointment Confirmed Email
 exports.sendAppointmentConfirmed = async (email, fullName, appointmentData, branch = 'Zennara Clinic') => {
   try {
+    await withClinicAddress(appointmentData);
     const htmlContent = getAppointmentConfirmedTemplate(fullName, appointmentData, branch);
     
     const response = await sendEmail(email, `Appointment Confirmed [${appointmentData.referenceNumber}]`, htmlContent);
@@ -157,6 +327,7 @@ exports.sendAppointmentConfirmed = async (email, fullName, appointmentData, bran
 // Send Appointment Reminder Email
 exports.sendAppointmentReminder = async (email, fullName, appointmentData, branch = 'Zennara Clinic') => {
   try {
+    await withClinicAddress(appointmentData);
     const htmlContent = getAppointmentReminderTemplate(fullName, appointmentData, branch);
     
     const response = await sendEmail(email, `Appointment Reminder [${appointmentData.referenceNumber}]`, htmlContent);
@@ -171,6 +342,7 @@ exports.sendAppointmentReminder = async (email, fullName, appointmentData, branc
 // Send Appointment Rescheduled Email
 exports.sendAppointmentRescheduled = async (email, fullName, appointmentData, branch = 'Zennara Clinic') => {
   try {
+    await withClinicAddress(appointmentData);
     const htmlContent = getAppointmentRescheduledTemplate(fullName, appointmentData, branch);
     
     const response = await sendEmail(email, `Appointment Rescheduled [${appointmentData.referenceNumber}]`, htmlContent);
@@ -185,6 +357,7 @@ exports.sendAppointmentRescheduled = async (email, fullName, appointmentData, br
 // Send Appointment Cancelled Email
 exports.sendAppointmentCancelled = async (email, fullName, appointmentData, branch = 'Zennara Clinic') => {
   try {
+    await withClinicAddress(appointmentData);
     const htmlContent = getAppointmentCancelledTemplate(fullName, appointmentData, branch);
     
     const response = await sendEmail(email, `Appointment Cancelled [${appointmentData.referenceNumber}]`, htmlContent);
@@ -199,6 +372,7 @@ exports.sendAppointmentCancelled = async (email, fullName, appointmentData, bran
 // Send Appointment Completed Email
 exports.sendAppointmentCompleted = async (email, fullName, appointmentData, branch = 'Zennara Clinic') => {
   try {
+    await withClinicAddress(appointmentData);
     const htmlContent = getAppointmentCompletedTemplate(fullName, appointmentData, branch);
     
     const response = await sendEmail(email, `Thank You for Visiting Zennara [${appointmentData.referenceNumber}]`, htmlContent);

@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const {
   signup,
+  sendSignupOTP,
+  verifySignupOTP,
   login,
   verifyOTP,
   resendOTP,
@@ -18,7 +20,8 @@ const {
   upgradeMembership,
   getUserStats,
   deleteAccount,
-  exportUserData
+  exportUserData,
+  emailUserData
 } = require('../controllers/authController');
 const {
   updateBankDetails,
@@ -43,6 +46,8 @@ router.get('/csrf-token', protect, (req, res) => {
 
 // Public routes with validation
 router.post('/signup', validateSignup, signup);
+router.post('/signup/send-otp', validateLogin, sendSignupOTP);
+router.post('/signup/verify-otp', validateVerifyOTP, verifySignupOTP);
 router.post('/login', validateLogin, login); 
 router.post('/verify-otp', validateVerifyOTP, verifyOTP);
 router.post('/resend-otp', validateLogin, resendOTP);
@@ -52,7 +57,7 @@ router.post('/logout', protect, logout);
 router.post('/logout-all', protect, logoutAll);
 router.get('/me', protect, getMe);
 router.get('/stats', protect, getUserStats);
-router.put('/profile', protect, updateProfile);
+router.put('/profile', protect, validateUpdateProfile, updateProfile);
 router.post('/upgrade-membership', protect, upgradeMembership);
 
 // Profile picture upload with error handling
@@ -100,6 +105,7 @@ router.get('/security-status', protect, getSecurityStatus);
 
 // Data privacy routes (DPDPA 2023 compliance)
 router.get('/export-data', protect, exportUserData);
+router.post('/export-data/email', protect, emailUserData);
 router.delete('/account', protect, deleteAccount);
 
 // Bank details routes (for refunds)

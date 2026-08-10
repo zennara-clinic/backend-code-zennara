@@ -7,12 +7,14 @@ const {
   deleteForm,
   submitForm,
   getAllForms,
+  getAdminFormById,
   updateFormStatus
 } = require('../controllers/preConsultFormController');
 const { protect, protectAdmin } = require('../middleware/auth');
 
 // Admin routes
 router.get('/admin/all', protectAdmin, getAllForms);
+router.get('/admin/:id', protectAdmin, getAdminFormById);
 router.patch('/admin/:id/status', protectAdmin, updateFormStatus);
 
 // Protected user routes

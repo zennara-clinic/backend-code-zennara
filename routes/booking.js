@@ -17,9 +17,15 @@ const {
   getBookingByIdAdmin,
   checkInBookingAdmin,
   checkOutBookingAdmin,
-  cancelBookingAdmin
+  cancelBookingAdmin,
+  createBookingAdmin,
+  rescheduleBookingAdmin,
+  getVisitCode,
+  verifyCheckInCode,
+  verifyCheckOutCode,
+  rejectReschedule
 } = require('../controllers/bookingController');
-const { protect, protectAdmin } = require('../middleware/auth');
+const { protect, protectAdmin, auditLog } = require('../middleware/auth');
 const { manualCleanup } = require('../utils/bookingScheduler');
 
 // Public routes
@@ -27,12 +33,20 @@ router.get('/available-slots', getAvailableTimeSlots);
 
 // Admin routes
 router.get('/admin/all', protectAdmin, getAllBookingsAdmin);
+// Reception creates walk-in and phone bookings here.
+router.post('/admin', protectAdmin, auditLog('BOOKING_CREATED', 'BOOKING'), createBookingAdmin);
 router.get('/admin/:id', protectAdmin, getBookingByIdAdmin);
-router.put('/admin/:id/confirm', protectAdmin, confirmBooking);
-router.put('/admin/:id/checkin', protectAdmin, checkInBookingAdmin);
-router.put('/admin/:id/checkout', protectAdmin, checkOutBookingAdmin);
-router.put('/admin/:id/no-show', protectAdmin, markNoShow);
-router.put('/admin/:id/cancel', protectAdmin, cancelBookingAdmin);
+router.put('/admin/:id/confirm', protectAdmin, auditLog('BOOKING_CONFIRMED', 'BOOKING'), confirmBooking);
+router.put('/admin/:id/checkin', protectAdmin, auditLog('BOOKING_CHECKED_IN', 'BOOKING'), checkInBookingAdmin);
+router.put('/admin/:id/checkout', protectAdmin, auditLog('BOOKING_CHECKED_OUT', 'BOOKING'), checkOutBookingAdmin);
+// OTP-gated check-in/out: staff enter the code the guest reads to them.
+router.put('/admin/:id/verify-checkin', protectAdmin, auditLog('BOOKING_CHECKED_IN', 'BOOKING'), verifyCheckInCode);
+router.put('/admin/:id/verify-checkout', protectAdmin, auditLog('BOOKING_CHECKED_OUT', 'BOOKING'), verifyCheckOutCode);
+router.put('/admin/:id/no-show', protectAdmin, auditLog('BOOKING_NO_SHOW', 'BOOKING'), markNoShow);
+router.put('/admin/:id/cancel', protectAdmin, auditLog('BOOKING_CANCELLED', 'BOOKING'), cancelBookingAdmin);
+router.put('/admin/:id/reschedule', protectAdmin, auditLog('BOOKING_RESCHEDULED', 'BOOKING'), rescheduleBookingAdmin);
+// Clinic declines a guest's reschedule request → reverts to the original slot.
+router.put('/admin/:id/reject-reschedule', protectAdmin, auditLog('BOOKING_RESCHEDULED', 'BOOKING'), rejectReschedule);
 
 // Manual cleanup endpoint for testing
 router.post('/admin/cleanup-expired', protectAdmin, async (req, res) => {
@@ -57,6 +71,7 @@ router.post('/', createBooking);
 router.get('/', getUserBookings);
 router.get('/reference/:referenceNumber', getBookingByReference);
 router.get('/:id', getBooking);
+router.get('/:id/visit-code', getVisitCode);
 router.put('/:id/cancel', cancelBooking);
 router.put('/:id/reschedule', rescheduleBooking);
 router.put('/:id/checkin', checkInBooking);

@@ -42,16 +42,29 @@ exports.createConsentForm = async (req, res) => {
       }
     }
 
-    // Check if required consents are provided
-    const termsAndConditions = formData.termsAndConditions || {};
-    if (!termsAndConditions.noRefundPolicy || 
-        !termsAndConditions.nonTransferableServices || 
-        !termsAndConditions.treatmentExpiry?.accepted || 
-        !termsAndConditions.noRefundOnDateChange ||
-        !formData.consentGiven) {
+    // Every section of the Universal Patient Consent Form must be confirmed,
+    // the overall consent given, and a signature captured before we record it.
+    const sections = formData.sections || {};
+    const allSectionsConfirmed =
+      sections.understandingOfTreatment &&
+      sections.risksSideEffects &&
+      sections.medicalDisclosure &&
+      sections.clinicalRecords &&
+      sections.financialTerms &&
+      sections.liabilityClause &&
+      sections.declaration;
+
+    if (!allSectionsConfirmed || !formData.consentGiven) {
       return res.status(400).json({
         success: false,
-        message: 'All required consents must be provided'
+        message: 'Please confirm all sections and provide your consent to continue'
+      });
+    }
+
+    if (!formData.patientSignature) {
+      return res.status(400).json({
+        success: false,
+        message: 'Your signature is required to submit the consent form'
       });
     }
 
@@ -59,7 +72,8 @@ exports.createConsentForm = async (req, res) => {
     const consentForm = new PatientConsentForm({
       ...formData,
       userId,
-      status: 'Signed'
+      status: 'Signed',
+      patientSignedAt: new Date()
     });
 
     await consentForm.save();
@@ -277,17 +291,20 @@ exports.getAllConsentForms = async (req, res) => {
 exports.updateConsentFormStatus = async (req, res) => {
   try {
     const { id } = req.params;
-    const { status, clinicNotes } = req.body;
+    const { status, clinicNotes, clinicStamp, doctorName } = req.body;
 
-    if (!['Pending', 'Signed', 'Approved', 'Archived'].includes(status)) {
+    if (status && !['Pending', 'Signed', 'Approved', 'Archived'].includes(status)) {
       return res.status(400).json({
         success: false,
         message: 'Invalid status'
       });
     }
 
-    const updateData = { status };
-    if (clinicNotes) updateData.clinicNotes = clinicNotes;
+    const updateData = {};
+    if (status) updateData.status = status;
+    if (clinicNotes !== undefined) updateData.clinicNotes = clinicNotes;
+    if (clinicStamp !== undefined) updateData.clinicStamp = clinicStamp;
+    if (doctorName !== undefined) updateData.doctorName = doctorName;
 
     const form = await PatientConsentForm.findByIdAndUpdate(
       id,
@@ -312,6 +329,39 @@ exports.updateConsentFormStatus = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to update consent form status',
+      error: error.message
+    });
+  }
+};
+
+// @desc    Get a single consent form with full patient context (Admin)
+// @route   GET /api/patient-consent-forms/admin/:id
+// @access  Private/Admin
+exports.getAdminConsentFormById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const form = await PatientConsentForm.findById(id)
+      .populate('userId', 'fullName email phone patientId dateOfBirth gender')
+      .populate('bookingId', 'referenceNumber preferredDate status')
+      .populate('preConsultFormId', 'dateOfVisit doctorName');
+
+    if (!form) {
+      return res.status(404).json({
+        success: false,
+        message: 'Consent form not found'
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: form
+    });
+  } catch (error) {
+    console.error('Error fetching consent form (admin):', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch consent form',
       error: error.message
     });
   }

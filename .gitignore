@@ -6,10 +6,12 @@ logs/
 seeders/
 data/
 scripts/
+!scripts/
+scripts/*
+!scripts/zenoti_guest_test.py
 google-services.json
 FIREBASE_SMS_IMPLEMENTATION.md
 WHATSAPP_IMPLEMENTATION_COMPLETE.md
 WHATSAPP_SETUP_GUIDE.md
 QUICK_START_WHATSAPP.md
 AFTER_TEMPLATE_APPROVAL.md
-

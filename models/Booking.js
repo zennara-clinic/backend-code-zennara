@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { bookingScheduledAt } = require('../utils/bookingTime');
 
 const bookingSchema = new mongoose.Schema({
   // User Reference
@@ -64,6 +65,49 @@ const bookingSchema = new mongoose.Schema({
     required: true
   }],
 
+  /*
+   * The one slot this booking holds, "HH:mm" in clinic-local time.
+   *
+   * `preferredTimeSlots` is the older treatment-flow idea — up to three times
+   * the patient would accept, one of which reception later confirms. A
+   * dermatologist consultation now books a real slot off their calendar, so
+   * there is exactly one time and it is taken the moment payment succeeds.
+   */
+  slotTime: {
+    type: String,
+    default: null,
+    trim: true
+  },
+
+  /*
+   * Whether this booking is currently occupying its slot.
+   *
+   * Exists only so the unique index below can be partial: MongoDB's
+   * partialFilterExpression has no $in, so "status is one of the live ones"
+   * cannot be expressed there. A plain boolean can, and `releaseSlot()` keeps
+   * it in step with status. Without it two people who paid at the same moment
+   * both get 10:30 and one of them is turned away at the door.
+   */
+  slotHeld: {
+    type: Boolean,
+    default: false
+  },
+
+  // Chosen dermatologist (consultation bookings from the app)
+  specialistId: {
+    type: String,
+    trim: true,
+    index: true
+  },
+  specialistName: {
+    type: String,
+    trim: true
+  },
+  specialistTier: {
+    type: String,
+    trim: true
+  },
+
   // Booking Status
   status: {
     type: String,
@@ -88,6 +132,22 @@ const bookingSchema = new mongoose.Schema({
   checkOutTime: Date,
   sessionDuration: Number, // in minutes
 
+  // Visit codes — the guest reads these to reception, who verifies them in the
+  // panel to check the guest in / out. Stored plaintext on purpose: the code is
+  // shown to its own owner on the appointment screen and is a short-lived,
+  // low-sensitivity presence check (not a credential).
+  checkInCode: { type: String, default: null },
+  checkInCodeAt: { type: Date, default: null },
+  checkOutCode: { type: String, default: null },
+  checkOutCodeAt: { type: Date, default: null },
+
+  // Package linkage — set when this appointment was auto-created from a package
+  // session (24h before its scheduled date). Such bookings are free (amount 0)
+  // and marked included, so the app shows "Included in your package".
+  isPackageIncluded: { type: Boolean, default: false },
+  packageAssignmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'PackageAssignment', default: null, index: true },
+  packageSessionId: { type: mongoose.Schema.Types.ObjectId, default: null },
+
   // Cancellation & Reschedule Info
   cancellationReason: String,
   cancelledAt: Date,
@@ -96,6 +156,9 @@ const bookingSchema = new mongoose.Schema({
     time: String
   },
   rescheduledAt: Date,
+  // True after the clinic declines a reschedule request (the booking is put
+  // back to its original confirmed time). Cleared when a new request is made.
+  rescheduleRejected: { type: Boolean, default: false },
 
   // Rating & Feedback
   rating: {
@@ -129,6 +192,17 @@ const bookingSchema = new mongoose.Schema({
   },
   paidAt: Date,
 
+  // Zenoti write-back (Phase 2): the appointment this booking created in the CRM,
+  // and its sync status, for idempotency + observability.
+  zenotiAppointmentId: { type: String, default: null },
+  zenotiSyncStatus: {
+    type: String,
+    enum: ['pending', 'synced', 'failed', 'skipped', 'dryrun', null],
+    default: null
+  },
+  zenotiSyncError: { type: String, default: null },
+  zenotiSyncedAt: { type: Date, default: null },
+
   // Metadata
   notes: String,
   adminNotes: String,
@@ -154,6 +228,57 @@ bookingSchema.pre('save', async function(next) {
 bookingSchema.index({ userId: 1, status: 1 });
 bookingSchema.index({ preferredDate: 1, preferredLocation: 1 });
 bookingSchema.index({ createdAt: -1 });
+bookingSchema.index(
+  { razorpayOrderId: 1 },
+  { unique: true, sparse: true, name: 'one_booking_per_razorpay_order' }
+);
+bookingSchema.index(
+  { razorpayPaymentId: 1 },
+  { unique: true, sparse: true, name: 'one_booking_per_razorpay_payment' }
+);
+
+// Reading a dermatologist's diary for a date range — the slot engine's
+// hottest query, run for every calendar paint and every slot list.
+bookingSchema.index({ specialistId: 1, preferredDate: 1, status: 1 });
+
+/*
+ * One live booking per dermatologist, per date, per slot.
+ *
+ * The database enforces this rather than the application, because the check
+ * and the write cannot be made atomic in application code — two payments
+ * verifying at the same instant both read "free" and both insert. Here the
+ * second insert fails with E11000 and the caller refunds instead of
+ * double-booking.
+ *
+ * Partial on `slotHeld`, so cancelled bookings drop out of the index and free
+ * the slot, and so the many treatment bookings that carry no slot at all do
+ * not collide with each other on null.
+ */
+bookingSchema.index(
+  { specialistId: 1, preferredDate: 1, slotTime: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { slotHeld: true },
+    name: 'one_live_booking_per_slot',
+  }
+);
+
+/**
+ * Keep `slotHeld` honest.
+ *
+ * A slot is held while the booking is live. Cancelling, or marking a no-show,
+ * must put the time back on sale — otherwise the diary slowly fills with slots
+ * nobody is coming to.
+ */
+bookingSchema.pre('save', function (next) {
+  if (this.slotTime) {
+    const live = ['Awaiting Confirmation', 'Confirmed', 'Rescheduled', 'In Progress', 'Completed'];
+    this.slotHeld = live.includes(this.status);
+  } else {
+    this.slotHeld = false;
+  }
+  next();
+});
 
 // Virtual for formatted date
 bookingSchema.virtual('formattedDate').get(function() {
@@ -168,13 +293,39 @@ bookingSchema.virtual('formattedDate').get(function() {
 });
 
 // Method to check if booking can be cancelled
-bookingSchema.methods.canBeCancelled = function() {
-  return ['Awaiting Confirmation', 'Confirmed', 'Rescheduled'].includes(this.status);
+bookingSchema.methods.canBeCancelled = function(now = new Date()) {
+  if (!['Awaiting Confirmation', 'Confirmed', 'Rescheduled'].includes(this.status)) {
+    return false;
+  }
+
+  const scheduledAt = bookingScheduledAt(this);
+  if (!scheduledAt) return false;
+  return scheduledAt.getTime() - now.getTime() > 24 * 60 * 60 * 1000;
 };
 
-// Method to check if booking can be rescheduled
+// Method to check if booking can be rescheduled. A guest can request a
+// reschedule on a confirmed appointment, or re-request while one is pending.
 bookingSchema.methods.canBeRescheduled = function() {
-  return ['Confirmed', 'No Show'].includes(this.status);
+  return ['Confirmed', 'Rescheduled', 'No Show'].includes(this.status);
 };
+
+// Remember whether this save created the booking, so the post-save hook only
+// pushes newly-created bookings to Zenoti (not every status update).
+bookingSchema.pre('save', function (next) {
+  this._wasNew = this.isNew;
+  next();
+});
+
+// Push a newly-created booking to Zenoti as an appointment. Fire-and-forget and
+// gated by ZENOTI_WRITE_MODE — a CRM failure never affects the booking itself.
+bookingSchema.post('save', function (doc) {
+  if (!doc._wasNew) return;
+  if (doc.zenotiAppointmentId) return;
+  setImmediate(() => {
+    try {
+      require('../services/zenotiWriteService').syncBooking(doc._id).catch(() => {});
+    } catch (_) { /* never let CRM wiring affect booking creation */ }
+  });
+});
 
 module.exports = mongoose.model('Booking', bookingSchema);

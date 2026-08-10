@@ -18,7 +18,9 @@ const AdminSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['super_admin', 'admin', 'doctor', 'receptionist'],
+    // 'therapist' backs the aesthetician floor panel, which signs in with the
+    // same admin OTP flow as everyone else.
+    enum: ['super_admin', 'admin', 'doctor', 'receptionist', 'therapist'],
     default: 'admin'
   },
   

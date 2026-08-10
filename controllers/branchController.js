@@ -1,5 +1,21 @@
 const Branch = require('../models/Branch');
 
+/**
+ * Mongoose validation failures are the caller's fault, not the server's.
+ * Returning 500 with a raw stack made the panel show "Server error" instead of
+ * telling the user which field was missing.
+ */
+const validationError = (res, error) => {
+  if (error.name === 'ValidationError') {
+    return res.status(400).json({
+      success: false,
+      message: Object.values(error.errors).map((e) => e.message).join(', '),
+    });
+  }
+  return null;
+};
+
+
 // Get all branches
 exports.getAllBranches = async (req, res) => {
   try {
@@ -135,6 +151,7 @@ exports.createBranch = async (req, res) => {
     });
   } catch (error) {
     console.error('Error creating branch:', error);
+    if (validationError(res, error)) return;
     res.status(500).json({
       success: false,
       message: 'Failed to create branch',
@@ -184,6 +201,7 @@ exports.updateBranch = async (req, res) => {
     });
   } catch (error) {
     console.error('Error updating branch:', error);
+    if (validationError(res, error)) return;
     res.status(500).json({
       success: false,
       message: 'Failed to update branch',

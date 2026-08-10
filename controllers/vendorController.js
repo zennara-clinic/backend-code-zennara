@@ -1,6 +1,22 @@
 const Vendor = require('../models/Vendor');
 const Product = require('../models/Product');
 
+/**
+ * Mongoose validation failures are the caller's fault, not the server's.
+ * Returning 500 with a raw stack made the panel show "Server error" instead of
+ * telling the user which field was missing.
+ */
+const validationError = (res, error) => {
+  if (error.name === 'ValidationError') {
+    return res.status(400).json({
+      success: false,
+      message: Object.values(error.errors).map((e) => e.message).join(', '),
+    });
+  }
+  return null;
+};
+
+
 // @desc    Get all vendors
 // @route   GET /api/vendors
 // @access  Private (Admin)
@@ -140,6 +156,7 @@ exports.createVendor = async (req, res) => {
     });
   } catch (error) {
     console.error('Create vendor error:', error);
+    if (validationError(res, error)) return;
     res.status(500).json({
       success: false,
       message: 'Failed to create vendor',
@@ -186,6 +203,7 @@ exports.updateVendor = async (req, res) => {
     });
   } catch (error) {
     console.error('Update vendor error:', error);
+    if (validationError(res, error)) return;
     res.status(500).json({
       success: false,
       message: 'Failed to update vendor',

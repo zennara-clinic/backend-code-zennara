@@ -195,7 +195,11 @@ const getAppointmentBookingConfirmationTemplate = (fullName, bookingData, branch
             <div class="detail-row">
               <span class="detail-label">Location</span>
               <span class="detail-value">${bookingData.location}</span>
-            </div>
+            </div>${bookingData.address ? `
+            <div class="detail-row">
+              <span class="detail-label">Address</span>
+              <span class="detail-value">${bookingData.address}</span>
+            </div>` : ''}
           </div>
 
           <div class="status-message">

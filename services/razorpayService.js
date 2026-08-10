@@ -1,11 +1,38 @@
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
 
-// Initialize Razorpay instance
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
-});
+let razorpay;
+
+const getRazorpay = () => {
+  const keyId = process.env.RAZORPAY_KEY_ID;
+  const keySecret = process.env.RAZORPAY_KEY_SECRET;
+  if (!keyId || !keySecret) {
+    throw new Error('Razorpay is not configured');
+  }
+
+  if (!razorpay) {
+    razorpay = new Razorpay({ key_id: keyId, key_secret: keySecret });
+  }
+  return razorpay;
+};
+
+const toPaise = (amount) => {
+  const numericAmount = Number(amount);
+  if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
+    throw new Error('Payment amount must be a positive number');
+  }
+  return Math.round(numericAmount * 100);
+};
+
+const safeHexEqual = (expected, supplied) => {
+  if (typeof expected !== 'string' || typeof supplied !== 'string') return false;
+  if (!/^[a-f0-9]+$/i.test(expected) || !/^[a-f0-9]+$/i.test(supplied)) return false;
+
+  const expectedBuffer = Buffer.from(expected, 'hex');
+  const suppliedBuffer = Buffer.from(supplied, 'hex');
+  return expectedBuffer.length === suppliedBuffer.length
+    && crypto.timingSafeEqual(expectedBuffer, suppliedBuffer);
+};
 
 /**
  * Create a Razorpay order
@@ -17,16 +44,20 @@ const razorpay = new Razorpay({
  */
 exports.createOrder = async (amount, currency = 'INR', receipt, notes = {}) => {
   try {
+    if (!receipt || typeof receipt !== 'string' || receipt.length > 40) {
+      throw new Error('A Razorpay receipt of at most 40 characters is required');
+    }
+
     const options = {
-      amount: Math.round(amount * 100), // Convert rupees to paise
-      currency,
+      amount: toPaise(amount),
+      currency: String(currency || 'INR').toUpperCase(),
       receipt,
       notes,
       payment_capture: 1 // Auto capture payment
     };
 
-    console.log('📝 Creating Razorpay order:', options);
-    const order = await razorpay.orders.create(options);
+    console.log('📝 Creating Razorpay order:', receipt, options.amount, options.currency);
+    const order = await getRazorpay().orders.create(options);
     console.log('✅ Razorpay order created:', order.id);
     
     return order;
@@ -45,13 +76,16 @@ exports.createOrder = async (amount, currency = 'INR', receipt, notes = {}) => {
  */
 exports.verifySignature = (orderId, paymentId, signature) => {
   try {
+    const keySecret = process.env.RAZORPAY_KEY_SECRET;
+    if (!keySecret || !orderId || !paymentId || !signature) return false;
+
     const text = `${orderId}|${paymentId}`;
     const generated = crypto
-      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .createHmac('sha256', keySecret)
       .update(text)
       .digest('hex');
 
-    const isValid = generated === signature;
+    const isValid = safeHexEqual(generated, signature);
     
     if (isValid) {
       console.log('✅ Payment signature verified successfully');
@@ -73,7 +107,8 @@ exports.verifySignature = (orderId, paymentId, signature) => {
  */
 exports.fetchPayment = async (paymentId) => {
   try {
-    const payment = await razorpay.payments.fetch(paymentId);
+    if (!paymentId) throw new Error('Payment ID is required');
+    const payment = await getRazorpay().payments.fetch(paymentId);
     return payment;
   } catch (error) {
     console.error('❌ Error fetching payment:', error);
@@ -90,8 +125,12 @@ exports.fetchPayment = async (paymentId) => {
  */
 exports.capturePayment = async (paymentId, amount, currency = 'INR') => {
   try {
-    const amountInPaise = Math.round(amount * 100);
-    const payment = await razorpay.payments.capture(paymentId, amountInPaise, currency);
+    const amountInPaise = toPaise(amount);
+    const payment = await getRazorpay().payments.capture(
+      paymentId,
+      amountInPaise,
+      String(currency || 'INR').toUpperCase()
+    );
     console.log('✅ Payment captured:', paymentId);
     return payment;
   } catch (error) {
@@ -108,12 +147,13 @@ exports.capturePayment = async (paymentId, amount, currency = 'INR') => {
  */
 exports.refundPayment = async (paymentId, amount = null) => {
   try {
+    if (!paymentId) throw new Error('Payment ID is required');
     const options = {};
-    if (amount) {
-      options.amount = Math.round(amount * 100); // Convert to paise
+    if (amount !== null && amount !== undefined) {
+      options.amount = toPaise(amount);
     }
     
-    const refund = await razorpay.payments.refund(paymentId, options);
+    const refund = await getRazorpay().payments.refund(paymentId, options);
     console.log('✅ Payment refunded:', paymentId);
     return refund;
   } catch (error) {
@@ -131,12 +171,13 @@ exports.refundPayment = async (paymentId, amount = null) => {
  */
 exports.verifyWebhookSignature = (body, signature, secret) => {
   try {
+    if (!Buffer.isBuffer(body) || !signature || !secret) return false;
     const generated = crypto
       .createHmac('sha256', secret)
       .update(body)
       .digest('hex');
     
-    return generated === signature;
+    return safeHexEqual(generated, signature);
   } catch (error) {
     console.error('❌ Error verifying webhook signature:', error);
     return false;
@@ -150,7 +191,8 @@ exports.verifyWebhookSignature = (body, signature, secret) => {
  */
 exports.fetchOrder = async (orderId) => {
   try {
-    const order = await razorpay.orders.fetch(orderId);
+    if (!orderId) throw new Error('Order ID is required');
+    const order = await getRazorpay().orders.fetch(orderId);
     return order;
   } catch (error) {
     console.error('❌ Error fetching order:', error);

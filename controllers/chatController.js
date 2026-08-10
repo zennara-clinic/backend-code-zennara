@@ -377,7 +377,10 @@ exports.getChatStats = async (req, res) => {
   try {
     const { branchId } = req.query;
 
-    const matchStage = branchId ? { branchId: mongoose.Types.ObjectId(branchId) } : {};
+    // ObjectId is a class from Mongoose 7 on — calling it without `new` throws
+    // "Class constructor ObjectId cannot be invoked without 'new'", which made
+    // this endpoint 500 for any caller that passed a branchId.
+    const matchStage = branchId ? { branchId: new mongoose.Types.ObjectId(branchId) } : {};
 
     const stats = await Chat.aggregate([
       { $match: matchStage },

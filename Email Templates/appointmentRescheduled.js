@@ -220,7 +220,11 @@ const getAppointmentRescheduledTemplate = (fullName, appointmentData, branch = '
               <div class="detail-row">
                 <span class="detail-label">Location</span>
                 <span class="detail-value">${appointmentData.location}</span>
-              </div>
+              </div>${appointmentData.address ? `
+              <div class="detail-row">
+                <span class="detail-label">Address</span>
+                <span class="detail-value">${appointmentData.address}</span>
+              </div>` : ''}
             </div>
           </div>
 

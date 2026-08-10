@@ -137,12 +137,21 @@ exports.protectAdmin = async (req, res, next) => {
     try {
       // Verify JWT token
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      
-      // Check if this is an admin token
-      if (decoded.role !== 'admin') {
+
+      // Is this a staff token at all?
+      //
+      // This used to test `decoded.role !== 'admin'`, which conflated two
+      // different things: `type` says the token belongs to a staff account,
+      // `role` says what that account is allowed to do. Because the payload
+      // carries the account's real role, any account that was not literally
+      // an 'admin' — super_admin, doctor, therapist, receptionist — was
+      // refused at the door and could never sign in. Per-role permissions are
+      // enforced by requireRole() further down each route.
+      const isAdminToken = decoded.type === 'admin' || !!decoded.adminId;
+      if (!isAdminToken) {
         return res.status(403).json({
           success: false,
-          message: 'Access denied. Admin privileges required.'
+          message: 'Access denied. Staff privileges required.'
         });
       }
 
@@ -318,8 +327,9 @@ exports.protectBoth = async (req, res, next) => {
       // Verify JWT token
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       
-      // Check if it's an admin token
-      if (decoded.role === 'admin' && decoded.adminId) {
+      // Check if it's a staff token — see the note in protectAdmin about why
+      // this keys off `type`/`adminId` rather than the account's role.
+      if ((decoded.type === 'admin' || decoded.role === 'admin') && decoded.adminId) {
         const admin = await Admin.findById(decoded.adminId);
         
         if (!admin) {

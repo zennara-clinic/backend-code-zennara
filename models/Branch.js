@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { getBranchSlotsForDate } = require('../utils/branchSchedule');
 
 const branchSchema = new mongoose.Schema({
   // Branch Name
@@ -133,32 +134,7 @@ branchSchema.index({ isActive: 1, displayOrder: 1 });
 
 // Method to get available time slots for a specific date
 branchSchema.methods.getAvailableSlots = function(date) {
-  const dayName = date.toLocaleDateString('en-US', { weekday: 'long' }).toLowerCase();
-  const daySchedule = this.operatingHours[dayName];
-  
-  if (!daySchedule || !daySchedule.isOpen) {
-    return [];
-  }
-
-  const slots = [];
-  const [openHour, openMinute] = daySchedule.openTime.split(':').map(Number);
-  const [closeHour, closeMinute] = daySchedule.closeTime.split(':').map(Number);
-  
-  let currentTime = openHour * 60 + openMinute;
-  const endTime = closeHour * 60 + closeMinute;
-  
-  while (currentTime + this.slotDuration <= endTime) {
-    const hour = Math.floor(currentTime / 60);
-    const minute = currentTime % 60;
-    const displayHour = hour > 12 ? hour - 12 : hour === 0 ? 12 : hour;
-    const amPm = hour >= 12 ? 'PM' : 'AM';
-    const timeString = `${displayHour}:${minute.toString().padStart(2, '0')} ${amPm}`;
-    
-    slots.push(timeString);
-    currentTime += this.slotDuration;
-  }
-  
-  return slots;
+  return getBranchSlotsForDate(this, date);
 };
 
 // Method to check if branch is open on a specific day

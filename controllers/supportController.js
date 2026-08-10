@@ -191,7 +191,7 @@ exports.getAllSupportMessages = async (req, res) => {
 // @access  Private/Admin
 exports.updateSupportMessageStatus = async (req, res) => {
   try {
-    const { status, adminNote } = req.body;
+    const { status, priority, adminNote, note } = req.body;
 
     const message = await SupportMessage.findById(req.params.id);
 
@@ -202,17 +202,22 @@ exports.updateSupportMessageStatus = async (req, res) => {
       });
     }
 
-    message.status = status;
+    // This route runs behind protectAdmin, so the actor is req.admin.
+    const actorId = req.admin?._id || req.user?._id || null;
+
+    if (status) message.status = status;
+    if (priority) message.priority = priority;
 
     if (status === 'resolved' || status === 'closed') {
       message.resolvedAt = new Date();
-      message.resolvedBy = req.user._id;
+      message.resolvedBy = actorId;
     }
 
-    if (adminNote) {
+    const noteText = adminNote || note;
+    if (noteText) {
       message.adminNotes.push({
-        note: adminNote,
-        addedBy: req.user._id,
+        note: noteText,
+        addedBy: actorId,
       });
     }
 

@@ -48,8 +48,8 @@ class NotificationHelper {
         return await this.create({
           userId: booking.userId,
           type: 'booking',
-          title: 'Appointment Booking Confirmed',
-          message: `Your appointment for ${booking.consultation?.name || 'consultation'} has been received. We'll confirm your slot shortly.`,
+          title: 'Booking Request Received',
+          message: `We've received your request for ${booking.consultation?.name || 'your appointment'}. We'll confirm your slot shortly.`,
           relatedId: booking._id,
           relatedModel: 'Booking',
           priority: 'high',

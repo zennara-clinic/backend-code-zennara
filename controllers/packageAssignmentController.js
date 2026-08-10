@@ -115,7 +115,11 @@ exports.createAssignment = async (req, res) => {
       paymentMethod,
       transactionId,
       notes,
-      validUntil
+      validUntil,
+      // Where the sessions happen + the dated session schedule the clinic sets.
+      preferredLocation,
+      branchId,
+      sessions
     } = req.body;
 
     // Validate user exists
@@ -133,6 +137,29 @@ exports.createAssignment = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'Package not found'
+      });
+    }
+
+    // Every service in the package must have a scheduled date — a package can't
+    // be assigned without deciding when each session happens.
+    const datedSessions = Array.isArray(sessions)
+      ? sessions.filter(s => s && s.serviceId && s.scheduledDate)
+      : [];
+    const scheduledServiceIds = new Set(datedSessions.map(s => String(s.serviceId)));
+    const missingSessions = (packageData.services || []).filter(
+      ps => !scheduledServiceIds.has(String(ps.serviceId))
+    );
+    if (missingSessions.length > 0) {
+      return res.status(400).json({
+        success: false,
+        message: `Please set a date for every session before assigning. Missing: ${missingSessions
+          .map(m => m.serviceName)
+          .join(', ')}`,
+        requiresSessionDates: true,
+        missingServices: missingSessions.map(m => ({
+          serviceId: m.serviceId,
+          serviceName: m.serviceName
+        }))
       });
     }
 
@@ -169,6 +196,19 @@ exports.createAssignment = async (req, res) => {
       },
       notes: notes || '',
       validUntil: validUntil || null,
+      preferredLocation: preferredLocation || '',
+      branchId: branchId || null,
+      // Build the dated session schedule; a service may appear more than once.
+      sessions: datedSessions.map(s => ({
+        serviceId: s.serviceId,
+        serviceName:
+          (packageData.services.find(ps => ps.serviceId === s.serviceId) || {}).serviceName ||
+          s.serviceName ||
+          '',
+        scheduledDate: new Date(s.scheduledDate),
+        scheduledTime: s.scheduledTime || '',
+        status: 'Scheduled'
+      })),
       assignedBy: req.admin?._id || null,
       assignedByName: req.admin?.name || 'Admin'
     };
@@ -310,11 +350,34 @@ exports.updateAssignment = async (req, res) => {
       });
     }
 
+    // Rebuild the dated session schedule, preserving the booking linkage of any
+    // session that was already auto-booked (matched by _id).
+    if (Array.isArray(updates.sessions)) {
+      assignment.sessions = updates.sessions
+        .filter(s => s && s.serviceId && s.scheduledDate)
+        .map(s => {
+          const existing = (assignment.sessions || []).find(ex => String(ex._id) === String(s._id));
+          return {
+            _id: existing ? existing._id : undefined,
+            serviceId: s.serviceId,
+            serviceName: s.serviceName || (existing && existing.serviceName) || '',
+            scheduledDate: new Date(s.scheduledDate),
+            scheduledTime: s.scheduledTime || (existing && existing.scheduledTime) || '',
+            status: (existing && existing.status) || 'Scheduled',
+            bookingId: (existing && existing.bookingId) || null,
+            bookingCreatedAt: (existing && existing.bookingCreatedAt) || null,
+            completedAt: (existing && existing.completedAt) || null
+          };
+        });
+    }
+
     // Update allowed fields
     const allowedUpdates = [
       'status',
       'notes',
       'validUntil',
+      'preferredLocation',
+      'branchId',
       'pricing.discountPercentage',
       'payment.isReceived',
       'payment.paymentMethod',
@@ -674,9 +737,17 @@ exports.getServiceConsentStatus = async (req, res) => {
 
     const consent = assignment.serviceConsents?.get(serviceId);
 
+    // The one-time Universal Patient Consent Form also satisfies this service.
+    let hasUniversalConsent = false;
+    if (!consent) {
+      const PatientConsentForm = require('../models/PatientConsentForm');
+      hasUniversalConsent = !!(await PatientConsentForm.exists({ userId: assignment.userId }));
+    }
+
     res.status(200).json({
       success: true,
-      hasConsent: !!consent,
+      hasConsent: !!consent || hasUniversalConsent,
+      universalConsent: hasUniversalConsent,
       consent: consent || null
     });
   } catch (error) {
@@ -710,14 +781,19 @@ exports.sendServiceOtp = async (req, res) => {
       });
     }
 
-    // Check if user has submitted consent form for this service
+    // Consent gate: a per-service consent OR the one-time Universal Patient
+    // Consent Form (which covers every treatment and package) satisfies this.
     const serviceConsent = assignment.serviceConsents?.get(serviceId);
     if (!serviceConsent) {
-      return res.status(400).json({
-        success: false,
-        message: 'Patient consent form required. Please complete the consent form first.',
-        requiresConsent: true
-      });
+      const PatientConsentForm = require('../models/PatientConsentForm');
+      const hasUniversalConsent = await PatientConsentForm.exists({ userId: assignment.userId });
+      if (!hasUniversalConsent) {
+        return res.status(400).json({
+          success: false,
+          message: 'Patient consent form required. Please complete the consent form first.',
+          requiresConsent: true
+        });
+      }
     }
 
     // Check if service card exists for this service

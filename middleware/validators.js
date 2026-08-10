@@ -78,7 +78,7 @@ exports.validateSignup = [
     }),
   
   body('gender')
-    .isIn(['Male', 'Female', 'Other', 'Prefer not to say'])
+    .isIn(['Male', 'Female', 'Other'])
     .withMessage('Please select a valid gender'),
   
   body('privacyPolicyAccepted')
@@ -173,7 +173,7 @@ exports.validateUpdateProfile = [
     .optional({ checkFalsy: true })
     .custom((value) => {
       if (!value || value.length === 0) return true; // Allow empty
-      const validGenders = ['Male', 'Female', 'Other', 'Prefer not to say'];
+      const validGenders = ['Male', 'Female', 'Other'];
       if (!validGenders.includes(value)) {
         throw new Error('Please select a valid gender');
       }

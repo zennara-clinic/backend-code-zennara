@@ -6,6 +6,7 @@ const NotificationHelper = require('../utils/notificationHelper');
 const whatsappService = require('../services/whatsappService');
 const emailService = require('../utils/emailService');
 const logger = require('../utils/logger');
+const { computeOrderPricing } = require('../utils/orderPricing');
 const { validateOwnership } = require('../middleware/securityMiddleware');
 
 // @desc    Create new product order
@@ -53,47 +54,23 @@ exports.createOrder = async (req, res) => {
       });
     }
     
-    // Validate and process items
-    const processedItems = [];
-    let calculatedSubtotal = 0;
-    
-    // First pass: validate all items before modifying stock
-    const itemsToProcess = [];
-    for (const item of items) {
-      if (!item.productId || !item.quantity || item.quantity <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid item data in cart'
-        });
-      }
-      
-      const product = await Product.findById(item.productId);
-      
-      if (!product) {
-        return res.status(404).json({
-          success: false,
-          message: `Product not found: ${item.productId}`
-        });
-      }
-      
-      if (!product.isActive) {
-        return res.status(400).json({
-          success: false,
-          message: `Product is not available: ${product.name}`
-        });
-      }
-      
-      if (product.stock < item.quantity) {
-        return res.status(400).json({
-          success: false,
-          message: `Insufficient stock for ${product.name}. Available: ${product.stock}`,
-          availableStock: product.stock
-        });
-      }
-      
-      itemsToProcess.push({ product, quantity: item.quantity });
+    // ---- Authoritative, server-side pricing ------------------------------
+    // Never trust client-sent prices / GST / discount / total. Recompute
+    // everything from the database and validate the coupon ourselves; the
+    // client's `pricing` block is ignored entirely.
+    const priced = await computeOrderPricing({ items, couponCode: coupon?.code });
+    if (!priced.ok) {
+      return res.status(priced.status || 400).json({
+        success: false,
+        message: priced.message,
+        ...(priced.availableStock !== undefined ? { availableStock: priced.availableStock } : {}),
+      });
     }
-    
+
+    // Validate + process items (stock is reserved atomically below).
+    const processedItems = [];
+    const itemsToProcess = priced.items;
+
     // Second pass: atomically reduce stock using findByIdAndUpdate to prevent race conditions
     for (const { product, quantity } of itemsToProcess) {
       // Use atomic update with $inc to prevent race conditions
@@ -128,11 +105,9 @@ exports.createOrder = async (req, res) => {
         });
       }
       
-      // Use product price
       const price = product.price;
       const subtotal = price * quantity;
-      calculatedSubtotal += subtotal;
-      
+
       processedItems.push({
         productId: product._id,
         productName: product.name,
@@ -163,17 +138,8 @@ exports.createOrder = async (req, res) => {
         postalCode: address.postalCode,
         country: address.country
       },
-      pricing: {
-        subtotal: calculatedSubtotal,
-        gst: pricing.gst || 0,
-        discount: pricing.discount || 0,
-        deliveryFee: pricing.deliveryFee || 0,
-        total: calculatedSubtotal + (pricing.gst || 0) + (pricing.deliveryFee || 0) - (pricing.discount || 0)
-      },
-      coupon: coupon ? {
-        code: coupon.code,
-        discount: coupon.discount
-      } : undefined,
+      pricing: priced.pricing,
+      coupon: priced.coupon || undefined,
       paymentMethod,
       notes
     });
@@ -376,32 +342,43 @@ exports.updateOrderStatus = async (req, res) => {
   try {
     const { status, note } = req.body;
     
-    const order = await ProductOrder.findById(req.params.id);
-    
+    // Scope to the caller's OWN order. Previously this used findById with no
+    // owner check, so any authenticated user could change (or mark Delivered →
+    // Paid) another customer's order just by guessing its id. Staff status
+    // changes go through the role-gated, audited admin order routes instead.
+    const order = await ProductOrder.findOne({ _id: req.params.id, userId: req.user._id });
+
     if (!order) {
       return res.status(404).json({
         success: false,
         message: 'Order not found'
       });
     }
-    
+
     const validStatuses = ['Order Placed', 'Confirmed', 'Processing', 'Packed', 'Shipped', 'Out for Delivery', 'Delivered', 'Cancelled', 'Returned'];
-    
+
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
         message: 'Invalid order status'
       });
     }
-    
+
+    // Fulfilment and terminal states are staff-only — a customer must not be
+    // able to self-advance an order (least of all to Delivered, which used to
+    // force paymentStatus = 'Paid'). Cancellation and returns have their own
+    // endpoints that also handle stock and refunds.
+    const STAFF_ONLY_STATUSES = ['Confirmed', 'Processing', 'Packed', 'Shipped', 'Out for Delivery', 'Delivered', 'Cancelled', 'Returned'];
+    if (STAFF_ONLY_STATUSES.includes(status)) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only Zennara staff can update this status. To change your order, use Cancel or Return.'
+      });
+    }
+
     const oldStatus = order.orderStatus;
     order.orderStatus = status;
-    
-    if (status === 'Delivered') {
-      order.deliveredAt = new Date();
-      order.paymentStatus = 'Paid'; // Mark as paid when delivered (COD)
-    }
-    
+
     order.statusHistory.push({
       status: status,
       timestamp: new Date(),

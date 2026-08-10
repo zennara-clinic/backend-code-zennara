@@ -96,6 +96,41 @@ const packageAssignmentSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
+  // Where the package's sessions happen — the clinic the auto-created
+  // appointments are placed at.
+  preferredLocation: {
+    type: String,
+    default: ''
+  },
+  branchId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Branch',
+    default: null
+  },
+  // The scheduled sessions. The clinic sets a date per session (a treatment can
+  // appear more than once for multi-session treatments). 24h before each
+  // scheduledDate the scheduler auto-creates a Booking and links it here.
+  sessions: [{
+    serviceId: String,          // → Package.services[].serviceId / Consultation.id
+    serviceName: String,
+    scheduledDate: Date,        // clinic-set date (and time) for this session
+    scheduledTime: {            // clinic-local time label, e.g. "2:30 PM" — shown verbatim,
+      type: String,            // so the displayed slot never depends on server timezone.
+      default: ''
+    },
+    status: {
+      type: String,
+      enum: ['Scheduled', 'Booked', 'Completed', 'Cancelled'],
+      default: 'Scheduled'
+    },
+    bookingId: {                // set once the appointment is auto-created
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Booking',
+      default: null
+    },
+    bookingCreatedAt: { type: Date, default: null },
+    completedAt: { type: Date, default: null }
+  }],
   usageTracking: {
     totalSessions: {
       type: Number,
