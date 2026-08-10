@@ -228,10 +228,12 @@ app.use('/api/payments', require('./routes/payment'));
 app.use('/api/pre-consult-forms', require('./routes/preConsultForm'));
 app.use('/api/patient-consent-forms', require('./routes/patientConsentForm'));
 app.use('/api/service-cards', require('./routes/serviceCard'));
+app.use('/api/admin/forms', require('./routes/forms'));
 app.use('/api/app-customization', require('./routes/appCustomizationRoutes'));
 app.use('/api/chat', require('./routes/chat'));
 app.use('/api/zenoti', require('./routes/zenoti'));
 app.use('/api/admin/zenoti', require('./routes/adminZenoti'));
+app.use('/api/banners', require('./routes/banner'));
 
 /* ------------------------------ Health Check -------------------------------- */
 app.get('/', (req, res) => {
