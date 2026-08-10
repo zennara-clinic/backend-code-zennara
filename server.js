@@ -160,6 +160,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 connectDB();
 startBookingScheduler();
 BookingStatusService.startAutoChecker();
+require('./utils/contactChangeScheduler').startContactChangeScheduler();
 
 /* ----------------------------- Debug (optional) ------------------------------ */
 app.use((req, res, next) => {
@@ -234,6 +235,8 @@ app.use('/api/chat', require('./routes/chat'));
 app.use('/api/zenoti', require('./routes/zenoti'));
 app.use('/api/admin/zenoti', require('./routes/adminZenoti'));
 app.use('/api/banners', require('./routes/banner'));
+app.use('/api/contact-change', require('./routes/contactChange'));
+app.use('/api/admin/contact-change-requests', require('./routes/adminContactChange'));
 
 /* ------------------------------ Health Check -------------------------------- */
 app.get('/', (req, res) => {
