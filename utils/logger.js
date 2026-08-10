@@ -19,9 +19,11 @@ const consoleFormat = winston.format.combine(
   })
 );
 
-// Create logger instance
+// Create logger instance.
+// Level is env-tunable so the file logs can be kept lean in production —
+// set LOG_LEVEL=warn to record only warnings + errors.
 const logger = winston.createLogger({
-  level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
+  level: process.env.LOG_LEVEL || (process.env.NODE_ENV === 'production' ? 'info' : 'debug'),
   format: logFormat,
   transports: [
     // Write all logs to combined.log
@@ -63,8 +65,9 @@ const logger = winston.createLogger({
   ]
 });
 
-// If not in production, also log to console
-if (process.env.NODE_ENV !== 'production') {
+// Mirror logs to the console for local development only. Skipped in production
+// AND whenever QUIET_LOGS=true, so the process stdout (PM2) stays clean.
+if (process.env.NODE_ENV !== 'production' && process.env.QUIET_LOGS !== 'true') {
   logger.add(new winston.transports.Console({
     format: consoleFormat
   }));

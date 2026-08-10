@@ -1,6 +1,23 @@
 const dotenv = require('dotenv');
 dotenv.config();
 
+// --- Keep production logs clean --------------------------------------------
+// The codebase carries ~400 verbose console.log calls used for local debugging.
+// In production they flood the process logs (PM2/stdout) with per-request noise,
+// so silence log/info/debug there. Real problems still surface via
+// console.error / console.warn and the winston log files (utils/logger.js).
+//   VERBOSE_LOGS=true → restore the chatty output temporarily.
+//   QUIET_LOGS=true   → force-quiet even outside production.
+const quietLogs =
+  process.env.QUIET_LOGS === 'true' ||
+  (process.env.NODE_ENV === 'production' && process.env.VERBOSE_LOGS !== 'true');
+if (quietLogs) {
+  const noop = () => {};
+  console.log = noop;
+  console.info = noop;
+  console.debug = noop;
+}
+
 const express = require('express');
 const cors = require('cors');
 const http = require('http');
