@@ -44,6 +44,27 @@ const { setupSocketIO } = require('./services/socketService');
 const app = express();
 const server = http.createServer(app);
 
+/* ------------------------------ Reverse proxy ------------------------------ */
+/*
+ * Production runs behind nginx on the EC2 instance. nginx supplies the real
+ * client in X-Forwarded-For, but Express ignores that header unless its direct
+ * proxy is trusted. Rate limiters then reject every proxied request as a
+ * configuration error instead of identifying the client correctly.
+ *
+ * Trust only loopback by default (the local nginx process), never every proxy.
+ * Deployments with an ALB or another topology can set TRUST_PROXY explicitly
+ * to an Express-compatible value such as `1`, `loopback, linklocal`, or a CIDR.
+ */
+const configuredTrustProxy = process.env.TRUST_PROXY?.trim();
+const trustProxy = configuredTrustProxy
+  ? (/^\d+$/.test(configuredTrustProxy)
+      ? Number(configuredTrustProxy)
+      : configuredTrustProxy)
+  : process.env.NODE_ENV === 'production'
+    ? 'loopback'
+    : false;
+app.set('trust proxy', trustProxy);
+
 /* ------------------------------ Allowed origins ------------------------------ */
 /*
  * There is one clinic panel now — the unified panel in `Panels/`. The legacy

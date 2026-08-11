@@ -332,7 +332,11 @@ exports.cancelBooking = async (req, res) => {
       });
     }
 
-    if (!booking.canBeCancelled()) {
+    // The 24-hour window only applies once the clinic has actually confirmed a
+    // time. While a booking is still "Awaiting Confirmation" the clinic hasn't
+    // committed to it, so the guest can cancel at any point — even inside 24h.
+    const windowEnforced = booking.status !== 'Awaiting Confirmation';
+    if (windowEnforced && !booking.canBeCancelled()) {
       return res.status(409).json({
         success: false,
         code: 'CANCELLATION_WINDOW_CLOSED',

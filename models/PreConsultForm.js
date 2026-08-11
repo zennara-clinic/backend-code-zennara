@@ -221,29 +221,32 @@ const preConsultFormSchema = new mongoose.Schema({
   timestamps: true
 });
 
-// Field-level encryption for sensitive health data (DPDPA 2023 compliance)
-// Only encrypt if encryption keys are provided AND valid
-if (process.env.ENCRYPTION_SECRET && process.env.ENCRYPTION_SALT) {
-  // Validate salt is exactly 16 characters
-  if (process.env.ENCRYPTION_SALT.length === 16) {
-    preConsultFormSchema.plugin(encrypt, {
-      fields: [
-        'drugAllergies',
-        'otherAllergies', 
-        'medicalHistory',
-        'additionalInfo',
-        'lastMenstrualPeriod'
-      ],
-      secret: process.env.ENCRYPTION_SECRET,
-      saltGenerator: () => process.env.ENCRYPTION_SALT,
-      useAes256Gcm: true
-    });
-    console.log('🔒 Health data encryption enabled for PreConsultForm');
-  } else {
-    console.warn(`⚠️  Invalid ENCRYPTION_SALT length (${process.env.ENCRYPTION_SALT.length} chars, need 16). Health data will NOT be encrypted.`);
-  }
+// Field-level encryption for sensitive health data (DPDPA 2023 compliance).
+//
+// mongoose-field-encryption generates a fresh random 16-byte IV for every
+// value and stores it alongside the ciphertext. Supplying one fixed salt here
+// was both unnecessary and less secure; worse, a malformed environment value
+// disabled encryption completely. Only the stable secret is required.
+const encryptionSecret = process.env.ENCRYPTION_SECRET;
+if (encryptionSecret?.trim()) {
+  preConsultFormSchema.plugin(encrypt, {
+    fields: [
+      'drugAllergies',
+      'otherAllergies',
+      'medicalHistory',
+      'additionalInfo',
+      'lastMenstrualPeriod'
+    ],
+    secret: encryptionSecret,
+    encryptNull: false,
+  });
+  console.log('🔒 Health data encryption enabled for PreConsultForm');
+} else if (process.env.NODE_ENV === 'production') {
+  // Never let a production process silently persist new clinical data in
+  // plaintext. The service must be given its stable encryption secret first.
+  throw new Error('ENCRYPTION_SECRET is required in production. Refusing to store health data unencrypted.');
 } else {
-  console.warn('⚠️  Encryption keys not found. Health data will NOT be encrypted at rest.');
+  console.warn('⚠️  ENCRYPTION_SECRET is not configured. Health data encryption is disabled outside production.');
 }
 
 // Indexes for efficient queries
