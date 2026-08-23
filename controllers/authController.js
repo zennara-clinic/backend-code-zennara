@@ -28,6 +28,7 @@ const serializeUser = (user) => ({
   zenMembershipExpiryDate: user.zenMembershipExpiryDate || null,
   zenMembershipAutoRenew: Boolean(user.zenMembershipAutoRenew),
   medicalHistory: user.medicalHistory || '',
+  hasDrugAllergy: user.hasDrugAllergy === true,
   drugAllergies: user.drugAllergies || '',
   dietaryPreferences: user.dietaryPreferences || [],
   smoking: user.smoking || '',
@@ -873,6 +874,7 @@ exports.updateProfile = async (req, res) => {
       dateOfBirth, 
       gender,
       medicalHistory,
+      hasDrugAllergy,
       drugAllergies,
       dietaryPreferences,
       smoking,
@@ -890,6 +892,7 @@ exports.updateProfile = async (req, res) => {
     if (gender !== undefined) updateData.gender = gender;
     if (medicalHistory !== undefined) updateData.medicalHistory = medicalHistory;
     if (drugAllergies !== undefined) updateData.drugAllergies = drugAllergies;
+    if (hasDrugAllergy !== undefined) updateData.hasDrugAllergy = hasDrugAllergy === true || hasDrugAllergy === 'true';
     if (dietaryPreferences !== undefined) updateData.dietaryPreferences = dietaryPreferences;
     if (smoking !== undefined) updateData.smoking = smoking;
     if (drinking !== undefined) updateData.drinking = drinking;

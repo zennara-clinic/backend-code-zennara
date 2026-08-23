@@ -126,6 +126,12 @@ exports.createAssignment = async (req, res) => {
     } = req.body;
     // The panel may send `payment: { isReceived, receivedDate }` instead of the flat flag.
     const paymentReceived = paymentReceivedRaw !== undefined ? !!paymentReceivedRaw : !!(req.body.payment && req.body.payment.isReceived);
+    // Money taken → there must be a receipt / transaction number on record.
+    const txn = (transactionId || (req.body.payment && req.body.payment.transactionId) || '').trim();
+    const method = paymentMethod || (req.body.payment && req.body.payment.method) || null;
+    if (paymentReceived && !txn && !/cash/i.test(method || '')) {
+      return res.status(400).json({ success: false, message: 'Enter the receipt / transaction number for the payment (required unless paid in cash).' });
+    }
     const paymentReceivedDate = req.body.payment && req.body.payment.receivedDate ? new Date(req.body.payment.receivedDate) : undefined;
 
     // Validate user exists
@@ -199,7 +205,7 @@ exports.createAssignment = async (req, res) => {
         isReceived: paymentReceived || false,
         receivedDate: paymentReceived ? (paymentReceivedDate || new Date()) : null,
         paymentMethod: paymentMethod || (req.body.payment && req.body.payment.method) || null,
-        transactionId: transactionId || null
+        transactionId: txn || null
       },
       notes: notes || '',
       validUntil: validUntil || null,

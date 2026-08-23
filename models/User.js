@@ -150,6 +150,11 @@ const UserSchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  /** Explicit tick from the app's Allergies screen — drives panel filters. */
+  hasDrugAllergy: {
+    type: Boolean,
+    default: false
+  },
   drugAllergies: {
     type: String,
     default: ''

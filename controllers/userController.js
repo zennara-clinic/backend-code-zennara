@@ -61,6 +61,7 @@ exports.getAllUsers = async (req, res) => {
       appOpenCount: user.appOpenCount || 0,
       totalSpent: user.totalSpent || 0,
       upcomingAppointments: user.upcomingAppointments || 0,
+      hasDrugAllergy: user.hasDrugAllergy === true,
       drugAllergies: user.drugAllergies || '',
       medicalHistory: user.medicalHistory || '',
       isActive: user.isActive !== undefined ? user.isActive : true,
@@ -142,6 +143,7 @@ exports.getUserById = async (req, res) => {
       appOpenCount: user.appOpenCount || 0,
       totalSpent: user.totalSpent || 0,
       upcomingAppointments: user.upcomingAppointments || 0,
+      hasDrugAllergy: user.hasDrugAllergy === true,
       drugAllergies: user.drugAllergies || '',
       medicalHistory: user.medicalHistory || '',
       source: user.source,
@@ -172,7 +174,7 @@ exports.getUserById = async (req, res) => {
 // @access  Private (Admin only)
 exports.updateUser = async (req, res) => {
   try {
-    const { fullName, phone, email, location, memberType, dateOfBirth, gender, drugAllergies, medicalHistory, removeProfilePicture } = req.body;
+    const { fullName, phone, email, location, memberType, dateOfBirth, gender, drugAllergies, hasDrugAllergy, medicalHistory, removeProfilePicture } = req.body;
     const { deleteFromCloudinary } = require('../middleware/upload');
 
     const user = await User.findById(req.params.id);
@@ -211,6 +213,7 @@ exports.updateUser = async (req, res) => {
       user.email = String(email).toLowerCase().trim();
     }
     if (drugAllergies !== undefined) user.drugAllergies = drugAllergies;
+    if (hasDrugAllergy !== undefined) user.hasDrugAllergy = hasDrugAllergy === true || hasDrugAllergy === 'true';
     if (medicalHistory !== undefined) user.medicalHistory = medicalHistory;
     if (location) user.location = location;
     if (memberType) user.memberType = memberType;
@@ -489,6 +492,10 @@ exports.assignMembership = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Enter the membership amount before granting it.' });
     }
     const received = paymentMethod === 'Complimentary' ? true : paymentMethod === 'Pay at clinic' ? false : paymentReceived !== false;
+    // Money taken → a receipt / transaction number is required (cash excepted).
+    if (received && paymentMethod !== 'Complimentary' && !/cash/i.test(paymentMethod) && !(transactionId || '').trim()) {
+      return res.status(400).json({ success: false, message: 'Enter the receipt / transaction number for this payment (required unless paid in cash).' });
+    }
 
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
@@ -675,7 +682,7 @@ exports.exportUsers = async (req, res) => {
     const limit = Math.min(20000, Math.max(1, parseInt(req.query.limit || '20000', 10)));
 
     const users = await User.find(filter)
-      .select('patientId fullName email phone location memberType zenMembershipStartDate zenMembershipExpiryDate dateOfBirth gender source totalVisits totalSpent appOpenCount drugAllergies medicalHistory smoking drinking isActive isVerified createdAt lastLogin')
+      .select('patientId fullName email phone location memberType zenMembershipStartDate zenMembershipExpiryDate dateOfBirth gender source totalVisits totalSpent appOpenCount hasDrugAllergy drugAllergies medicalHistory smoking drinking isActive isVerified createdAt lastLogin')
       .sort(sort)
       .limit(limit)
       .lean();
@@ -698,6 +705,7 @@ exports.exportUsers = async (req, res) => {
       'Total Visits': user.totalVisits || 0,
       'Total Spent': user.totalSpent || 0,
       'App Opens': user.appOpenCount || 0,
+      'Drug Allergy': user.hasDrugAllergy ? 'Yes' : (user.drugAllergies ? 'Yes' : 'No'),
       'Drug Allergies': user.drugAllergies || '',
       'Medical History': user.medicalHistory || '',
       'Smoking': user.smoking ?? '',

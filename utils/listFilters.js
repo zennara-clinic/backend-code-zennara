@@ -245,14 +245,14 @@ async function buildUserFilter(q) {
   const flags = list(q.flags);
   if (q.hasFlags === 'true' || flags.length) {
     const or = [];
-    if (!flags.length || flags.includes('allergies')) or.push({ drugAllergies: { $regex: /\S/ } });
+    if (!flags.length || flags.includes('allergies')) { or.push({ hasDrugAllergy: true }); or.push({ drugAllergies: { $regex: /\S/ } }); }
     if (!flags.length || flags.includes('medical')) or.push({ medicalHistory: { $regex: /\S/ } });
     if (!flags.length || flags.includes('inactive')) or.push({ isActive: false });
     if (flags.includes('smoking')) or.push({ smoking: { $in: ['Yes', 'yes', true, 'Occasionally', 'Regularly'] } });
     if (flags.includes('drinking')) or.push({ drinking: { $in: ['Yes', 'yes', true, 'Occasionally', 'Regularly'] } });
     and.push({ $or: or });
   }
-  if (q.hasFlags === 'false') and.push({ $nor: [{ drugAllergies: { $regex: /\S/ } }, { medicalHistory: { $regex: /\S/ } }, { isActive: false }] });
+  if (q.hasFlags === 'false') and.push({ $nor: [{ hasDrugAllergy: true }, { drugAllergies: { $regex: /\S/ } }, { medicalHistory: { $regex: /\S/ } }, { isActive: false }] });
 
   // Visit history — derived from bookings (the app has no lastVisit field).
   const bookingMatch = {};
