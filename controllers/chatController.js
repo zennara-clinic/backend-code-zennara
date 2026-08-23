@@ -224,9 +224,6 @@ exports.getChatMessages = async (req, res) => {
 
     const total = await Message.countDocuments({ chatId });
 
-    // Reverse messages to show oldest first
-    messages.reverse();
-
     res.status(200).json({
       success: true,
       data: messages,
@@ -272,6 +269,9 @@ exports.sendMessage = async (req, res) => {
     }
     if (!content) {
       return res.status(400).json({ success: false, message: 'Message cannot be empty.' });
+    }
+    if (content.length > 2000) {
+      return res.status(400).json({ success: false, message: 'Message is too long. Maximum length is 2,000 characters.' });
     }
 
     // Determine sender details

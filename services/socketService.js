@@ -165,6 +165,10 @@ const setupSocketIO = (io) => {
           socket.emit('error', { message: 'Message cannot be empty.', tempId: data.tempId });
           return;
         }
+        if (content.length > 2000) {
+          socket.emit('error', { message: 'Message is too long. Maximum length is 2,000 characters.', tempId: data.tempId });
+          return;
+        }
 
         // Determine sender details
         let senderId, senderModel, senderName;
