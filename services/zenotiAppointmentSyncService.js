@@ -17,7 +17,8 @@ const zenoti = require('./zenotiService');
 const { provisionUserFromGuest } = require('./zenotiSyncService');
 const { CENTERS, branchNameForCenter } = require('../config/zenoti');
 const Doctor = require('../models/Doctor');
-const { buildDoctorMatcher, tierTitle } = require('../utils/dermatologistMatch');
+const ZenotiPractitioner = require('../models/ZenotiPractitioner');
+const { buildDoctorMatcher, canonicalName, tierTitle } = require('../utils/dermatologistMatch');
 const logger = require('../utils/logger');
 
 let appointmentSyncRunning = false;
@@ -65,14 +66,25 @@ function localStatus(appointment) {
 }
 
 async function lookupContext() {
-  const [consultations, branches, doctors] = await Promise.all([
+  const [consultations, branches, doctors, practitioners] = await Promise.all([
     Consultation.find({}).select('_id name slug').lean(),
     Branch.find({}).select('_id name').lean(),
     Doctor.find({}).select('doctorId name tier').lean(),
+    ZenotiPractitioner.find({ active: true }).lean(),
   ]);
   const consultationByName = new Map(consultations.map((c) => [norm(c.name), c]));
   const branchByName = new Map(branches.map((b) => [norm(b.name), b]));
-  return { consultationByName, branchByName, matchDoctor: buildDoctorMatcher(doctors) };
+  const doctorById = new Map(doctors.map((doctor) => [String(doctor.doctorId), doctor]));
+  const practitionerById = new Map(practitioners.map((row) => [String(row.zenotiEmployeeId).toLowerCase(), row]));
+  const practitionerByName = new Map(practitioners.map((row) => [row.normalizedName || canonicalName(row.name), row]));
+  return {
+    consultationByName,
+    branchByName,
+    doctorById,
+    practitionerById,
+    practitionerByName,
+    matchDoctor: buildDoctorMatcher(doctors),
+  };
 }
 
 function amountOf(appointment) {
@@ -143,16 +155,38 @@ async function upsertAppointment(appointment, { user = null, context = null } = 
   if (price > 0 || isNew) booking.amount = price > 0 ? price : (booking.amount || 0);
   booking.source = booking.source === 'zenoti' || isNew ? 'zenoti' : booking.source;
   booking.paymentMethod = booking.paymentMethod || 'Other';
-  // Zenoti files the dermatologist under `therapist`; attribute to our roster.
-  const derm = ctx.matchDoctor ? ctx.matchDoctor(appointment.therapistName) : null;
+  // Zenoti calls every service provider a therapist. First classify the
+  // employee against the separately mirrored Zenoti Doctor roster; only then
+  // may it be linked to an onboarded app Doctor. This prevents aestheticians
+  // with a coincidental name token from receiving a dermatologist's revenue.
+  const rawTherapistId = String(appointment.therapistId || '').toLowerCase() || null;
+  const rawTherapistName = appointment.therapistName || '';
+  const external = (rawTherapistId && ctx.practitionerById?.get(rawTherapistId))
+    || (rawTherapistName && ctx.practitionerByName?.get(canonicalName(rawTherapistName)))
+    || null;
+  const looksDoctor = /^\s*dr\.?\s*/i.test(rawTherapistName);
+  const derm = external?.onboardedDoctorId
+    ? ctx.doctorById?.get(String(external.onboardedDoctorId))
+    : (looksDoctor && ctx.matchDoctor ? ctx.matchDoctor(rawTherapistName) : null);
+
+  booking.zenotiTherapistId = external?.zenotiEmployeeId || rawTherapistId;
+  booking.zenotiTherapistName = external?.name || rawTherapistName;
+  if (rawTherapistName) booking.therapistName = rawTherapistName;
   if (derm) {
     booking.specialistId = derm.doctorId;
     booking.specialistName = derm.name;
     booking.specialistTier = tierTitle(derm);
-  } else if (appointment.therapistName) {
-    // Not on our roster: still show the practitioner's name rather than "Unassigned".
-    booking.therapistName = appointment.therapistName;
-    if (!booking.specialistId && !booking.specialistName) booking.specialistName = appointment.therapistName.replace(/^dr\.?\s*/i, 'Dr ');
+  } else if (external || looksDoctor) {
+    // A real Zenoti doctor who has not been onboarded still participates in
+    // reporting and filters, but has no local specialistId/app profile.
+    booking.specialistId = null;
+    booking.specialistName = external?.name || rawTherapistName.replace(/^dr\.?\s*/i, 'Dr ');
+    booking.specialistTier = 'Zenoti practitioner';
+  } else if (booking.source === 'zenoti' || isNew) {
+    // It is a treatment therapist, not a dermatologist.
+    booking.specialistId = null;
+    booking.specialistName = null;
+    booking.specialistTier = null;
   }
   // A completed clinic visit with a value was settled on the Zenoti invoice.
   if (status === 'Completed' && (booking.amount || 0) > 0 && booking.paymentStatus !== 'paid') {

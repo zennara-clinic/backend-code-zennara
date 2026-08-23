@@ -14,6 +14,8 @@ router.get('/status', z.getStatus);
 router.post('/import', requireRole('admin'), z.startImport);
 router.post('/crawl', requireRole('admin'), z.startCrawl);
 router.post('/appointments/sync', requireRole('admin'), z.syncAppointments);
+router.get('/practitioners', z.listPractitioners);
+router.post('/practitioners/sync', requireRole('admin'), z.syncPractitioners);
 
 router.get('/packages', z.listPackages);
 router.get('/appointments', z.listAppointments);

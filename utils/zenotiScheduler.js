@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const zenoti = require('../services/zenotiService');
 const importer = require('../services/zenotiImportService');
 const appointmentSync = require('../services/zenotiAppointmentSyncService');
+const practitionerSync = require('../services/zenotiPractitionerService');
 const User = require('../models/User');
 const ZenotiGuestData = require('../models/ZenotiGuestData');
 const logger = require('./logger');
@@ -37,6 +38,10 @@ function startZenotiScheduler() {
     importer.crawlDetails({ limit: 40, trigger: 'schedule' }).catch(() => {});
   });
 
+  cron.schedule('*/5 * * * *', () => {
+    practitionerSync.syncPractitioners({ trigger: 'schedule' }).catch(() => {});
+  });
+
   cron.schedule('*/2 * * * *', () => {
     appointmentSync.syncRecentAppointments({ trigger: 'schedule' }).catch(() => {});
   });
@@ -46,6 +51,9 @@ function startZenotiScheduler() {
   // five-minute batches before their histories appear in the panel.
   setTimeout(async () => {
     try {
+      // Classify/link Zenoti providers before ingesting the appointment book,
+      // so treatment therapists cannot be mistaken for dermatologists.
+      await practitionerSync.syncPractitioners({ trigger: 'boot' });
       // The appointment book is the operational priority and takes only one
       // request per clinic. Do it before a potentially long history backlog.
       await appointmentSync.syncRecentAppointments({ trigger: 'boot' });
@@ -69,7 +77,7 @@ function startZenotiScheduler() {
     }
   }, 15000);
 
-  logger.info('Zenoti scheduler started (appointments every 2 min, history every 5 min, roster nightly 02:30 IST)');
+  logger.info('Zenoti scheduler started (appointments every 2 min, practitioners/history every 5 min, roster nightly 02:30 IST)');
 }
 
 module.exports = { startZenotiScheduler };

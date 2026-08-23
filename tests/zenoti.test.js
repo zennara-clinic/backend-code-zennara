@@ -6,6 +6,7 @@ const { isMembershipCurrentlyActive } = require('../services/zenotiSyncService')
 const User = require('../models/User');
 const Booking = require('../models/Booking');
 const { localStatus } = require('../services/zenotiAppointmentSyncService');
+const { buildDoctorMatcher } = require('../utils/dermatologistMatch');
 
 test('full guest profile keeps root-level address and operational fields', () => {
   const guest = zenoti.normalizeGuest({
@@ -107,4 +108,23 @@ test('Zenoti bookings may retain an external service before catalogue mapping', 
   assert.equal(error?.errors?.consultationId, undefined);
   assert.equal(error?.errors?.mobileNumber, undefined);
   assert.equal(error?.errors?.email, undefined);
+});
+
+test('doctor matching accepts Zenoti surname differences only for a unique onboarded first name', () => {
+  const match = buildDoctorMatcher([
+    { doctorId: 'spoorthy-nagineni', name: 'Dr Spoorthy Nagineni' },
+    { doctorId: 'shilpa-reddy-gill', name: 'Dr Shilpa Reddy Gill' },
+  ]);
+  assert.equal(match('Dr Spoorthy Rao')?.doctorId, 'spoorthy-nagineni');
+  assert.equal(match('Dr Shilpa Gill')?.doctorId, 'shilpa-reddy-gill');
+});
+
+test('doctor matching never assigns unrelated Zenoti treatment staff', () => {
+  const match = buildDoctorMatcher([
+    { doctorId: 'spoorthy-nagineni', name: 'Dr Spoorthy Nagineni' },
+    { doctorId: 'shilpa-reddy-gill', name: 'Dr Shilpa Reddy Gill' },
+  ]);
+  assert.equal(match('Vennela K'), null);
+  assert.equal(match('Praveen K'), null);
+  assert.equal(match('Dr Varsha Reddy'), null);
 });

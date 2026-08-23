@@ -11,8 +11,13 @@ const User = require('../models/User');
 const Branch = require('../models/Branch');
 const ZenotiGuestData = require('../models/ZenotiGuestData');
 const ZenotiSyncRun = require('../models/ZenotiSyncRun');
+const ZenotiPractitioner = require('../models/ZenotiPractitioner');
+const Doctor = require('../models/Doctor');
+const Booking = require('../models/Booking');
 const importer = require('../services/zenotiImportService');
 const appointmentSync = require('../services/zenotiAppointmentSyncService');
+const practitionerSync = require('../services/zenotiPractitionerService');
+const { canonicalName } = require('../utils/dermatologistMatch');
 const logger = require('../utils/logger');
 
 const clamp = (v, lo, hi, d) => { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
@@ -72,6 +77,103 @@ exports.syncAppointments = async (_req, res) => {
   }
   appointmentSync.syncRecentAppointments({ trigger: 'manual' }).catch(() => {});
   return res.status(202).json({ success: true, message: 'Refreshing all clinic appointment books now.' });
+};
+
+// GET /api/admin/zenoti/practitioners
+// Unified reporting/filter dimension. Onboarded doctors remain the only rows
+// exposed by /api/doctors and therefore the only doctors visible in the app.
+exports.listPractitioners = async (_req, res) => {
+  try {
+    const [doctors, external, historical] = await Promise.all([
+      Doctor.find({ isActive: { $ne: false } }).select('doctorId name availableCentres photo tier').sort({ name: 1 }).lean(),
+      ZenotiPractitioner.find({ active: true }).sort({ name: 1 }).lean(),
+      Booking.aggregate([
+        { $match: { source: 'zenoti', specialistName: /^\s*dr\.?\s*/i } },
+        { $group: {
+          _id: { employeeId: '$zenotiTherapistId', name: '$specialistName' },
+          bookings: { $sum: 1 },
+          revenue: { $sum: { $cond: [{ $eq: ['$paymentStatus', 'paid'] }, { $ifNull: ['$amount', 0] }, 0] } },
+          lastVisit: { $max: { $ifNull: ['$confirmedDate', '$preferredDate'] } },
+        } },
+      ]),
+    ]);
+
+    const externalByLocal = new Map();
+    external.forEach((row) => {
+      if (row.onboardedDoctorId) externalByLocal.set(String(row.onboardedDoctorId), row);
+    });
+    const rows = doctors.map((doctor) => {
+      const linked = externalByLocal.get(String(doctor.doctorId));
+      return {
+        filterValue: doctor.doctorId,
+        name: doctor.name,
+        source: linked ? 'app+zenoti' : 'app',
+        onboarded: true,
+        doctorId: doctor.doctorId,
+        zenotiEmployeeId: linked?.zenotiEmployeeId || null,
+        centers: [...new Set([...(doctor.availableCentres || []), ...(linked?.centerNames || [])])],
+      };
+    });
+    const seen = new Set();
+    rows.forEach((row) => {
+      seen.add(row.filterValue);
+      // A linked Zenoti identity must not reappear as a second historical row.
+      if (row.zenotiEmployeeId) seen.add(`zenoti:${String(row.zenotiEmployeeId).toLowerCase()}`);
+    });
+
+    external.filter((row) => !row.onboardedDoctorId).forEach((row) => {
+      const filterValue = `zenoti:${row.zenotiEmployeeId}`;
+      if (seen.has(filterValue)) return;
+      seen.add(filterValue);
+      rows.push({
+        filterValue,
+        name: row.name,
+        source: 'zenoti',
+        onboarded: false,
+        doctorId: null,
+        zenotiEmployeeId: row.zenotiEmployeeId,
+        centers: row.centerNames || [],
+      });
+    });
+
+    // Keep former/visiting Zenoti doctors selectable for historical reports,
+    // even when they are no longer in today's active employee roster.
+    historical.forEach((item) => {
+      const employeeId = item._id.employeeId && String(item._id.employeeId).toLowerCase();
+      const filterValue = employeeId ? `zenoti:${employeeId}` : `zenoti-name:${canonicalName(item._id.name)}`;
+      if (!canonicalName(item._id.name) || seen.has(filterValue)) return;
+      seen.add(filterValue);
+      rows.push({
+        filterValue,
+        name: item._id.name,
+        source: 'zenoti',
+        onboarded: false,
+        doctorId: null,
+        zenotiEmployeeId: employeeId || null,
+        centers: [],
+        historical: true,
+        bookings: item.bookings,
+        revenue: item.revenue,
+        lastVisit: item.lastVisit,
+      });
+    });
+
+    rows.sort((a, b) => Number(b.onboarded) - Number(a.onboarded) || a.name.localeCompare(b.name));
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// POST /api/admin/zenoti/practitioners/sync
+exports.syncPractitioners = async (_req, res) => {
+  if (practitionerSync.isRunning()) return res.status(409).json({ success: false, message: 'The practitioner roster is already refreshing.' });
+  try {
+    const result = await practitionerSync.syncPractitioners({ trigger: 'manual' });
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(502).json({ success: false, message: error.message });
+  }
 };
 
 // GET /api/admin/zenoti/users/:userId  (?refresh=1 forces a live pull)

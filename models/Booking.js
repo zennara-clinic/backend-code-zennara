@@ -112,6 +112,11 @@ const bookingSchema = new mongoose.Schema({
     trim: true
   },
 
+  // Stable reporting identity from Zenoti. This is deliberately separate from
+  // `specialistId`, which belongs only to an onboarded app Doctor profile.
+  zenotiTherapistId: { type: String, trim: true, lowercase: true, default: null, index: true },
+  zenotiTherapistName: { type: String, trim: true, default: '' },
+
   // Floor assignment — who is delivering the session and where.
   therapistId: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', default: null, index: true },
   therapistName: { type: String, trim: true, default: '' },

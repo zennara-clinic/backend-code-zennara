@@ -16,10 +16,12 @@ const PackageAssignment = require('../models/PackageAssignment');
 const Payment = require('../models/Payment');
 const Consultation = require('../models/Consultation');
 const Doctor = require('../models/Doctor');
+const ZenotiPractitioner = require('../models/ZenotiPractitioner');
 const User = require('../models/User');
 const Branch = require('../models/Branch');
 const ZenotiGuestData = require('../models/ZenotiGuestData');
 const { consultationIdsByKind } = require('../utils/listFilters');
+const { canonicalName } = require('../utils/dermatologistMatch');
 
 const CONSULT_RX = /consult|counsel/i;
 const dayKey = (d) => { const x = new Date(d); x.setMinutes(x.getMinutes() - x.getTimezoneOffset()); return x.toISOString().slice(0, 10); };
@@ -57,7 +59,7 @@ exports.getDashboard = async (req, res) => {
     const isConsult = (bk) => (bk.consultationId ? consultSet.has(String(bk.consultationId)) : CONSULT_RX.test(bk.externalServiceName || ''));
 
     // ---- pull the window's rows (small enough to shape in memory) ---------
-    const bookingFields = 'consultationId externalServiceName externalServiceCategory status amount paymentStatus paymentMethod paidAt createdAt confirmedDate preferredDate specialistId specialistName specialistTier source preferredLocation branchId rating userId isPackageIncluded';
+    const bookingFields = 'consultationId externalServiceName externalServiceCategory status amount paymentStatus paymentMethod paidAt createdAt confirmedDate preferredDate specialistId specialistName specialistTier zenotiTherapistId zenotiTherapistName source preferredLocation branchId rating userId isPackageIncluded';
     const [bookings, paidBookings, prevPaidBookings, orders, prevOrders, packages, prevPackages, memberships, prevMemberships] = await Promise.all([
       Booking.find({ ...bookingBranch, ...slotIn(start, end) }).select(bookingFields).lean(),
       Booking.find({ ...bookingBranch, ...paidIn(start, end) }).select(bookingFields).lean(),
@@ -153,18 +155,42 @@ exports.getDashboard = async (req, res) => {
     };
 
     // ---- dermatologist leaderboard ---------------------------------------
-    const docs = await Doctor.find({}).select('doctorId name tier level designation photo').lean();
+    const [docs, zenotiPractitioners] = await Promise.all([
+      Doctor.find({ isActive: { $ne: false } }).select('doctorId name tier level designation photo').lean(),
+      ZenotiPractitioner.find({}).select('zenotiEmployeeId name normalizedName onboardedDoctorId active').lean(),
+    ]);
     const docByKey = new Map();
-    docs.forEach((d) => { docByKey.set(String(d.doctorId).toLowerCase(), d); docByKey.set(String(d._id), d); docByKey.set(d.name.toLowerCase(), d); });
+    docs.forEach((d) => { docByKey.set(String(d.doctorId).toLowerCase(), d); docByKey.set(String(d._id), d); docByKey.set(canonicalName(d.name), d); });
+    const practitionerByEmployee = new Map(zenotiPractitioners.map((p) => [String(p.zenotiEmployeeId).toLowerCase(), p]));
+    const practitionerByName = new Map(zenotiPractitioners.map((p) => [p.normalizedName || canonicalName(p.name), p]));
+    const practitionerByLocal = new Map(zenotiPractitioners.filter((p) => p.onboardedDoctorId).map((p) => [String(p.onboardedDoctorId).toLowerCase(), p]));
     const perf = new Map();
     for (const bk of bookings) {
-      const key = (bk.specialistId && String(bk.specialistId).toLowerCase()) || (bk.specialistName && bk.specialistName.toLowerCase());
-      if (!key) continue;
-      const d = docByKey.get(key);
-      const id = d ? String(d.doctorId) : key;
+      const specialistKey = bk.specialistId && String(bk.specialistId).toLowerCase();
+      const external = (bk.zenotiTherapistId && practitionerByEmployee.get(String(bk.zenotiTherapistId).toLowerCase()))
+        || (bk.specialistName && practitionerByName.get(canonicalName(bk.specialistName)))
+        || null;
+      const linkedLocalId = external?.onboardedDoctorId && String(external.onboardedDoctorId).toLowerCase();
+      const d = (specialistKey && docByKey.get(specialistKey))
+        || (linkedLocalId && docByKey.get(linkedLocalId))
+        || (bk.specialistName && docByKey.get(canonicalName(bk.specialistName)))
+        || null;
+      // Legacy Zenoti rows sometimes carried a treatment therapist in
+      // specialistName. Only a verified employee-roster match or an explicitly
+      // doctor-prefixed historical name may create a Zenoti leaderboard row.
+      const validHistoricalName = Boolean(bk.specialistName)
+        && (bk.source !== 'zenoti' || /^\s*dr\.?\s*/i.test(String(bk.specialistName)));
+      if (!d && !external && !validHistoricalName) continue;
+      const id = d
+        ? String(d.doctorId)
+        : external
+          ? `zenoti:${external.zenotiEmployeeId}`
+          : `zenoti-name:${canonicalName(bk.specialistName)}`;
+      const source = d ? (practitionerByLocal.has(String(d.doctorId).toLowerCase()) ? 'app+zenoti' : 'app') : 'zenoti';
       const row = perf.get(id) || {
-        doctorId: id, name: d ? d.name : bk.specialistName || key, photo: d ? d.photo : null,
-        tier: d ? d.tier : null, level: d ? (d.tier === 'senior-consultant' ? 'Senior Dermatologist' : 'Dermatologist') : (bk.specialistTier || '—'),
+        doctorId: id, name: d ? d.name : external?.name || bk.specialistName, photo: d ? d.photo : null,
+        tier: d ? d.tier : null, level: d ? (d.tier === 'senior-consultant' ? 'Senior Dermatologist' : 'Dermatologist') : 'Zenoti practitioner',
+        source, onboarded: Boolean(d), zenotiEmployeeId: external?.zenotiEmployeeId || null,
         bookings: 0, consultations: 0, treatments: 0, completed: 0, noShow: 0, cancelled: 0, revenue: 0, ratings: [], patients: new Set(),
       };
       row.bookings += 1;
@@ -185,7 +211,16 @@ exports.getDashboard = async (req, res) => {
     })).sort((a, b) => b.revenue - a.revenue || b.completed - a.completed);
     // Dermatologists with no bookings in the window still belong on the board.
     docs.forEach((d) => {
-      if (!perf.has(String(d.doctorId))) dermatologists.push({ doctorId: String(d.doctorId), name: d.name, photo: d.photo, tier: d.tier, level: d.tier === 'senior-consultant' ? 'Senior Dermatologist' : 'Dermatologist', bookings: 0, consultations: 0, treatments: 0, completed: 0, noShow: 0, cancelled: 0, revenue: 0, patients: 0, avgRating: null, completionRate: 0 });
+      if (!perf.has(String(d.doctorId))) {
+        const linked = practitionerByLocal.get(String(d.doctorId).toLowerCase());
+        dermatologists.push({ doctorId: String(d.doctorId), name: d.name, photo: d.photo, tier: d.tier, level: d.tier === 'senior-consultant' ? 'Senior Dermatologist' : 'Dermatologist', source: linked ? 'app+zenoti' : 'app', onboarded: true, zenotiEmployeeId: linked?.zenotiEmployeeId || null, bookings: 0, consultations: 0, treatments: 0, completed: 0, noShow: 0, cancelled: 0, revenue: 0, patients: 0, avgRating: null, completionRate: 0 });
+      }
+    });
+    // Active Zenoti doctors are useful reporting/filter dimensions even when
+    // they had no visit in the selected period. They remain reporting-only.
+    zenotiPractitioners.filter((p) => p.active && !p.onboardedDoctorId).forEach((p) => {
+      const id = `zenoti:${p.zenotiEmployeeId}`;
+      if (!perf.has(id)) dermatologists.push({ doctorId: id, name: p.name, photo: null, tier: null, level: 'Zenoti practitioner', source: 'zenoti', onboarded: false, zenotiEmployeeId: p.zenotiEmployeeId, bookings: 0, consultations: 0, treatments: 0, completed: 0, noShow: 0, cancelled: 0, revenue: 0, patients: 0, avgRating: null, completionRate: 0 });
     });
 
     // ---- services, centres, payment mix, series --------------------------

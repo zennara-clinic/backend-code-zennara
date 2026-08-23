@@ -688,6 +688,31 @@ async function getCenterAppointments(centerId, { from, to, includeCancelled = tr
   return rows.map((row) => normalizeCenterAppointment(row, centerId)).filter(Boolean);
 }
 
+/** Active employees assigned to a centre on the requested clinic date. */
+async function getCenterEmployees(centerId, { date } = {}) {
+  if (!centerId) return [];
+  const all = [];
+  for (let page = 1; page <= 100; page += 1) {
+    const json = await request(`/v1/centers/${centerId}/employees`, {
+      query: { date: date || isoDaysFromNow(0), page, size: 100 },
+    });
+    const rows = json?.employees || json?.Employees || [];
+    all.push(...rows);
+    const info = json?.page_info || json?.page_Info || {};
+    if (!rows.length || rows.length < 100 || (info.total && all.length >= Number(info.total))) break;
+  }
+  return all.map((employee) => {
+    const personal = employee.personal_info || employee.PersonalInfo || {};
+    const job = employee.job_info || employee.JobInfo || {};
+    const name = pick(personal, 'name') || `${pick(personal, 'first_name') || ''} ${pick(personal, 'last_name') || ''}`.trim() || pick(employee, 'name');
+    return {
+      id: String(pick(employee, 'id') || '').toLowerCase() || null,
+      name,
+      jobName: pick(job, 'name', 'job_name') || pick(employee, 'job_name'),
+    };
+  }).filter((employee) => employee.id && employee.name);
+}
+
 /** Product / retail purchase history for a guest. */
 async function getGuestProducts(guestId) {
   if (!guestId) return [];
@@ -778,6 +803,7 @@ module.exports = {
   getGuest,
   getGuestAppointments,
   getCenterAppointments,
+  getCenterEmployees,
   getGuestProducts,
   getGuestMemberships,
   getGuestPackages,

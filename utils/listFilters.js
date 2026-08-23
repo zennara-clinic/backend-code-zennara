@@ -7,6 +7,8 @@
 const Booking = require('../models/Booking');
 const Consultation = require('../models/Consultation');
 const User = require('../models/User');
+const ZenotiPractitioner = require('../models/ZenotiPractitioner');
+const { canonicalName } = require('./dermatologistMatch');
 
 const escapeRx = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const list = (v) => (v === undefined || v === null || v === '' ? [] : Array.isArray(v) ? v : String(v).split(',')).map((x) => String(x).trim()).filter(Boolean);
@@ -14,6 +16,40 @@ const num = (v) => (v === undefined || v === '' || v === null || Number.isNaN(Nu
 const dayStart = (v) => { if (!v) return null; const d = new Date(v); if (Number.isNaN(d.getTime())) return null; d.setHours(0, 0, 0, 0); return d; };
 const dayEnd = (v) => { if (!v) return null; const d = new Date(v); if (Number.isNaN(d.getTime())) return null; d.setHours(23, 59, 59, 999); return d; };
 const isoDate = (d) => d.toISOString().slice(0, 10);
+
+const practitionerNameRx = (name) => {
+  const parts = canonicalName(name).split(' ').filter(Boolean);
+  if (!parts.length) return /^$/;
+  return new RegExp(`^\\s*(?:dr\\.?\\s*)?${parts.map(escapeRx).join('[^a-z0-9]+')}[^a-z0-9]*$`, 'i');
+};
+
+/** Translate the unified practitioner filter values into Booking fields.
+ * Local/onboarded doctors use `specialistId`; reporting-only Zenoti doctors
+ * use the immutable employee id, with a name fallback for historical rows. */
+async function practitionerBookingMatch(raw) {
+  const values = list(raw);
+  const localIds = values.filter((value) => !value.startsWith('zenoti:') && !value.startsWith('zenoti-name:')).map((value) => value.toLowerCase());
+  const employeeIds = values.filter((value) => value.startsWith('zenoti:')).map((value) => value.slice('zenoti:'.length).toLowerCase()).filter(Boolean);
+  const historicalNames = values.filter((value) => value.startsWith('zenoti-name:')).map((value) => value.slice('zenoti-name:'.length)).filter(Boolean);
+  const or = [];
+
+  if (localIds.length) or.push({ specialistId: { $in: localIds } });
+  if (employeeIds.length) or.push({ zenotiTherapistId: { $in: employeeIds } });
+
+  // Existing appointments may predate the employee-id field. Resolve current
+  // roster names as a compatibility path until the repair/backfill has run.
+  if (employeeIds.length) {
+    const practitioners = await ZenotiPractitioner.find({ zenotiEmployeeId: { $in: employeeIds } }).select('name').lean();
+    historicalNames.push(...practitioners.map((row) => row.name));
+  }
+  historicalNames.forEach((name) => {
+    const rx = practitionerNameRx(name);
+    or.push({ $or: [{ specialistName: rx }, { zenotiTherapistName: rx }, { therapistName: rx }] });
+  });
+
+  if (!or.length) return { _id: { $exists: false } };
+  return or.length === 1 ? or[0] : { $or: or };
+}
 
 /**
  * Dermatologist consultations vs treatments. Mirrors the app's
@@ -58,7 +94,7 @@ async function buildBookingQuery(q) {
   else if (q.location && q.location !== 'all') query.preferredLocation = q.location;
 
   if (q.userId) query.userId = q.userId;
-  if (q.specialistId) { const ids = list(q.specialistId).map((s) => s.toLowerCase()); query.specialistId = ids.length > 1 ? { $in: ids } : ids[0]; }
+  if (q.specialistId) and.push(await practitionerBookingMatch(q.specialistId));
   if (q.therapistId) { const ids = list(q.therapistId); query.therapistId = ids.length > 1 ? { $in: ids } : ids[0]; }
   if (q.source) { const s = list(q.source); query.source = s.length > 1 ? { $in: s } : s[0]; }
   if (q.paymentStatus) { const s = list(q.paymentStatus); query.paymentStatus = s.length > 1 ? { $in: s } : s[0]; }
@@ -222,7 +258,7 @@ async function buildUserFilter(q) {
   const bookingMatch = {};
   if (q.consultationId) bookingMatch.consultationId = { $in: list(q.consultationId) };
   if (q.category) bookingMatch.$or = [{ externalServiceCategory: { $in: list(q.category) } }];
-  if (q.specialistId) bookingMatch.specialistId = { $in: list(q.specialistId).map((s) => s.toLowerCase()) };
+  if (q.specialistId) bookingMatch.$and = [...(bookingMatch.$and || []), await practitionerBookingMatch(q.specialistId)];
   if (q.bookingStatus) bookingMatch.status = { $in: list(q.bookingStatus) };
   if (q.kind === 'consultation' || q.kind === 'treatment') {
     const { consult, treat } = await consultationIdsByKind();
@@ -265,4 +301,4 @@ async function buildUserFilter(q) {
   return { filter, sort };
 }
 
-module.exports = { buildBookingQuery, buildUserFilter, consultationIdsByKind, list };
+module.exports = { buildBookingQuery, buildUserFilter, consultationIdsByKind, practitionerBookingMatch, list };
