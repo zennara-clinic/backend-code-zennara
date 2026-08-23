@@ -472,80 +472,115 @@ exports.createUser = async (req, res) => {
 // @access  Private (Admin only)
 exports.assignMembership = async (req, res) => {
   try {
-    const { months, paymentReceived } = req.body;
+    const {
+      months, startDate, paymentMethod, amount, paymentReceived, autoRenew, plan, notes, transactionId,
+    } = req.body || {};
 
-    // Validate input
-    if (!months || months < 1) {
-      return res.status(400).json({
-        success: false,
-        message: 'Please specify number of months (minimum 1)'
-      });
+    const m = parseInt(months, 10);
+    if (!m || m < 1 || m > 60) {
+      return res.status(400).json({ success: false, message: 'Please specify the number of months (1–60).' });
     }
+    const METHODS = ['Paid at clinic', 'Pay at clinic', 'Razorpay', 'Cash', 'Card', 'Credit Card', 'Debit Card', 'UPI', 'Bank Transfer', 'Complimentary'];
+    if (!paymentMethod || !METHODS.includes(paymentMethod)) {
+      return res.status(400).json({ success: false, message: `Choose how this membership is paid: ${METHODS.join(', ')}.` });
+    }
+    const amt = Number(amount);
+    if (paymentMethod !== 'Complimentary' && (!Number.isFinite(amt) || amt < 0)) {
+      return res.status(400).json({ success: false, message: 'Enter the membership amount before granting it.' });
+    }
+    const received = paymentMethod === 'Complimentary' ? true : paymentMethod === 'Pay at clinic' ? false : paymentReceived !== false;
 
     const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
 
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
+    const now = new Date();
+    const isCurrentlyZenMember = user.memberType === 'Zen Member' && user.zenMembershipExpiryDate && new Date(user.zenMembershipExpiryDate) > now;
+    let start;
+    if (isCurrentlyZenMember) {
+      // Extend from the current expiry, never from today.
+      start = new Date(user.zenMembershipExpiryDate);
+    } else {
+      start = startDate ? new Date(startDate) : now;
+      if (Number.isNaN(start.getTime())) start = now;
+      user.zenMembershipStartDate = start;
+    }
+    const expiry = new Date(start);
+    expiry.setMonth(expiry.getMonth() + m);
+
+    // Record the money like an app purchase so the dashboard counts it.
+    const Payment = require('../models/Payment');
+    let payment = null;
+    if (paymentMethod !== 'Complimentary') {
+      payment = await Payment.create({
+        userId: user._id,
+        orderId: user._id,
+        orderType: 'ZenMembership',
+        razorpayOrderId: `ADMIN-${user._id}-${Date.now()}`,
+        amount: amt,
+        currency: 'INR',
+        status: received ? 'captured' : 'pending',
+        method: paymentMethod,
+        metadata: {
+          membershipType: 'Zen Member', months: m, plan: plan || null, source: 'admin',
+          grantedBy: req.admin ? req.admin.name : null, notes: notes || null, transactionId: transactionId || null,
+          membershipActivated: true, startDate: start, expiryDate: expiry,
+        },
       });
     }
 
-    const currentDate = new Date();
-    const isCurrentlyZenMember = user.memberType === 'Zen Member';
+    user.memberType = 'Zen Member';
+    user.zenMembershipExpiryDate = expiry;
+    user.zenMembershipAutoRenew = autoRenew === true;
+    user.zenMembershipSource = 'admin';
+    user.zenMembershipPlan = plan || `Zen Membership · ${m} month${m === 1 ? '' : 's'}`;
+    user.zenMembershipMonths = m;
+    user.zenMembershipAmount = paymentMethod === 'Complimentary' ? 0 : amt;
+    user.zenMembershipPaymentMethod = paymentMethod;
+    user.zenMembershipPaymentStatus = received ? 'paid' : 'pending';
+    user.zenMembershipPaymentId = payment ? payment._id : null;
+    user.zenMembershipGrantedBy = req.admin ? req.admin.name : null;
+    await user.save({ validateModifiedOnly: true });
 
-    if (isCurrentlyZenMember && user.zenMembershipExpiryDate) {
-      // Extend existing membership
-      const currentExpiry = new Date(user.zenMembershipExpiryDate);
-      const newExpiry = new Date(currentExpiry);
-      newExpiry.setMonth(newExpiry.getMonth() + parseInt(months));
-      
-      user.zenMembershipExpiryDate = newExpiry;
-      
-      console.log(`✅ Extended Zen Membership for ${user.fullName} by ${months} month(s). New expiry: ${newExpiry.toDateString()}`);
-    } else {
-      // Assign new membership
-      user.memberType = 'Zen Member';
-      user.zenMembershipStartDate = currentDate;
-      
-      const expiryDate = new Date(currentDate);
-      expiryDate.setMonth(expiryDate.getMonth() + parseInt(months));
-      user.zenMembershipExpiryDate = expiryDate;
-      user.zenMembershipAutoRenew = true;
-      
-      console.log(`✅ Assigned Zen Membership to ${user.fullName} for ${months} month(s). Expires: ${expiryDate.toDateString()}`);
-    }
-
-    await user.save();
-
-    // Format response
-    const action = isCurrentlyZenMember ? 'extended' : 'assigned';
-    const message = paymentReceived 
-      ? `Membership ${action} successfully. Payment of ₹${1999 * months} received.`
-      : `Membership ${action} successfully.`;
-
+    const action = isCurrentlyZenMember ? 'extended' : 'granted';
     res.status(200).json({
       success: true,
-      message,
+      message: `Zen membership ${action} for ${m} month${m === 1 ? '' : 's'} — ${received ? 'paid' : 'to be paid at the clinic'}.`,
       data: {
         memberType: user.memberType,
         zenMembershipStartDate: user.zenMembershipStartDate,
         zenMembershipExpiryDate: user.zenMembershipExpiryDate,
-        zenMembershipAutoRenew: user.zenMembershipAutoRenew
-      }
+        zenMembershipAutoRenew: user.zenMembershipAutoRenew,
+        zenMembershipPaymentStatus: user.zenMembershipPaymentStatus,
+        paymentId: payment ? payment._id : null,
+      },
     });
   } catch (error) {
     console.error('❌ Assign membership failed:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to assign membership. Please try again.'
-    });
+    res.status(500).json({ success: false, message: 'Failed to assign membership. Please try again.' });
   }
 };
 
-// @desc    Cancel Zen Membership (Admin)
-// @route   DELETE /api/admin/users/:id/membership
-// @access  Private (Admin only)
+// @desc    Mark a pending (pay-at-clinic) membership as paid
+// @route   POST /api/admin/users/:id/membership/paid
+exports.markMembershipPaid = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+    if (user.memberType !== 'Zen Member') return res.status(400).json({ success: false, message: 'This guest is not a Zen member.' });
+    const { paymentMethod, transactionId } = req.body || {};
+    const Payment = require('../models/Payment');
+    if (user.zenMembershipPaymentId) {
+      await Payment.updateOne({ _id: user.zenMembershipPaymentId }, { $set: { status: 'captured', method: paymentMethod || user.zenMembershipPaymentMethod, 'metadata.transactionId': transactionId || null, 'metadata.paidAt': new Date() } });
+    }
+    user.zenMembershipPaymentStatus = 'paid';
+    if (paymentMethod) user.zenMembershipPaymentMethod = paymentMethod;
+    await user.save({ validateModifiedOnly: true });
+    res.json({ success: true, message: 'Membership marked as paid.', data: { zenMembershipPaymentStatus: 'paid' } });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to update the membership payment.' });
+  }
+};
+
 exports.cancelMembership = async (req, res) => {
   try {
     const user = await User.findById(req.params.id);

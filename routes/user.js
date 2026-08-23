@@ -32,7 +32,8 @@ router.delete('/:id', deleteUser);
 router.patch('/:id/statistics', updateUserStatistics);
 
 // Membership management routes
-router.post('/:id/membership', assignMembership); // Assign/extend membership
+router.post('/:id/membership', assignMembership);
+router.post('/:id/membership/paid', require('../controllers/userController').markMembershipPaid); // Assign/extend membership
 router.delete('/:id/membership', cancelMembership); // Cancel membership
 
 // User status management

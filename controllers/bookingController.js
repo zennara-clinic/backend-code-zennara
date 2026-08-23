@@ -1,5 +1,7 @@
 const Booking = require('../models/Booking');
 const { buildBookingQuery } = require('../utils/listFilters');
+const visitCodes = require('../utils/visitCodes');
+const Doctor = require('../models/Doctor');
 const Consultation = require('../models/Consultation');
 const User = require('../models/User');
 const Branch = require('../models/Branch');
@@ -1265,15 +1267,16 @@ exports.checkInBookingAdmin = async (req, res) => {
     if (!reason) {
       return res.status(400).json({ success: false, message: 'A reason is required to check in without a code.' });
     }
+    await applyDermatologist(booking, req.body);
     booking.status = 'In Progress';
     booking.checkInTime = new Date();
     booking.checkInCode = null;
     booking.manualCheckIn = { reason, by: req.admin && req.admin._id, byName: req.admin && req.admin.name, at: new Date() };
 
-    await booking.save();
-
     // Populate consultation details for email
     await booking.populate('consultationId', 'name');
+    await visitCodes.deliver(booking, 'checkout', { by: req.admin });
+    await booking.save();
 
     // Create notification for check-in (admin endpoint)
     try {
@@ -1479,33 +1482,6 @@ function appointmentStart(booking) {
   return d;
 }
 
-const genVisitCode = () => String(Math.floor(100000 + Math.random() * 900000));
-
-/** Send a freshly generated code to the guest by email + WhatsApp (non-blocking). */
-async function deliverVisitCode(booking, kind, code) {
-  const label = kind === 'check-in' ? 'check-in' : 'check-out';
-  try {
-    await emailService.sendVisitCodeEmail(booking.email, booking.fullName, {
-      code,
-      kind: label,
-      referenceNumber: booking.referenceNumber,
-      treatment: booking.consultationId && booking.consultationId.name,
-      location: booking.preferredLocation,
-    });
-  } catch (e) {
-    console.error('⚠️ Visit-code email failed:', e.message);
-  }
-  try {
-    const tail = kind === 'check-out' ? 'to complete your visit' : 'to check in';
-    await whatsappService.sendMessage(
-      booking.mobileNumber,
-      `Your Zennara ${label} code is ${code}. Show it at reception ${tail}. (Ref ${booking.referenceNumber})`,
-    );
-  } catch (e) {
-    console.error('⚠️ Visit-code WhatsApp failed:', e.message);
-  }
-}
-
 // @desc    Staff send (or resend) the guest's check-in / check-out code by email / WhatsApp
 // @route   POST /api/bookings/admin/:id/visit-code
 // @access  Private (Admin)
@@ -1524,55 +1500,9 @@ exports.sendVisitCodeAdmin = async (req, res) => {
     if (!isOut && !['Confirmed', 'No Show', 'Rescheduled', 'Awaiting Confirmation'].includes(booking.status)) {
       return res.status(400).json({ success: false, message: `Cannot send a check-in code for a booking that is ${booking.status}.` });
     }
-
-    const codeField = isOut ? 'checkOutCode' : 'checkInCode';
-    const atField = isOut ? 'checkOutCodeAt' : 'checkInCodeAt';
-    if (!booking[codeField] || regenerate) {
-      booking[codeField] = genVisitCode();
-      booking[atField] = new Date();
-    }
-    const code = booking[codeField];
-    const label = isOut ? 'check-out' : 'check-in';
+    if (regenerate) { booking[isOut ? 'checkOutCode' : 'checkInCode'] = null; }
     const channels = channel === 'both' ? ['email', 'whatsapp'] : [channel];
-    const delivered = [];
-    const failed = [];
-
-    const realEmail = booking.email && !/@guest\.zennara\.in$/i.test(booking.email);
-    if (channels.includes('email')) {
-      if (!realEmail) failed.push({ channel: 'email', reason: 'No email on file for this guest' });
-      else {
-        try {
-          await emailService.sendVisitCodeEmail(booking.email, booking.fullName, {
-            code, kind: label, referenceNumber: booking.referenceNumber,
-            treatment: booking.consultationId && booking.consultationId.name,
-            location: booking.preferredLocation,
-          });
-          delivered.push('email');
-        } catch (e) { failed.push({ channel: 'email', reason: e.message }); }
-      }
-    }
-    if (channels.includes('whatsapp')) {
-      if (!booking.mobileNumber) failed.push({ channel: 'whatsapp', reason: 'No mobile number on file' });
-      else {
-        try {
-          const tail = isOut ? 'to complete your visit' : 'to check in';
-          const r = await whatsappService.sendMessage(booking.mobileNumber, `Your Zennara ${label} code is ${code}. Show it at reception ${tail}. (Ref ${booking.referenceNumber})`);
-          if (r && r.success === false) failed.push({ channel: 'whatsapp', reason: r.error || 'WhatsApp send failed' });
-          else delivered.push('whatsapp');
-        } catch (e) { failed.push({ channel: 'whatsapp', reason: e.message }); }
-      }
-    }
-
-    booking.visitCodeLog = booking.visitCodeLog || [];
-    booking.visitCodeLog.push({
-      kind: isOut ? 'checkout' : 'checkin',
-      channels: delivered,
-      failed: failed.map((f) => f.channel),
-      at: new Date(),
-      by: req.admin ? req.admin._id : null,
-      byName: req.admin ? req.admin.name : null,
-    });
-    if (delivered.length) booking[isOut ? 'checkOutCodeSentAt' : 'checkInCodeSentAt'] = new Date();
+    const { delivered, failed } = await visitCodes.deliver(booking, kind, { channels, by: req.admin });
     await booking.save();
 
     res.status(delivered.length ? 200 : 502).json({
@@ -1585,6 +1515,62 @@ exports.sendVisitCodeAdmin = async (req, res) => {
   } catch (error) {
     console.error('❌ Send visit code failed:', error);
     res.status(500).json({ success: false, message: 'Failed to send the visit code' });
+  }
+};
+
+// @desc    Reveal the current code to an admin (support fallback; audited)
+// @route   GET /api/bookings/admin/:id/visit-code
+exports.revealVisitCodeAdmin = async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id).select('status checkInCode checkInCodeAt checkInCodeSentAt checkOutCode checkOutCodeAt checkOutCodeSentAt');
+    if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
+    const kind = booking.status === 'In Progress' ? 'checkout' : 'checkin';
+    const { code } = visitCodes.ensureCode(booking, kind);
+    if (booking.isModified()) await booking.save();
+    res.json({ success: true, data: { kind, code, generatedAt: kind === 'checkout' ? booking.checkOutCodeAt : booking.checkInCodeAt, sentAt: kind === 'checkout' ? booking.checkOutCodeSentAt : booking.checkInCodeSentAt } });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to read the visit code' });
+  }
+};
+
+/**
+ * Put a dermatologist on the booking — from the roster (specialistId) or a
+ * custom name. Used before a session starts so every visit is attributed.
+ */
+async function applyDermatologist(booking, body) {
+  if (!body) return false;
+  const id = body.specialistId && String(body.specialistId).trim();
+  const custom = body.specialistName && String(body.specialistName).trim();
+  if (id) {
+    const doc = await Doctor.findOne({ $or: [{ doctorId: id.toLowerCase() }, ...(mongoose.Types.ObjectId.isValid(id) ? [{ _id: id }] : [])] }).select('doctorId name tier').lean();
+    if (!doc) { const err = new Error('Dermatologist not found'); err.status = 404; throw err; }
+    booking.specialistId = doc.doctorId;
+    booking.specialistName = doc.name;
+    booking.specialistTier = doc.tier === 'senior-consultant' ? 'Senior Dermatologist' : 'Dermatologist';
+    return true;
+  }
+  if (custom) {
+    booking.specialistId = null;
+    booking.specialistName = custom;
+    booking.specialistTier = body.specialistTier || booking.specialistTier || null;
+    return true;
+  }
+  return false;
+}
+exports.applyDermatologist = applyDermatologist;
+
+// @desc    Assign / change the dermatologist on a booking (roster or custom name)
+// @route   PUT /api/bookings/admin/:id/dermatologist
+exports.setDermatologistAdmin = async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
+    const changed = await applyDermatologist(booking, req.body);
+    if (!changed) return res.status(400).json({ success: false, message: 'Pick a dermatologist from the list or enter a name.' });
+    await booking.save();
+    res.json({ success: true, data: booking });
+  } catch (error) {
+    res.status(error.status || 500).json({ success: false, message: error.message || 'Failed to assign the dermatologist' });
   }
 };
 
@@ -1603,14 +1589,10 @@ exports.getVisitCode = async (req, res) => {
 
     // Check-out stage — the guest is in the chair.
     if (booking.status === 'In Progress') {
-      let fresh = false;
-      if (!booking.checkOutCode) {
-        booking.checkOutCode = genVisitCode();
-        booking.checkOutCodeAt = new Date();
-        await booking.save();
-        fresh = true;
-      }
-      if (fresh) deliverVisitCode(booking, 'check-out', booking.checkOutCode);
+      // Normally already issued + sent at check-in; mint one here if not.
+      const { fresh } = visitCodes.ensureCode(booking, 'checkout');
+      if (fresh) { await visitCodes.deliver(booking, 'checkout', { by: null }); }
+      if (booking.isModified()) await booking.save();
       return res.status(200).json({
         success: true,
         data: { stage: 'checkout', code: booking.checkOutCode, message: 'Read this code to reception to complete your visit.' },
@@ -1646,14 +1628,9 @@ exports.getVisitCode = async (req, res) => {
       });
     }
 
-    let fresh = false;
-    if (!booking.checkInCode) {
-      booking.checkInCode = genVisitCode();
-      booking.checkInCodeAt = new Date();
-      await booking.save();
-      fresh = true;
-    }
-    if (fresh) deliverVisitCode(booking, 'check-in', booking.checkInCode);
+    const { fresh } = visitCodes.ensureCode(booking, 'checkin');
+    if (fresh) { await visitCodes.deliver(booking, 'checkin', { by: null }); }
+    if (booking.isModified()) await booking.save();
     return res.status(200).json({
       success: true,
       data: { stage: 'checkin', code: booking.checkInCode, message: 'Show this code at reception to check in.' },
@@ -1684,12 +1661,16 @@ exports.verifyCheckInCode = async (req, res) => {
       return res.status(400).json({ success: false, message: "That code doesn't match. Please ask the guest to read it again." });
     }
 
+    await applyDermatologist(booking, req.body);
     booking.status = 'In Progress';
     booking.checkInTime = new Date();
     booking.checkInCode = null;
     booking.checkInCodeAt = null;
-    await booking.save();
     await booking.populate('consultationId', 'name');
+    // The session has started: issue the check-out code now and send it, so a
+    // guest without the app already has it when the treatment ends.
+    await visitCodes.deliver(booking, 'checkout', { by: req.admin });
+    await booking.save();
 
     try {
       await NotificationHelper.bookingCheckedIn({

@@ -197,6 +197,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 /* --------------------------- Connect services/jobs --------------------------- */
 connectDB();
 startBookingScheduler();
+require('./utils/bookingScheduler').startCheckInCodeJob();
 BookingStatusService.startAutoChecker();
 require('./utils/contactChangeScheduler').startContactChangeScheduler();
 require('./utils/zenotiScheduler').startZenotiScheduler();

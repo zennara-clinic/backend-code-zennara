@@ -75,7 +75,7 @@ const packageAssignmentSchema = new mongoose.Schema({
     },
     paymentMethod: {
       type: String,
-      enum: ['Cash', 'Card', 'UPI', 'Bank Transfer', 'Other'],
+      enum: ['Cash', 'Card', 'Credit Card', 'Debit Card', 'UPI', 'Bank Transfer', 'Pay at clinic', 'COD', 'Razorpay', 'Other'],
       default: null
     },
     transactionId: {

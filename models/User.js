@@ -118,6 +118,16 @@ const UserSchema = new mongoose.Schema({
     type: Boolean,
     default: false // Default to false for one-time VIP packages
   },
+  // Where the current membership came from and how it was paid, so the panel
+  // can show app, clinic-desk and Zenoti memberships the same way.
+  zenMembershipSource: { type: String, enum: ['app', 'admin', 'zenoti', null], default: null },
+  zenMembershipPlan: { type: String, default: null },
+  zenMembershipMonths: { type: Number, default: null },
+  zenMembershipAmount: { type: Number, default: null },
+  zenMembershipPaymentMethod: { type: String, default: null },
+  zenMembershipPaymentStatus: { type: String, enum: ['paid', 'pending', null], default: null },
+  zenMembershipPaymentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Payment', default: null },
+  zenMembershipGrantedBy: { type: String, default: null },
   
   // Additional Details (from signup step 3)
   //

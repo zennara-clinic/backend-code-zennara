@@ -238,6 +238,14 @@ async function applyMembershipFromZenoti(user, prefetched) {
       const end = new Date(active.expiryDate);
       if (!Number.isNaN(end.getTime())) { user.zenMembershipExpiryDate = end; changed = true; }
     }
+    // Show it in the panel the same way as an app/clinic-desk membership.
+    if (user.zenMembershipSource !== 'zenoti' || user.zenMembershipPlan !== (active.name || active.code)) {
+      user.zenMembershipSource = 'zenoti';
+      user.zenMembershipPlan = active.name || active.code || 'Zen membership';
+      user.zenMembershipPaymentStatus = 'paid';
+      user.zenMembershipPaymentMethod = user.zenMembershipPaymentMethod || 'Zenoti';
+      changed = true;
+    }
     if (changed) {
       user.$locals.skipZenotiWrite = true;
       await user.save({ validateModifiedOnly: true });

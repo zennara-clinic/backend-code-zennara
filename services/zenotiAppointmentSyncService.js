@@ -149,8 +149,10 @@ async function upsertAppointment(appointment, { user = null, context = null } = 
     booking.specialistId = derm.doctorId;
     booking.specialistName = derm.name;
     booking.specialistTier = tierTitle(derm);
-  } else {
-    booking.therapistName = appointment.therapistName || booking.therapistName || '';
+  } else if (appointment.therapistName) {
+    // Not on our roster: still show the practitioner's name rather than "Unassigned".
+    booking.therapistName = appointment.therapistName;
+    if (!booking.specialistId && !booking.specialistName) booking.specialistName = appointment.therapistName.replace(/^dr\.?\s*/i, 'Dr ');
   }
   // A completed clinic visit with a value was settled on the Zenoti invoice.
   if (status === 'Completed' && (booking.amount || 0) > 0 && booking.paymentStatus !== 'paid') {

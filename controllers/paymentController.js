@@ -1017,15 +1017,26 @@ async function activateMembership(userId, payment) {
     return user;
   }
 
-  user.memberType = 'Zen Member';
-  user.zenMembershipStartDate = new Date();
-  // VIP Wellness Package is a one-time, 1-year (365-day) membership.
   const AppCustomizationM = require('../models/AppCustomization');
   const months = Number((await AppCustomizationM.getSettings())?.membership?.durationMonths) || 12;
-  const expiry = new Date(); expiry.setMonth(expiry.getMonth() + months);
+  const now = new Date();
+  const stillActive = user.memberType === 'Zen Member' && user.zenMembershipExpiryDate && new Date(user.zenMembershipExpiryDate) > now;
+  // Renewing early extends from the current expiry — the guest never loses paid time.
+  const base = stillActive ? new Date(user.zenMembershipExpiryDate) : now;
+  const expiry = new Date(base); expiry.setMonth(expiry.getMonth() + months);
+  user.memberType = 'Zen Member';
+  if (!stillActive) user.zenMembershipStartDate = now;
   user.zenMembershipExpiryDate = expiry;
   user.zenMembershipAutoRenew = false;
-  await user.save();
+  user.zenMembershipSource = 'app';
+  user.zenMembershipPlan = `Zen Membership · ${months} month${months === 1 ? '' : 's'}`;
+  user.zenMembershipMonths = months;
+  user.zenMembershipAmount = payment ? payment.amount : user.zenMembershipAmount;
+  user.zenMembershipPaymentMethod = 'Razorpay';
+  user.zenMembershipPaymentStatus = 'paid';
+  user.zenMembershipPaymentId = payment ? payment._id : null;
+  user.zenMembershipGrantedBy = null;
+  await user.save({ validateModifiedOnly: true });
 
   if (payment) {
     payment.metadata = {

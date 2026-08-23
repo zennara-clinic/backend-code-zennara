@@ -280,3 +280,57 @@ module.exports = {
   cleanupExpiredBookings,
   createDuePackageBookings
 };
+
+/* ---------------------------------------------------------------------------
+ * Check-in codes for guests who never open the app.
+ *
+ * One hour before a confirmed slot, if no check-in code has been issued yet
+ * (the app issues one when the guest opens the appointment), mint it and send
+ * it by email + WhatsApp. Same code the app would show.
+ * ------------------------------------------------------------------------- */
+async function sendUpcomingCheckInCodes() {
+  const Booking = require('../models/Booking');
+  const visitCodes = require('./visitCodes');
+  const now = new Date();
+  const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(now); dayEnd.setDate(dayEnd.getDate() + 1); dayEnd.setHours(23, 59, 59, 999);
+  const candidates = await Booking.find({
+    status: { $in: ['Confirmed', 'Rescheduled'] },
+    checkInCodeSentAt: null,
+    source: { $ne: 'zenoti' },
+    $or: [{ confirmedDate: { $gte: dayStart, $lte: dayEnd } }, { confirmedDate: null, preferredDate: { $gte: dayStart, $lte: dayEnd } }],
+  }).populate('consultationId', 'name');
+
+  let sent = 0;
+  for (const b of candidates) {
+    const date = b.confirmedDate || b.preferredDate;
+    const time = b.confirmedTime || b.slotTime || (b.preferredTimeSlots && b.preferredTimeSlots[0]);
+    if (!date || !time) continue;
+    const m = String(time).match(/(\d{1,2}):(\d{2})\s*(am|pm)?/i);
+    if (!m) continue;
+    let h = Number(m[1]); const min = Number(m[2]); const mer = (m[3] || '').toLowerCase();
+    if (mer === 'pm' && h < 12) h += 12;
+    if (mer === 'am' && h === 12) h = 0;
+    const start = new Date(date); start.setHours(h, min, 0, 0);
+    const lead = start.getTime() - now.getTime();
+    if (lead > 65 * 60 * 1000 || lead < -30 * 60 * 1000) continue; // outside the 1h window
+    try {
+      const { delivered } = await visitCodes.deliver(b, 'checkin', { by: null });
+      // Don't retry forever on guests with no contact details.
+      if (!delivered.length) b.checkInCodeSentAt = new Date(0);
+      await b.save();
+      if (delivered.length) sent += 1;
+    } catch (e) {
+      console.error('⚠️ Check-in code auto-send failed:', b._id, e.message);
+    }
+  }
+  if (sent) console.log(`📨 Sent ${sent} check-in code(s) for upcoming appointments`);
+}
+
+function startCheckInCodeJob() {
+  cron.schedule('*/5 * * * *', () => {
+    sendUpcomingCheckInCodes().catch((e) => console.error('Check-in code job failed:', e.message));
+  });
+}
+module.exports.sendUpcomingCheckInCodes = sendUpcomingCheckInCodes;
+module.exports.startCheckInCodeJob = startCheckInCodeJob;
