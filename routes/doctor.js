@@ -59,6 +59,10 @@ router.delete(
 );
 
 // Public single lookup — last so it does not shadow the routes above.
+const dc = require('../controllers/doctorController');
+router.get('/:id/stats', protectAdmin, dc.getDoctorStats);
+router.get('/:id/account', protectAdmin, requireRole('super_admin', 'admin'), dc.getDoctorAccount);
+router.put('/:id/account/password', protectAdmin, requireRole('super_admin', 'admin'), auditLog('STAFF_UPDATED', 'ADMIN'), dc.setDoctorPassword);
 router.get('/:id', identifyAdmin, getDoctorById);
 
 module.exports = router;

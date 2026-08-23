@@ -124,6 +124,16 @@ const branchSchema = new mongoose.Schema({
   description: String,
   amenities: [String],
   images: [String],
+  /**
+   * Days the centre is shut beyond the weekly hours — holidays, maintenance,
+   * "closed today". YYYY-MM-DD; `to` (optional) makes it a range.
+   */
+  closures: [{
+    date: { type: String, required: true },
+    to: { type: String, default: null },
+    reason: { type: String, default: '' },
+    createdBy: { type: String, default: null },
+  }],
 
 }, {
   timestamps: true
@@ -132,6 +142,26 @@ const branchSchema = new mongoose.Schema({
 // Index for geospatial queries
 branchSchema.index({ location: '2dsphere' });
 branchSchema.index({ isActive: 1, displayOrder: 1 });
+
+const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+/** Is the centre closed on this YYYY-MM-DD (closure list or weekly hours)? Returns a reason or null. */
+branchSchema.methods.closureFor = function (key) {
+  const hit = (this.closures || []).find((c) => c.date <= key && (c.to ? c.to >= key : c.date === key));
+  if (hit) return { closed: true, reason: hit.reason || 'Closed', source: 'closure' };
+  const d = new Date(`${key}T00:00:00+05:30`);
+  const day = DAYS[d.getUTCDay() === undefined ? 0 : new Date(d.getTime() + 5.5 * 3600 * 1000).getUTCDay()];
+  const hours = this.operatingHours && this.operatingHours[day];
+  if (!this.isActive) return { closed: true, reason: 'Centre inactive', source: 'inactive' };
+  if (hours && hours.isOpen === false) return { closed: true, reason: 'Closed on this weekday', source: 'weekly' };
+  return null;
+};
+/** Opening window for a YYYY-MM-DD as { open: 'HH:MM', close: 'HH:MM' } or null when closed. */
+branchSchema.methods.hoursFor = function (key) {
+  if (this.closureFor(key)) return null;
+  const day = DAYS[new Date(new Date(`${key}T00:00:00+05:30`).getTime() + 5.5 * 3600 * 1000).getUTCDay()];
+  const hours = this.operatingHours && this.operatingHours[day];
+  return hours ? { open: hours.openTime || '00:00', close: hours.closeTime || '23:59' } : { open: '00:00', close: '23:59' };
+};
 
 // Method to get available time slots for a specific date
 branchSchema.methods.getAvailableSlots = function(date) {

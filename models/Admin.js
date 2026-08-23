@@ -45,6 +45,10 @@ const AdminSchema = new mongoose.Schema({
   },
   
   // Account status
+  /** Optional password login (set by an admin from Staff & roles / the dermatologist page). */
+  passwordHash: { type: String, default: null, select: false },
+  passwordSetAt: { type: Date, default: null },
+  phone: { type: String, default: null, trim: true },
   isActive: {
     type: Boolean,
     default: true
@@ -170,6 +174,27 @@ AdminSchema.methods.clearOTP = function() {
 AdminSchema.statics.isAuthorizedEmail = function(email) {
   const authorizedEmails = process.env.ADMIN_EMAILS?.split(',').map(e => e.trim().toLowerCase()) || [];
   return authorizedEmails.includes(email.toLowerCase());
+};
+
+/**
+ * Who may sign in: the env super-admin list, plus any active staff account
+ * created in the panel (dermatologists, therapists, reception). Returns the
+ * Admin record (created on the fly for env emails) or null.
+ */
+AdminSchema.statics.resolveLogin = async function(email) {
+  const e = String(email || '').toLowerCase().trim();
+  if (!e) return null;
+  if (this.isAuthorizedEmail(e)) return this.findOrCreateAdmin(e);
+  const staff = await this.findOne({ email: e });
+  return staff && staff.isActive !== false ? staff : null;
+};
+
+AdminSchema.methods.setPassword = function(plain) {
+  this.passwordHash = bcrypt.hashSync(String(plain), 10);
+  this.passwordSetAt = new Date();
+};
+AdminSchema.methods.checkPassword = function(plain) {
+  return !!this.passwordHash && bcrypt.compareSync(String(plain || ''), this.passwordHash);
 };
 
 // Static method to find or create admin

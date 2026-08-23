@@ -28,8 +28,9 @@ exports.adminLogin = async (req, res) => {
       });
     }
 
-    // Check if email is authorized
-    if (!Admin.isAuthorizedEmail(email)) {
+    // Check if email is authorized — env list or an active staff account.
+    const staffLogin = await Admin.resolveLogin(email);
+    if (!staffLogin) {
       // Log unauthorized access attempt
       try {
         const tempAdmin = await Admin.findOne({ email: email.toLowerCase() });
@@ -56,8 +57,7 @@ exports.adminLogin = async (req, res) => {
       });
     }
 
-    // Find or create admin
-    const admin = await Admin.findOrCreateAdmin(email);
+    const admin = staffLogin;
 
     // Check if account is locked
     const rateLimitCheck = admin.canRequestOTP();
@@ -333,8 +333,8 @@ exports.adminResendOTP = async (req, res) => {
       });
     }
 
-    // Check if email is authorized
-    if (!Admin.isAuthorizedEmail(email)) {
+    // Check if email is authorized (env list or active staff account)
+    if (!(await Admin.resolveLogin(email))) {
       return res.status(403).json({
         success: false,
         message: 'Unauthorized email'
@@ -480,7 +480,7 @@ exports.checkAuthorizedEmail = async (req, res) => {
       });
     }
 
-    const isAuthorized = Admin.isAuthorizedEmail(email);
+    const isAuthorized = !!(await Admin.resolveLogin(email));
 
     res.status(200).json({
       success: true,
@@ -497,5 +497,106 @@ exports.checkAuthorizedEmail = async (req, res) => {
       success: false,
       message: 'Failed to check email authorization.'
     });
+  }
+};
+
+
+/** Issue a panel session for an authenticated admin (shared by OTP and password logins). */
+async function issueAdminSession(req, admin) {
+    const deviceInfo = {
+      userAgent: req.headers['user-agent'],
+      deviceName: req.headers['device-name'] || null,
+      appVersion: req.headers['app-version'] || null
+    };
+    // Generate JWT token (24 hours for admin)
+    const token = jwt.sign(
+      { 
+        adminId: admin._id, 
+        email: admin.email,
+        role: admin.role,
+        type: 'admin'
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 1); // 24 hours
+
+    // Save token to database
+    const tokenDoc = new Token({
+      userId: admin._id,
+      userType: 'Admin',
+      token,
+      type: 'admin_access',
+      deviceInfo,
+      ipAddress: req.ip || req.connection.remoteAddress,
+      expiresAt,
+      isActive: true
+    });
+
+    await tokenDoc.save();
+
+    // Log successful login
+    await AdminAuditLog.logAction({
+      adminId: admin._id,
+      adminEmail: admin.email,
+      action: 'LOGIN',
+      resource: 'AUTH',
+      details: { 
+        role: admin.role,
+        deviceInfo
+      },
+      ipAddress: req.ip || req.connection.remoteAddress,
+      userAgent: req.get('user-agent'),
+      status: 'SUCCESS'
+    });
+
+    // Log successful login (non-blocking - legacy)
+    if (SecurityLog) {
+      try {
+        await SecurityLog.logEvent(admin._id, 'admin_login_success', {
+          ipAddress: req.ip,
+          userAgent: req.headers['user-agent'],
+          deviceInfo,
+          severity: 'low'
+        });
+      } catch (logError) {
+        console.log('⚠️ Security log failed (non-critical):', logError.message);
+      }
+    }
+
+    return { token, expiresAt };
+}
+
+// @desc    Password login for staff (dermatologists, therapists) who were given one
+// @route   POST /api/admin/auth/login-password
+exports.adminPasswordLogin = async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) return res.status(400).json({ success: false, message: 'Email and password are required' });
+    const admin = await Admin.findOne({ email: String(email).toLowerCase().trim() }).select('+passwordHash');
+    if (!admin || admin.isActive === false) return res.status(403).json({ success: false, message: 'This email is not authorised for the panel.' });
+    if (!admin.passwordHash) return res.status(400).json({ success: false, message: 'No password is set for this account — sign in with the emailed code, or ask an admin to set one.' });
+    const lock = admin.canRequestOTP ? admin.canRequestOTP() : { allowed: true };
+    if (!lock.allowed) return res.status(429).json({ success: false, message: lock.reason });
+    if (!admin.checkPassword(password)) {
+      admin.failedLoginAttempts = (admin.failedLoginAttempts || 0) + 1;
+      if (admin.failedLoginAttempts >= 5) { admin.accountLockedUntil = new Date(Date.now() + 15 * 60 * 1000); admin.failedLoginAttempts = 0; }
+      await admin.save({ validateModifiedOnly: true });
+      return res.status(401).json({ success: false, message: 'Incorrect password.' });
+    }
+    admin.failedLoginAttempts = 0;
+    admin.lastLogin = new Date();
+    await admin.save({ validateModifiedOnly: true });
+    const { token, expiresAt } = await issueAdminSession(req, admin);
+    res.status(200).json({
+      success: true,
+      message: 'Login successful',
+      data: { token, expiresAt, admin: { _id: admin._id, id: admin._id, email: admin.email, name: admin.name, role: admin.role, isActive: admin.isActive, isVerified: admin.isVerified } },
+    });
+  } catch (error) {
+    console.error('❌ Admin password login failed:', error);
+    res.status(500).json({ success: false, message: 'Login failed. Please try again.' });
   }
 };

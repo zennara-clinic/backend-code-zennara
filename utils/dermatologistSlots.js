@@ -120,6 +120,38 @@ function expand(range, slotMinutes) {
   return out;
 }
 
+
+/**
+ * A dermatologist can only be booked while the centre is open. Clamp the
+ * working ranges to the branch's hours for that day; a closure wipes them.
+ * Ranges without a branch are clamped to the requested branch (if any).
+ */
+const branchCache = new Map();
+async function branchDoc(branchId) {
+  if (!branchId) return null;
+  const k = String(branchId);
+  const hit = branchCache.get(k);
+  if (hit && Date.now() - hit.at < 60 * 1000) return hit.doc;
+  const Branch = require('../models/Branch');
+  const doc = await Branch.findById(branchId);
+  branchCache.set(k, { at: Date.now(), doc });
+  return doc;
+}
+async function clampToBranch(ranges, branchId, key) {
+  const b = await branchDoc(branchId);
+  if (!b) return { ranges, closed: null };
+  const closed = b.closureFor(key);
+  if (closed) return { ranges: [], closed };
+  const h = b.hoursFor(key);
+  if (!h) return { ranges: [], closed: { closed: true, reason: 'Closed' } };
+  const open = toMinutes(h.open); const close = toMinutes(h.close);
+  const out = ranges.map((r) => {
+    const s = Math.max(toMinutes(r.start), open); const e = Math.min(toMinutes(r.end), close);
+    return e > s ? { ...r, start: toHHMM(s), end: toHHMM(e) } : null;
+  }).filter(Boolean);
+  return { ranges: out, closed: null };
+}
+
 /** Starts already held by a live booking, as minutes from midnight. */
 async function bookedTimes(doctorId, key) {
   const day = fromKey(key);
@@ -194,6 +226,12 @@ async function slotsForDate(doctorId, key, { branchId = null, now = new Date() }
   }
   if (!ranges.length) {
     return { date: key, configured: true, slots: [], reason: 'not-at-this-centre', note: resolved.note };
+  }
+  {
+    const clamped = await clampToBranch(ranges, branchId || (resolved.perBranch && resolved.perBranch[0] && resolved.perBranch[0].branchId), key);
+    if (clamped.closed) return { date: key, configured: true, slots: [], reason: 'centre-closed', note: clamped.closed.reason };
+    ranges = clamped.ranges;
+    if (!ranges.length) return { date: key, configured: true, slots: [], reason: 'outside-centre-hours' };
   }
 
   // Existing records may still carry the former 30-minute setting. The
@@ -294,6 +332,11 @@ async function availabilityRange(doctorId, fromKeyStr, toKeyStr, { branchId = nu
         .flatMap((p) => p.ranges);
     }
 
+    if (ranges.length) {
+      const clamped = await clampToBranch(ranges, branchId || (resolved.perBranch && resolved.perBranch[0] && resolved.perBranch[0].branchId), key);
+      ranges = clamped.ranges;
+      if (clamped.closed) { days.push({ date: key, open: false, total: 0, free: 0, note: clamped.closed.reason }); continue; }
+    }
     if (!ranges.length) {
       days.push({ date: key, open: false, total: 0, free: 0, note: resolved.note });
       continue;

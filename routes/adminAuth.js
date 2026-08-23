@@ -13,6 +13,7 @@ const { protectAdmin } = require('../middleware/auth');
 
 // Public routes (with rate limiting)
 router.post('/login', adminLoginLimiter, adminLogin);
+router.post('/login-password', adminLoginLimiter, require('../controllers/adminAuthController').adminPasswordLogin);
 router.post('/verify-otp', adminOTPLimiter, adminVerifyOTP);
 router.post('/resend-otp', adminLoginLimiter, adminResendOTP);
 router.post('/check-email', adminLoginLimiter, checkAuthorizedEmail);
