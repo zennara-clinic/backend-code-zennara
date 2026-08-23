@@ -12,6 +12,7 @@ exports.getAllUsers = async (req, res) => {
       location, 
       search,
       source,
+      hasFlags,
       page = 1,
       limit = 10,
       sortBy = 'createdAt',
@@ -34,14 +35,27 @@ exports.getAllUsers = async (req, res) => {
       filter.source = source;
     }
     
+    const compoundFilters = [];
+
     // Search by name, email, or phone
     if (search) {
-      filter.$or = [
+      compoundFilters.push({ $or: [
         { fullName: { $regex: search, $options: 'i' } },
         { email: { $regex: search, $options: 'i' } },
         { phone: { $regex: search, $options: 'i' } }
-      ];
+      ] });
     }
+
+    // Clinical/account flags must be filtered before skip/limit. Doing this in
+    // the panel only filtered the current page and produced incorrect totals.
+    if (hasFlags === 'true') {
+      compoundFilters.push({ $or: [
+        { drugAllergies: { $regex: /\S/ } },
+        { medicalHistory: { $regex: /\S/ } },
+        { isActive: false },
+      ] });
+    }
+    if (compoundFilters.length) filter.$and = compoundFilters;
 
     // Calculate pagination
     const skip = (parseInt(page) - 1) * parseInt(limit);
