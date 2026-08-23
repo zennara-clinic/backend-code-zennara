@@ -27,7 +27,16 @@ const logger = require('../utils/logger');
  * Resolve the mapped branch name to an actual active Branch document's name,
  * falling back sensibly so `location` always points at something real.
  */
+const branchNameCache = new Map();
 async function resolveBranchName(preferredName) {
+  const key = preferredName || '';
+  if (branchNameCache.has(key)) return branchNameCache.get(key);
+  const value = await resolveBranchNameUncached(preferredName);
+  branchNameCache.set(key, value);
+  setTimeout(() => branchNameCache.delete(key), 10 * 60 * 1000).unref?.();
+  return value;
+}
+async function resolveBranchNameUncached(preferredName) {
   const candidates = [preferredName, DEFAULT_BRANCH_NAME].filter(Boolean);
   for (const name of candidates) {
     const branch = await Branch.findOne({
@@ -76,27 +85,54 @@ async function provisionUserFromGuest(guest, opts = {}) {
   if (guest.gender) synced.gender = guest.gender;
   if (guest.dateOfBirth) synced.dateOfBirth = guest.dateOfBirth;
 
+  // The bulk importer pre-loads a page's worth of candidate accounts so we
+  // don't pay three round-trips per guest; otherwise look them up here.
+  const pre = opts.prefetched || null;
+  const lookup = (key, value) => (pre ? Promise.resolve(pre[key].get(value) || null) : User.findOne({ [key === 'byGuest' ? 'zenotiGuestId' : key === 'byPhone' ? 'phone' : 'email']: value }));
+
   // 1) Already linked by Zenoti guest id → update the mirror.
-  let user = await User.findOne({ zenotiGuestId: guest.zenotiGuestId });
+  let user = await lookup('byGuest', guest.zenotiGuestId);
 
   // 2) A local account with the same phone/email predates the link → adopt it.
-  if (!user && phone) user = await User.findOne({ phone });
-  if (!user && email) user = await User.findOne({ email });
+  //    Never steal an account that is already linked to a DIFFERENT guest —
+  //    families share emails in the CRM, and the bulk import must not merge them.
+  const unlinked = (u) => u && (!u.zenotiGuestId || u.zenotiGuestId === guest.zenotiGuestId);
+  if (!user && phone) {
+    const byPhone = await lookup('byPhone', phone);
+    if (unlinked(byPhone)) user = byPhone;
+  }
+  if (!user && email) {
+    const byEmail = await lookup('byEmail', email);
+    if (unlinked(byEmail)) user = byEmail;
+  }
 
   if (user) {
+    const before = user.toObject();
     Object.assign(user, synced);
     // Only fill identity gaps; never clobber values the customer set in-app.
     if (!user.email) user.email = email;
     if (!user.phone && phone) user.phone = phone;
     if (!user.location) user.location = location;
+    const changed = ['fullName', 'gender', 'dateOfBirth', 'zenotiGuestId', 'zenotiCenterId', 'location', 'email', 'phone']
+      .some((k) => String(before[k] ?? '') !== String(user[k] ?? ''));
     await user.save({ validateModifiedOnly: true });
-    logger.info('Linked existing local account to Zenoti guest', { userId: user._id });
+    if (!opts.quiet) logger.info('Linked existing local account to Zenoti guest', { userId: user._id });
+    user._importOutcome = changed ? 'updated' : 'unchanged';
     return user;
   }
 
-  // 3) Brand-new mirror.
+  // 3) Brand-new mirror. A phone is mandatory on our side; a guest without a
+  //    valid Indian mobile can't sign in and is skipped by the importer.
+  if (!phone) {
+    const err = new Error('Zenoti guest has no valid mobile number');
+    err.code = 'NO_PHONE';
+    throw err;
+  }
+  // The CRM email may already belong to another (differently linked) account;
+  // fall back to the stable placeholder rather than failing the unique index.
+  const emailTaken = pre ? Boolean(pre.byEmail.get(email)) : await User.exists({ email });
   user = await User.create({
-    email,
+    email: emailTaken ? placeholderEmail(guest.zenotiGuestId) : email,
     fullName: guest.fullName || 'Zennara Guest',
     phone: phone || undefined,
     location,
@@ -111,7 +147,8 @@ async function provisionUserFromGuest(guest, opts = {}) {
     termsOfServiceConsent: { accepted: true, version: 'zenoti-import', acceptedAt: new Date() },
     ...synced,
   });
-  logger.info('Provisioned new local account from Zenoti guest', { userId: user._id });
+  if (!opts.quiet) logger.info('Provisioned new local account from Zenoti guest', { userId: user._id });
+  user._importOutcome = 'created';
   return user;
 }
 
@@ -161,10 +198,12 @@ function isMembershipCurrentlyActive(m) {
  *
  * @returns {Promise<boolean>} whether anything changed.
  */
-async function applyMembershipFromZenoti(user) {
+async function applyMembershipFromZenoti(user, prefetched) {
   if (!user?.zenotiGuestId || !zenoti.isConfigured()) return false;
   try {
-    const memberships = await zenoti.getGuestMemberships(user.zenotiGuestId, user.zenotiCenterId);
+    const memberships = Array.isArray(prefetched)
+      ? prefetched
+      : await zenoti.getGuestMemberships(user.zenotiGuestId, user.zenotiCenterId);
     const zenMemberships = memberships.filter(
       (m) => isZenMembership(m.name) || isZenMembership(m.code)
     );
@@ -216,6 +255,7 @@ async function syncLinkedUser(user) {
 }
 
 module.exports = {
+  isMembershipCurrentlyActive,
   provisionUserFromGuest,
   findOrProvisionByPhone,
   syncLinkedUser,

@@ -199,6 +199,7 @@ connectDB();
 startBookingScheduler();
 BookingStatusService.startAutoChecker();
 require('./utils/contactChangeScheduler').startContactChangeScheduler();
+require('./utils/zenotiScheduler').startZenotiScheduler();
 
 /* ----------------------------- Debug (optional) ------------------------------ */
 app.use((req, res, next) => {

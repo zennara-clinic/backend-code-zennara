@@ -414,6 +414,18 @@ async function findGuestByEmail(email) {
   return guests.length ? normalizeGuest(guests[0]) : null;
 }
 
+/**
+ * One page of a centre's guest roster. Zenoti pages from 1 and caps `size` at
+ * 100; `page_Info.total` is the centre-wide count.
+ * @returns {{ guests: object[], total: number }}
+ */
+async function listCenterGuests(centerId, page = 1, size = 100) {
+  const json = await request('/v1/guests', { query: { center_id: centerId, page, size } });
+  const raw = json?.guests || json?.Guests || [];
+  const info = json?.page_Info || json?.page_info || {};
+  return { guests: raw.map(normalizeGuest).filter((g) => g && g.zenotiGuestId), total: Number(info.total) || raw.length };
+}
+
 /** GET /v1/guests/{id} — full guest profile. */
 async function getGuest(guestId) {
   if (!guestId) return null;
@@ -490,6 +502,7 @@ module.exports = {
   getCenterProducts,
   findGuestByPhone,
   findGuestByEmail,
+  listCenterGuests,
   getGuest,
   getGuestAppointments,
   getGuestProducts,

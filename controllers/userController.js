@@ -11,6 +11,7 @@ exports.getAllUsers = async (req, res) => {
       memberType, 
       location, 
       search,
+      source,
       page = 1,
       limit = 10,
       sortBy = 'createdAt',
@@ -26,6 +27,11 @@ exports.getAllUsers = async (req, res) => {
     
     if (location && location !== 'All Locations') {
       filter.location = location;
+    }
+
+    // 'app' = registered in the app, 'zenoti' = mirrored from the clinic CRM.
+    if (source === 'app' || source === 'zenoti') {
+      filter.source = source;
     }
     
     // Search by name, email, or phone
@@ -55,6 +61,7 @@ exports.getAllUsers = async (req, res) => {
     const totalPatients = await User.countDocuments();
     const zenMembers = await User.countDocuments({ memberType: 'Zen Member' });
     const regularMembers = await User.countDocuments({ memberType: 'Regular Member' });
+    const clinicCustomers = await User.countDocuments({ source: 'zenoti' });
     
     // Get new users this month
     const startOfMonth = new Date();
@@ -87,6 +94,9 @@ exports.getAllUsers = async (req, res) => {
       medicalHistory: user.medicalHistory || '',
       isActive: user.isActive !== undefined ? user.isActive : true,
       isVerified: user.isVerified,
+      source: user.source || 'app',
+      zenotiGuestId: user.zenotiGuestId || null,
+      zenotiSyncedAt: user.zenotiSyncedAt || null,
       createdAt: user.createdAt,
       lastLogin: user.lastLogin
     }));
@@ -102,6 +112,7 @@ exports.getAllUsers = async (req, res) => {
           limit: parseInt(limit)
         },
         statistics: {
+          clinicCustomers,
           totalPatients,
           zenMembers,
           regularMembers,
