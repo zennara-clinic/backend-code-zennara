@@ -6,6 +6,7 @@ const {
   getUserChats,
   getChatMessages,
   sendMessage,
+  sendAttachment,
   markChatAsRead,
   closeChat,
   getChatStats,
@@ -13,6 +14,7 @@ const {
   deleteMessage
 } = require('../controllers/chatController');
 const { protect, protectAdmin, protectBoth } = require('../middleware/auth');
+const { receiveChatAttachment } = require('../middleware/chatAttachmentUpload');
 
 // User routes
 router.post('/initiate', protect, initiateChat);
@@ -22,6 +24,7 @@ router.get('/user/unread', protect, require('../controllers/chatController').get
 // Shared routes (both user and admin can access)
 router.get('/:chatId/messages', protectBoth, getChatMessages);
 router.post('/:chatId/messages', protectBoth, sendMessage);
+router.post('/:chatId/attachments', protectBoth, receiveChatAttachment, sendAttachment);
 router.put('/:chatId/read', protectBoth, markChatAsRead);
 router.delete('/messages/:messageId', protectBoth, deleteMessage);
 

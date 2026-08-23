@@ -3,6 +3,7 @@ const User = require('../models/User');
 const Admin = require('../models/Admin');
 const Chat = require('../models/Chat');
 const Message = require('../models/Message');
+const { deleteFromS3 } = require('./s3Service');
 
 const connectedUsers = new Map();
 const connectedAdmins = new Map();
@@ -143,11 +144,25 @@ const setupSocketIO = (io) => {
     // Send message via socket
     socket.on('sendMessage', async (data) => {
       try {
-        const { chatId, content, messageType = 'text' } = data;
+        const { chatId } = data;
+        const content = String(data.content || '').trim();
 
         const chat = await Chat.findById(chatId);
         if (!chat) {
           socket.emit('error', { message: 'Chat not found' });
+          return;
+        }
+
+        if (socket.userType === 'user' && String(chat.userId) !== String(socket.user._id)) {
+          socket.emit('error', { message: 'Unauthorized', tempId: data.tempId });
+          return;
+        }
+        if (chat.status !== 'active') {
+          socket.emit('error', { message: 'This conversation is closed.', tempId: data.tempId });
+          return;
+        }
+        if (!content) {
+          socket.emit('error', { message: 'Message cannot be empty.', tempId: data.tempId });
           return;
         }
 
@@ -171,7 +186,7 @@ const setupSocketIO = (io) => {
           senderModel,
           senderName,
           content,
-          messageType,
+          messageType: 'text',
           isDelivered: true,
           deliveredAt: new Date()
         });
@@ -397,6 +412,7 @@ const setupSocketIO = (io) => {
 
         // Delete the message
         await Message.findByIdAndDelete(messageId);
+        if (message.attachment?.url) await deleteFromS3(message.attachment.url);
 
         // Notify all users in the chat room
         io.to(chatId).emit('messageDeleted', {

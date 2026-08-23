@@ -23,12 +23,22 @@ const messageSchema = new mongoose.Schema({
   },
   messageType: {
     type: String,
-    enum: ['text', 'system'],
+    enum: ['text', 'image', 'file', 'system'],
     default: 'text'
   },
   content: {
     type: String,
-    required: true
+    trim: true,
+    maxlength: 2000,
+    default: ''
+  },
+  attachment: {
+    url: { type: String, trim: true },
+    key: { type: String, trim: true },
+    fileName: { type: String, trim: true, maxlength: 180 },
+    mimeType: { type: String, trim: true, maxlength: 120 },
+    size: { type: Number, min: 0 },
+    kind: { type: String, enum: ['image', 'file'] }
   },
   isRead: {
     type: Boolean,
@@ -59,6 +69,18 @@ const messageSchema = new mongoose.Schema({
 // Indexes for better query performance
 messageSchema.index({ chatId: 1, createdAt: -1 });
 messageSchema.index({ senderId: 1, senderModel: 1 });
+
+messageSchema.pre('validate', function validateMessagePayload(next) {
+  const hasText = Boolean(this.content && this.content.trim());
+  const hasAttachment = Boolean(this.attachment && this.attachment.url);
+  if (this.messageType !== 'system' && !hasText && !hasAttachment) {
+    return next(new Error('A message must contain text or an attachment'));
+  }
+  if ((this.messageType === 'image' || this.messageType === 'file') && !hasAttachment) {
+    return next(new Error('Attachment metadata is required for file messages'));
+  }
+  next();
+});
 
 // Method to mark message as read
 messageSchema.methods.markAsRead = function() {

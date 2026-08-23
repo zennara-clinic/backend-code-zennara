@@ -4,6 +4,60 @@ const Message = require('../models/Message');
 const User = require('../models/User');
 const Branch = require('../models/Branch');
 const Admin = require('../models/Admin');
+const path = require('path');
+const { uploadChatAttachmentToS3, deleteFromS3 } = require('../services/s3Service');
+
+const CHAT_EXTENSION_BY_MIME = {
+  'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp',
+  'image/heic': 'heic', 'image/heif': 'heif', 'application/pdf': 'pdf',
+  'text/plain': 'txt', 'text/csv': 'csv', 'application/json': 'json', 'application/rtf': 'rtf',
+  'application/msword': 'doc',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.ms-excel': 'xls',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'application/vnd.ms-powerpoint': 'ppt',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
+};
+
+const canAccessChat = (req, chat) => Boolean(
+  req.admin || (req.user && String(chat.userId) === String(req.user._id))
+);
+
+const senderForRequest = (req) => {
+  if (req.user) return { senderId: req.user._id, senderModel: 'User', senderName: req.user.fullName };
+  if (req.admin) return { senderId: req.admin._id, senderModel: 'Admin', senderName: req.admin.name || 'Admin' };
+  return null;
+};
+
+const updateChatAfterMessage = async (chat, senderModel, preview) => {
+  chat.lastMessage = preview;
+  chat.lastMessageTime = new Date();
+  if (senderModel === 'User') chat.unreadCount += 1;
+  await chat.save();
+};
+
+const emitNewMessage = (io, chat, message) => {
+  if (!io) return;
+  io.to(String(chat._id)).emit('newMessage', message);
+  if (message.senderModel === 'User') {
+    io.to(`branch_${chat.branchId}`).emit('chatUpdate', {
+      chatId: chat._id,
+      userId: chat.userId,
+      lastMessage: chat.lastMessage,
+      unreadCount: chat.unreadCount,
+      lastMessageTime: chat.lastMessageTime,
+    });
+  }
+};
+
+const cleanFileName = (name, extension) => {
+  const stem = path.basename(String(name || 'attachment'), path.extname(String(name || '')))
+    .replace(/[\u0000-\u001f<>:"/\\|?*]+/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 140) || 'attachment';
+  return `${stem}.${extension}`;
+};
 
 // @desc    Get or create chat for a user
 // @route   POST /api/chat/initiate
@@ -199,7 +253,7 @@ exports.getChatMessages = async (req, res) => {
 exports.sendMessage = async (req, res) => {
   try {
     const { chatId } = req.params;
-    const { content, messageType = 'text' } = req.body;
+    const content = String(req.body.content || '').trim();
 
     // Verify chat exists
     const chat = await Chat.findById(chatId);
@@ -210,18 +264,19 @@ exports.sendMessage = async (req, res) => {
       });
     }
 
+    if (!canAccessChat(req, chat)) {
+      return res.status(403).json({ success: false, message: 'Unauthorized access' });
+    }
+    if (chat.status !== 'active') {
+      return res.status(409).json({ success: false, message: 'This conversation is closed.' });
+    }
+    if (!content) {
+      return res.status(400).json({ success: false, message: 'Message cannot be empty.' });
+    }
+
     // Determine sender details
-    let senderId, senderModel, senderName;
-    
-    if (req.user) {
-      senderId = req.user._id;
-      senderModel = 'User';
-      senderName = req.user.fullName;
-    } else if (req.admin) {
-      senderId = req.admin._id;
-      senderModel = 'Admin';
-      senderName = req.admin.name || 'Admin';
-    } else {
+    const sender = senderForRequest(req);
+    if (!sender) {
       return res.status(401).json({
         success: false,
         message: 'Unauthorized'
@@ -231,38 +286,16 @@ exports.sendMessage = async (req, res) => {
     // Create message
     const message = await Message.create({
       chatId,
-      senderId,
-      senderModel,
-      senderName,
+      ...sender,
       content,
-      messageType,
+      messageType: 'text',
       isDelivered: true,
       deliveredAt: new Date()
     });
 
     // Update chat's last message
-    await chat.updateLastMessage(content);
-
-    // If message is from user, increment unread count
-    if (senderModel === 'User') {
-      chat.unreadCount += 1;
-      await chat.save();
-    }
-
-    // Emit socket event (handled by socket.io)
-    if (req.io) {
-      req.io.to(chatId).emit('newMessage', message);
-      
-      // Notify admin about new message from user
-      if (senderModel === 'User') {
-        req.io.to(`branch_${chat.branchId}`).emit('chatUpdate', {
-          chatId: chat._id,
-          lastMessage: content,
-          unreadCount: chat.unreadCount,
-          lastMessageTime: chat.lastMessageTime
-        });
-      }
-    }
+    await updateChatAfterMessage(chat, sender.senderModel, content);
+    emitNewMessage(req.io, chat, message);
 
     res.status(201).json({
       success: true,
@@ -275,6 +308,59 @@ exports.sendMessage = async (req, res) => {
       message: 'Error sending message',
       error: error.message
     });
+  }
+};
+
+// @desc    Upload and send an image/document in an existing chat
+// @route   POST /api/chat/:chatId/attachments
+// @access  Private (owning user or authenticated admin)
+exports.sendAttachment = async (req, res) => {
+  let uploadedUrl = null;
+  try {
+    const chat = await Chat.findById(req.params.chatId);
+    if (!chat) return res.status(404).json({ success: false, message: 'Chat not found' });
+    if (!canAccessChat(req, chat)) return res.status(403).json({ success: false, message: 'Unauthorized access' });
+    if (chat.status !== 'active') return res.status(409).json({ success: false, message: 'This conversation is closed.' });
+    if (!req.file) return res.status(400).json({ success: false, message: 'Choose a file to send.' });
+
+    const sender = senderForRequest(req);
+    if (!sender) return res.status(401).json({ success: false, message: 'Unauthorized' });
+
+    const mimeType = String(req.file.mimetype || '').toLowerCase();
+    const extension = CHAT_EXTENSION_BY_MIME[mimeType];
+    if (!extension) return res.status(400).json({ success: false, message: 'Unsupported file type.' });
+
+    const fileName = cleanFileName(req.file.originalname, extension);
+    const stored = await uploadChatAttachmentToS3(req.file, fileName, extension);
+    uploadedUrl = stored.url;
+    const kind = mimeType.startsWith('image/') ? 'image' : 'file';
+    const caption = String(req.body.caption || '').trim().slice(0, 2000);
+    const message = await Message.create({
+      chatId: chat._id,
+      ...sender,
+      messageType: kind,
+      content: caption,
+      attachment: {
+        url: stored.url,
+        key: stored.key,
+        fileName,
+        mimeType,
+        size: req.file.size,
+        kind,
+      },
+      isDelivered: true,
+      deliveredAt: new Date(),
+    });
+
+    const preview = caption || (kind === 'image' ? 'Photo' : `File: ${fileName}`);
+    await updateChatAfterMessage(chat, sender.senderModel, preview);
+    emitNewMessage(req.io, chat, message);
+
+    return res.status(201).json({ success: true, data: message });
+  } catch (error) {
+    if (uploadedUrl) await deleteFromS3(uploadedUrl).catch(() => {});
+    console.error('Error sending chat attachment:', error);
+    return res.status(500).json({ success: false, message: 'Could not send this file. Please try again.' });
   }
 };
 
@@ -291,6 +377,10 @@ exports.markChatAsRead = async (req, res) => {
         success: false,
         message: 'Chat not found'
       });
+    }
+
+    if (!canAccessChat(req, chat)) {
+      return res.status(403).json({ success: false, message: 'Unauthorized access' });
     }
 
     // Mark all unread messages as read
@@ -502,8 +592,8 @@ exports.assignChat = async (req, res) => {
 exports.deleteMessage = async (req, res) => {
   try {
     const { messageId } = req.params;
-    const userType = req.user.role === 'admin' ? 'Admin' : 'User';
-    const userId = req.user._id;
+    const userType = req.admin ? 'Admin' : 'User';
+    const userId = req.admin?._id || req.user?._id;
 
     // Find the message
     const message = await Message.findById(messageId);
@@ -525,6 +615,7 @@ exports.deleteMessage = async (req, res) => {
 
     // Delete the message
     await Message.findByIdAndDelete(messageId);
+    if (message.attachment?.url) await deleteFromS3(message.attachment.url);
 
     // Emit socket event to notify other party
     if (req.io) {

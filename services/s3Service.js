@@ -166,4 +166,27 @@ exports.uploadBufferToS3 = async (buffer, folder = 'uploads', contentType = 'app
   }
 };
 
+/** Store a chat attachment without transforming it. Non-images are always
+ * downloaded as attachments, preventing a browser from executing their body. */
+exports.uploadChatAttachmentToS3 = async (file, safeName, extension) => {
+  const fileKey = `zennara/chat/${crypto.randomBytes(16).toString('hex')}-${Date.now()}.${extension}`;
+  const isImage = String(file.mimetype).startsWith('image/');
+  const asciiName = String(safeName || `attachment.${extension}`).replace(/[^\x20-\x7E]/g, '_');
+
+  await s3Client.send(new PutObjectCommand({
+    Bucket: S3_BUCKET,
+    Key: fileKey,
+    Body: file.buffer,
+    ContentType: file.mimetype,
+    ContentLength: file.size,
+    ContentDisposition: `${isImage ? 'inline' : 'attachment'}; filename="${asciiName.replace(/["\\]/g, '_')}"`,
+    CacheControl: 'private, max-age=31536000, immutable',
+  }));
+
+  return {
+    key: fileKey,
+    url: `https://${S3_BUCKET}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${fileKey}`,
+  };
+};
+
 module.exports = exports;

@@ -506,6 +506,34 @@ exports.addReelVideo = async (req, res) => {
 // @desc    Remove a self-hosted reel video (and its files)
 // @route   DELETE /api/app-customization/admin/reel-videos/:reelId
 // @access  Private (Admin)
+// @desc    Update a reel's Instagram link / title / poster
+// @route   PUT /api/app-customization/admin/reel-videos/:reelId
+// @access  Private (Admin only)
+exports.updateReelVideo = async (req, res) => {
+  try {
+    const settings = await AppCustomization.getSettings();
+    const reel = settings.homeScreen.reelVideos.id(req.params.reelId);
+    if (!reel) return res.status(404).json({ success: false, message: 'Reel not found' });
+    const { permalink, title, poster } = req.body || {};
+    if (permalink !== undefined) {
+      const link = String(permalink).trim();
+      if (link && !/^https:\/\/(www\.)?instagram\.com\//i.test(link)) {
+        return res.status(400).json({ success: false, message: 'The Instagram link must be an instagram.com URL.' });
+      }
+      reel.permalink = link;
+    }
+    if (title !== undefined) reel.title = String(title).trim();
+    if (poster !== undefined) reel.poster = String(poster).trim();
+    settings.version += 1;
+    settings.lastUpdatedBy = req.admin._id;
+    settings.lastUpdatedAt = new Date();
+    await settings.save();
+    res.json({ success: true, message: 'Reel updated', data: settings.homeScreen.reelVideos });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 exports.deleteReelVideo = async (req, res) => {
   try {
     const settings = await AppCustomization.getSettings();

@@ -36,6 +36,7 @@ router.post(
   upload.fields([{ name: 'video', maxCount: 1 }, { name: 'poster', maxCount: 1 }]),
   addReelVideo
 );
+router.put('/admin/reel-videos/:reelId', protectAdmin, require('../controllers/appCustomizationController').updateReelVideo);
 router.delete('/admin/reel-videos/:reelId', protectAdmin, deleteReelVideo);
 
 module.exports = router;
