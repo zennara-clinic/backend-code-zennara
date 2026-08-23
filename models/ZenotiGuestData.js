@@ -19,16 +19,28 @@ const ZenotiGuestDataSchema = new mongoose.Schema(
     centerId: { type: String, default: null },
     branchName: { type: String, default: null },
 
+    // Full, normalised clinic profile. The raw Zenoti response is never stored.
+    profile: { type: Mixed, default: null },
     appointments: { type: [Mixed], default: [] },
     orders: { type: [Mixed], default: [] },
     memberships: { type: [Mixed], default: [] },
     packages: { type: [Mixed], default: [] },
+    notes: { type: [Mixed], default: [] },
+    forms: { type: [Mixed], default: [] },
+
+    // Per-section success/error metadata. This is deliberately separate from
+    // the arrays: a transient API failure must not replace good cached data with
+    // an empty array, and the panel must be able to distinguish “empty” from
+    // “never imported” and “permission denied”.
+    sectionStatus: { type: Mixed, default: {} },
 
     // Derived counters so lists can sort/filter without unwinding.
     stats: {
       treatmentsDone: { type: Number, default: 0 },
       upcoming: { type: Number, default: 0 },
       productsBought: { type: Number, default: 0 },
+      notes: { type: Number, default: 0 },
+      forms: { type: Number, default: 0 },
       activePackages: { type: Number, default: 0 },
       sessionsLeft: { type: Number, default: 0 },
       activeMemberships: { type: Number, default: 0 },

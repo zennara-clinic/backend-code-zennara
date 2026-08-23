@@ -26,7 +26,10 @@ const UserSchema = new mongoose.Schema({
   },
   phone: {
     type: String,
-    required: [true, 'Phone number is required'],
+    // A clinic-only Zenoti record may legitimately have no usable mobile. Keep
+    // it in the patient list and import its history; it simply cannot use OTP
+    // login until staff adds a valid number. App sign-ups still require one.
+    required: [function () { return this.source !== 'zenoti'; }, 'Phone number is required'],
     trim: true,
     match: [/^\d{10}$/, 'Please enter a valid 10-digit phone number']
   },
@@ -45,7 +48,8 @@ const UserSchema = new mongoose.Schema({
   // already exists in Zenoti signs in, we mirror a lightweight local account so
   // the rest of the app (bookings, orders, packages — all keyed by our userId)
   // keeps working, and link it back to Zenoti by guest id. Their live history
-  // (appointments, purchases, memberships, loyalty) is read from Zenoti on demand.
+  // (appointments, purchases, memberships, packages, notes and forms) is mirrored
+  // from Zenoti; unsupported provider datasets are reported explicitly.
   // ---------------------------------------------------------------------------
   // Where this account originated. 'app' = registered through the mobile app;
   // 'zenoti' = auto-provisioned on first login from an existing Zenoti guest.
@@ -86,6 +90,13 @@ const UserSchema = new mongoose.Schema({
     type: String,
     default: null
   },
+  zenotiMembershipInvoiceId: { type: String, default: null },
+  zenotiMembershipSyncStatus: {
+    type: String,
+    enum: ['pending', 'synced', 'failed', 'skipped', 'dryrun', null],
+    default: null
+  },
+  zenotiMembershipSyncError: { type: String, default: null },
   
   // Member Type - Only 2 types
   memberType: {
@@ -379,6 +390,10 @@ UserSchema.pre('save', async function(next) {
 // tell a brand-new signup apart from a routine update.
 UserSchema.pre('save', function(next) {
   this._wasNew = this.isNew;
+  this._zenotiProfileChanged = [
+    'fullName', 'phone', 'email', 'location', 'gender', 'dateOfBirth',
+  ].some((path) => this.isModified(path));
+  this._zenotiMembershipChanged = this.isModified('memberType') && this.memberType === 'Zen Member';
   next();
 });
 
@@ -386,12 +401,33 @@ UserSchema.pre('save', function(next) {
 // mirror it into Zenoti so every customer ends up in the CRM. Fire-and-forget:
 // the write service is gated by ZENOTI_WRITE_MODE and never throws here.
 UserSchema.post('save', function(doc) {
+  if (doc.$locals?.skipZenotiWrite) return;
   if (!doc._wasNew) return;
   if (doc.zenotiGuestId) return; // already a Zenoti guest
   setImmediate(() => {
     try {
       require('../services/zenotiWriteService').ensureGuest(doc).catch(() => {});
     } catch (_) { /* never let CRM wiring affect account creation */ }
+  });
+});
+
+UserSchema.post('save', function(doc) {
+  if (doc.$locals?.skipZenotiWrite || !doc._zenotiMembershipChanged || doc.zenotiMembershipInvoiceId) return;
+  setImmediate(() => {
+    try {
+      require('../services/zenotiWriteService').syncMembership(doc._id).catch(() => {});
+    } catch (_) { /* membership invoice sync is best-effort */ }
+  });
+});
+
+// Keep edits to an already-linked patient in Zenoti as well. Inbound imports
+// set skipZenotiWrite so this cannot create a reflection loop.
+UserSchema.post('save', function(doc) {
+  if (doc.$locals?.skipZenotiWrite || doc._wasNew || !doc._zenotiProfileChanged || !doc.zenotiGuestId) return;
+  setImmediate(() => {
+    try {
+      require('../services/zenotiWriteService').syncGuestProfile(doc._id).catch(() => {});
+    } catch (_) { /* profile write-back is best-effort */ }
   });
 });
 

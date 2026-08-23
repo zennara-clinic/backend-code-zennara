@@ -28,6 +28,14 @@ const {
 } = require('../config/zenoti');
 const logger = require('../utils/logger');
 
+function clinicDay(value = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date(value));
+  const part = (type) => parts.find((item) => item.type === type)?.value;
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
+
 /* ------------------------------- Mode gating ------------------------------- */
 function mode() {
   return (process.env.ZENOTI_WRITE_MODE || 'dryrun').toLowerCase();
@@ -175,6 +183,202 @@ async function ensureGuest(user) {
   }
 }
 
+/** Keep identity/contact edits made in Zennara reflected on the Zenoti guest. */
+async function syncGuestProfile(userId) {
+  const User = require('../models/User');
+  const user = await User.findById(userId);
+  if (!user || !user.zenotiGuestId || isOff()) return;
+  try {
+    const guest = await zenoti.getGuest(user.zenotiGuestId);
+    const payload = guest?._raw;
+    if (!payload) throw new Error('Zenoti guest profile could not be loaded for update.');
+    const [firstName, ...rest] = String(user.fullName || '').trim().split(/\s+/);
+    payload.personal_info = payload.personal_info || {};
+    payload.personal_info.first_name = firstName || payload.personal_info.first_name;
+    payload.personal_info.last_name = rest.join(' ') || payload.personal_info.last_name;
+    if (user.email && !user.email.endsWith('@guest.zennara.in')) payload.personal_info.email = user.email;
+    const phone = normalizeIndianMobile(user.phone);
+    if (phone) payload.personal_info.mobile_phone = { country_code: 95, phone_code: 91, number: phone };
+    if (user.gender) payload.personal_info.gender = toZenotiGender(user.gender);
+    if (user.dateOfBirth) payload.personal_info.date_of_birth = user.dateOfBirth;
+
+    logWrite('updateGuest', { guestId: user.zenotiGuestId, changedBy: 'Zennara' }, { userId: user._id });
+    if (!isLive()) {
+      user.zenotiSyncStatus = 'dryrun';
+    } else {
+      await zenoti.request(`/v1/guests/${user.zenotiGuestId}`, { method: 'PUT', body: payload });
+      user.zenotiSyncStatus = 'synced';
+      user.zenotiSyncError = null;
+      user.zenotiSyncedAt = new Date();
+    }
+    user.$locals.skipZenotiWrite = true;
+    await user.save({ validateModifiedOnly: true });
+  } catch (error) {
+    user.zenotiSyncStatus = 'failed';
+    user.zenotiSyncError = error.message;
+    user.$locals.skipZenotiWrite = true;
+    await user.save({ validateModifiedOnly: true }).catch(() => {});
+    logger.error('Zenoti guest profile update failed', { userId, error: error.message });
+  }
+}
+
+function clinicalNoteText(note, booking) {
+  const lines = [
+    `Zennara clinical record${booking?.referenceNumber ? ` (${booking.referenceNumber})` : ''}`,
+    note.complaint ? `Complaint: ${note.complaint}` : null,
+    note.examination ? `Examination: ${note.examination}` : null,
+    note.assessment ? `Assessment: ${note.assessment}` : null,
+    note.plan ? `Plan: ${note.plan}` : null,
+    Array.isArray(note.prescription) && note.prescription.length
+      ? `Prescription: ${note.prescription.map((item) => [item.medicine, item.dosage, item.frequency, item.duration, item.instructions].filter(Boolean).join(' · ')).join('; ')}`
+      : null,
+    note.followUpDate ? `Follow-up: ${clinicDay(note.followUpDate)}` : null,
+    note.doctorName ? `Doctor: ${note.doctorName}` : null,
+  ];
+  return lines.filter(Boolean).join('\n');
+}
+
+/** Push the app/admin clinical note + prescription into Zenoti guest history. */
+async function syncConsultationNote(noteId) {
+  const ConsultationNote = require('../models/ConsultationNote');
+  const Booking = require('../models/Booking');
+  const User = require('../models/User');
+  const note = await ConsultationNote.findById(noteId);
+  if (!note || isOff()) return;
+  try {
+    const [booking, user] = await Promise.all([
+      Booking.findById(note.bookingId).select('referenceNumber preferredLocation zenotiAppointmentId'),
+      User.findById(note.userId).select('zenotiGuestId zenotiCenterId'),
+    ]);
+    if (!user?.zenotiGuestId) throw new Error('Patient is not linked to a Zenoti guest.');
+    const centerId = user.zenotiCenterId || clinicCenterIdForBranch(booking?.preferredLocation);
+    const centerName = require('../config/zenoti').centerById(centerId)?.name || booking?.preferredLocation || '';
+    const payload = {
+      ...(note.zenotiNoteId ? { id: note.zenotiNoteId } : {}),
+      alert: false,
+      center: { id: centerId, name: centerName },
+      entity_name: 'ZennaraClinicalRecord',
+      entity_pk: 0,
+      is_private: false,
+      note_type: 2,
+      notes: clinicalNoteText(note, booking),
+      ...(process.env.ZENOTI_UPDATED_BY_ID ? { added_by: { id: process.env.ZENOTI_UPDATED_BY_ID, name: 'Zennara' } } : {}),
+    };
+    // Clinical content must never be copied into application logs, even in
+    // dry-run mode. Log only routing metadata; the API request still receives
+    // the complete encrypted-in-transit payload in live mode.
+    logWrite(note.zenotiNoteId ? 'updateClinicalNote' : 'createClinicalNote', {
+      guestId: user.zenotiGuestId,
+      noteType: payload.note_type,
+      characterCount: payload.notes.length,
+    }, { noteId: note._id });
+    if (!isLive()) {
+      note.zenotiSyncStatus = 'dryrun';
+    } else {
+      const result = await zenoti.request(
+        note.zenotiNoteId
+          ? `/v1/guests/${user.zenotiGuestId}/notes/${note.zenotiNoteId}`
+          : `/v1/guests/${user.zenotiGuestId}/notes`,
+        { method: note.zenotiNoteId ? 'PUT' : 'POST', body: payload }
+      );
+      note.zenotiNoteId = note.zenotiNoteId || result?.id || null;
+      note.zenotiSyncStatus = 'synced';
+      note.zenotiSyncError = null;
+      note.zenotiSyncedAt = new Date();
+    }
+    note.$locals.skipZenotiWrite = true;
+    await note.save({ validateModifiedOnly: true });
+  } catch (error) {
+    note.zenotiSyncStatus = 'failed';
+    note.zenotiSyncError = error.message;
+    note.$locals.skipZenotiWrite = true;
+    await note.save({ validateModifiedOnly: true }).catch(() => {});
+    logger.error('Zenoti clinical note sync failed', { noteId, error: error.message });
+  }
+}
+
+/** Create the Zenoti membership-sale invoice for an in-app Zen upgrade. */
+async function syncMembership(userId) {
+  const User = require('../models/User');
+  const user = await User.findById(userId);
+  if (!user || user.memberType !== 'Zen Member' || user.zenotiMembershipInvoiceId || isOff()) return;
+  try {
+    const guestId = await ensureGuest(user);
+    const membershipVersionIds = process.env.ZENOTI_MEMBERSHIP_VERSION_IDS || process.env.ZENOTI_MEMBERSHIP_ID;
+    const payload = {
+      center_id: user.zenotiCenterId || clinicCenterIdForBranch(user.location),
+      user_id: guestId,
+      membership_version_ids: membershipVersionIds,
+    };
+    if (!guestId || !membershipVersionIds) {
+      user.zenotiMembershipSyncStatus = isLive() ? 'skipped' : 'dryrun';
+      user.zenotiMembershipSyncError = `unresolved: ${!guestId ? 'guestId' : 'ZENOTI_MEMBERSHIP_VERSION_IDS'}`;
+    } else if (!isLive()) {
+      user.zenotiMembershipSyncStatus = 'dryrun';
+      user.zenotiMembershipSyncError = null;
+      logWrite('createMembershipInvoice', payload, { userId: user._id });
+    } else {
+      const result = await zenoti.request('/api/Catalog/Memberships/CreateInvoice', { method: 'POST', body: payload });
+      user.zenotiMembershipInvoiceId = result?.invoice_id || result?.id || result?.Invoice?.Id || result?.Invoice?.id || null;
+      if (!user.zenotiMembershipInvoiceId) throw new Error('Zenoti membership invoice returned no id.');
+      user.zenotiMembershipSyncStatus = 'synced';
+      user.zenotiMembershipSyncError = null;
+    }
+    user.$locals.skipZenotiWrite = true;
+    await user.save({ validateModifiedOnly: true });
+  } catch (error) {
+    user.zenotiMembershipSyncStatus = 'failed';
+    user.zenotiMembershipSyncError = error.message;
+    user.$locals.skipZenotiWrite = true;
+    await user.save({ validateModifiedOnly: true }).catch(() => {});
+    logger.error('Zenoti membership invoice sync failed', { userId, error: error.message });
+  }
+}
+
+/** Create a Zenoti series-package sale invoice for a local package assignment. */
+async function syncPackageAssignment(assignmentId) {
+  const PackageAssignment = require('../models/PackageAssignment');
+  const User = require('../models/User');
+  const assignment = await PackageAssignment.findById(assignmentId);
+  if (!assignment || assignment.zenotiInvoiceId || isOff()) return;
+  try {
+    const user = await User.findById(assignment.userId);
+    const guestId = await ensureGuest(user);
+    const packageMap = parseJsonEnv('ZENOTI_PACKAGE_MAP');
+    const packageId = packageMap[String(assignment.packageId)] || packageMap[assignment.packageDetails?.packageName] || null;
+    const payload = {
+      guest_id: guestId,
+      center_id: user?.zenotiCenterId || clinicCenterIdForBranch(assignment.preferredLocation || user?.location),
+      notes: `Zennara package ${assignment.assignmentId}`,
+      package_details: packageId ? [{ id: packageId }] : [],
+    };
+    assignment.zenotiPackageId = packageId;
+    if (!guestId || !packageId) {
+      assignment.zenotiSyncStatus = isLive() ? 'skipped' : 'dryrun';
+      assignment.zenotiSyncError = `unresolved: ${!guestId ? 'guestId' : 'ZENOTI_PACKAGE_MAP'}`;
+    } else if (!isLive()) {
+      assignment.zenotiSyncStatus = 'dryrun';
+      assignment.zenotiSyncError = null;
+      logWrite('createPackageInvoice', payload, { assignmentId: assignment._id });
+    } else {
+      const result = await zenoti.request('/v1/invoices/packages', { method: 'POST', body: payload });
+      assignment.zenotiInvoiceId = result?.invoice_id || result?.id || result?.invoice?.id || result?.Invoice?.Id || null;
+      if (!assignment.zenotiInvoiceId) throw new Error('Zenoti package invoice returned no id.');
+      assignment.zenotiSyncStatus = 'synced';
+      assignment.zenotiSyncError = null;
+      assignment.zenotiSyncedAt = new Date();
+    }
+    assignment.$locals.skipZenotiWrite = true;
+    await assignment.save({ validateModifiedOnly: true });
+  } catch (error) {
+    assignment.zenotiSyncStatus = 'failed';
+    assignment.zenotiSyncError = error.message;
+    assignment.$locals.skipZenotiWrite = true;
+    await assignment.save({ validateModifiedOnly: true }).catch(() => {});
+    logger.error('Zenoti package invoice sync failed', { assignmentId, error: error.message });
+  }
+}
+
 /* ---------------------------- Appointment push ----------------------------- */
 /**
  * Push a booking to Zenoti as an appointment. Idempotent via booking.zenotiAppointmentId.
@@ -201,9 +405,7 @@ async function syncBooking(bookingId) {
     const serviceId = await resolveServiceId(centerId, consultation);
 
     // Prefer the confirmed date/time, else the requested one.
-    const date = (booking.confirmedDate || booking.preferredDate || new Date())
-      .toISOString()
-      .slice(0, 10);
+    const date = clinicDay(booking.confirmedDate || booking.preferredDate || new Date());
 
     const payload = {
       center_id: centerId,
@@ -244,8 +446,16 @@ async function syncBooking(bookingId) {
 
     const slotsRes = await zenoti.request(`/v1/bookings/${zBookingId}/slots`, { method: 'GET' });
     const slots = slotsRes?.slots || slotsRes?.Slots || [];
-    const slotTime =
-      (slots[0] && (slots[0].Time || slots[0].time)) || `${date}T10:00:00`;
+    const wantedTime = booking.confirmedTime || booking.slotTime || booking.preferredTimeSlots?.[0] || null;
+    const slotValue = (slot) => slot && (slot.Time || slot.time || slot.slot_time || slot.start_time);
+    const slotTime = wantedTime
+      ? slotValue(slots.find((slot) => String(slotValue(slot) || '').includes(`T${wantedTime}`)))
+      : slotValue(slots[0]);
+    if (!slotTime) {
+      throw new Error(wantedTime
+        ? `Requested Zenoti slot ${wantedTime} is unavailable on ${date}`
+        : `Zenoti returned no available slot on ${date}`);
+    }
 
     await zenoti.request(`/v1/bookings/${zBookingId}/slots/reserve`, {
       method: 'POST',
@@ -256,8 +466,15 @@ async function syncBooking(bookingId) {
       body: { notes: payload.notes },
     });
 
+    const invoice = confirmed?.invoice || confirmed?.Invoice || {};
+    const item = (invoice.items || invoice.Items || [])[0] || {};
     booking.zenotiAppointmentId =
-      confirmed?.invoice_id || confirmed?.appointment_id || zBookingId;
+      item.appointment_id || item.AppointmentId || confirmed?.appointment_id || zBookingId;
+    booking.zenotiInvoiceId = invoice.invoice_id || invoice.id || confirmed?.invoice_id || null;
+    booking.zenotiInvoiceItemId = item.invoice_item_id || item.InvoiceItemId || null;
+    booking.zenotiAppointmentGroupId =
+      confirmed?.appointment_group_id || invoice.appointment_group_id || invoice.AppointmentGroupId || null;
+    booking.zenotiServiceId = serviceId;
     booking.zenotiSyncStatus = 'synced';
     booking.zenotiSyncedAt = new Date();
     booking.zenotiSyncError = null;
@@ -268,6 +485,151 @@ async function syncBooking(bookingId) {
     booking.zenotiSyncError = err.message;
     await booking.save({ validateModifiedOnly: true }).catch(() => {});
     logger.error('Zenoti syncBooking failed', { bookingId, error: err.message });
+  }
+}
+
+/** Resolve identifiers missing on records created by the older write parser. */
+async function hydrateAppointmentIds(booking) {
+  if (!booking.zenotiAppointmentId) return;
+  try {
+    const detail = await zenoti.request(`/v1/appointments/${booking.zenotiAppointmentId}`);
+    booking.zenotiInvoiceId = booking.zenotiInvoiceId || detail?.invoice_id || null;
+    booking.zenotiInvoiceItemId = booking.zenotiInvoiceItemId || detail?.invoice_item_id || null;
+    booking.zenotiAppointmentGroupId = booking.zenotiAppointmentGroupId || detail?.appointment_group_id || null;
+    booking.zenotiAppointmentSegmentId = booking.zenotiAppointmentSegmentId || detail?.appointment_segment_id || null;
+    booking.zenotiServiceId = booking.zenotiServiceId || detail?.service?.id || null;
+  } catch (_) {
+    // The old field sometimes contains an invoice id, not an appointment id;
+    // callers can still use that value as the invoice fallback below.
+  }
+}
+
+function bookingDateAndTime(booking) {
+  const date = clinicDay(booking.confirmedDate || booking.preferredDate || new Date());
+  const time = booking.confirmedTime || booking.slotTime || booking.preferredTimeSlots?.[0] || null;
+  return { date, time };
+}
+
+async function reserveExactSlot(bookingId, date, time) {
+  const slotsRes = await zenoti.request(`/v1/bookings/${bookingId}/slots`, { method: 'GET' });
+  const slots = slotsRes?.slots || slotsRes?.Slots || [];
+  const valueOf = (slot) => slot && (slot.Time || slot.time || slot.slot_time || slot.start_time);
+  const chosen = time
+    ? valueOf(slots.find((slot) => String(valueOf(slot) || '').includes(`T${time}`)))
+    : valueOf(slots[0]);
+  if (!chosen) throw new Error(`Requested Zenoti slot ${time || ''} is unavailable on ${date}`.trim());
+  await zenoti.request(`/v1/bookings/${bookingId}/slots/reserve`, { method: 'POST', body: { slot_time: chosen } });
+  return zenoti.request(`/v1/bookings/${bookingId}/slots/confirm`, { method: 'POST', body: {} });
+}
+
+/** Reschedule using Zenoti's documented create → reserve → confirm workflow. */
+async function rescheduleLinkedBooking(booking, user) {
+  const { date, time } = bookingDateAndTime(booking);
+  if (!booking.zenotiInvoiceId || !booking.zenotiInvoiceItemId || !booking.zenotiServiceId) {
+    throw new Error('Zenoti reschedule identifiers are incomplete; wait for the next inbound reconciliation and retry.');
+  }
+  const payload = {
+    center_id: clinicCenterIdForBranch(booking.preferredLocation),
+    date,
+    is_only_catalog_employees: false,
+    guests: [{
+      id: user.zenotiGuestId,
+      invoice_id: booking.zenotiInvoiceId,
+      items: [{
+        item: { id: booking.zenotiServiceId },
+        invoice_item_id: booking.zenotiInvoiceItemId,
+      }],
+    }],
+  };
+  logWrite('rescheduleAppointment', payload, { bookingId: booking._id });
+  const created = await zenoti.request('/v1/bookings', { method: 'POST', body: payload });
+  const zBookingId = created?.id || created?.Id;
+  if (!zBookingId) throw new Error('Zenoti reschedule returned no booking id');
+  const confirmed = await reserveExactSlot(zBookingId, date, time);
+  const invoice = confirmed?.invoice || confirmed?.Invoice || {};
+  const item = (invoice.items || invoice.Items || [])[0] || {};
+  booking.zenotiAppointmentId = item.appointment_id || booking.zenotiAppointmentId;
+  booking.zenotiInvoiceId = invoice.invoice_id || booking.zenotiInvoiceId;
+  booking.zenotiInvoiceItemId = item.invoice_item_id || booking.zenotiInvoiceItemId;
+  booking.zenotiAppointmentGroupId = confirmed?.appointment_group_id || invoice.appointment_group_id || booking.zenotiAppointmentGroupId;
+}
+
+/**
+ * Push a linked booking's lifecycle changes back to Zenoti. Creation is handled
+ * by syncBooking; this covers confirm, reschedule, check-in/start, completion,
+ * cancellation and no-show.
+ */
+async function syncBookingState(bookingId) {
+  const Booking = require('../models/Booking');
+  const User = require('../models/User');
+  const booking = await Booking.findById(bookingId);
+  if (!booking || isOff() || (!booking.zenotiAppointmentId && !booking.zenotiInvoiceId)) return;
+
+  try {
+    await hydrateAppointmentIds(booking);
+    const user = await User.findById(booking.userId).select('zenotiGuestId');
+    const updatedById = process.env.ZENOTI_UPDATED_BY_ID;
+    const invoiceId = booking.zenotiInvoiceId || booking.zenotiAppointmentId;
+    const groupId = booking.zenotiAppointmentGroupId;
+    const action = `bookingState:${booking.status}`;
+    logWrite(action, { bookingId: booking._id, invoiceId, groupId });
+
+    if (!isLive()) {
+      booking.zenotiSyncStatus = 'dryrun';
+      booking.zenotiSyncError = null;
+    } else if (booking.status === 'Cancelled') {
+      if (!invoiceId) throw new Error('Zenoti invoice id is required to cancel this booking.');
+      await zenoti.request(`/v1/invoices/${invoiceId}/cancel`, {
+        method: 'PUT',
+        query: { comments: booking.cancellationReason || 'Cancelled from Zennara' },
+      });
+      booking.zenotiSyncStatus = 'synced';
+    } else if (booking.status === 'No Show') {
+      if (!groupId) throw new Error('Zenoti appointment group id is required to mark no-show.');
+      await zenoti.request(`/v1/appointments/${groupId}/no_show`, {
+        method: 'PUT', body: { comments: booking.cancellationReason || 'No show recorded in Zennara' },
+      });
+      booking.zenotiSyncStatus = 'synced';
+    } else if (booking.status === 'In Progress') {
+      if (!groupId) throw new Error('Zenoti appointment group id is required to check in.');
+      await zenoti.request(`/v1/appointments/${groupId}/check_in`, { method: 'PUT' });
+      if (updatedById && booking.zenotiAppointmentId) {
+        await zenoti.request(`/v1/appointments/${booking.zenotiAppointmentId}/progress`, {
+          method: 'PUT', body: { updated_by_id: updatedById, progress: 1, ...(booking.zenotiAppointmentSegmentId ? { appointment_segment_id: booking.zenotiAppointmentSegmentId } : {}) },
+        });
+      }
+      booking.zenotiSyncStatus = 'synced';
+    } else if (booking.status === 'Completed') {
+      if (!updatedById) throw new Error('ZENOTI_UPDATED_BY_ID is required to complete appointments in Zenoti.');
+      await zenoti.request(`/v1/appointments/${booking.zenotiAppointmentId}/progress`, {
+        method: 'PUT', body: { updated_by_id: updatedById, progress: 2, ...(booking.zenotiAppointmentSegmentId ? { appointment_segment_id: booking.zenotiAppointmentSegmentId } : {}) },
+      });
+      booking.zenotiSyncStatus = 'synced';
+    } else if (booking.status === 'Rescheduled') {
+      if (!user?.zenotiGuestId) throw new Error('Booking owner is not linked to a Zenoti guest.');
+      await rescheduleLinkedBooking(booking, user);
+      booking.zenotiSyncStatus = 'synced';
+    } else if (booking.status === 'Confirmed') {
+      if (!invoiceId || !updatedById) throw new Error('Zenoti invoice id and ZENOTI_UPDATED_BY_ID are required to confirm appointments.');
+      await zenoti.request(`/v1/invoices/${invoiceId}/confirm`, {
+        method: 'PUT', body: { updated_by_id: updatedById },
+      });
+      booking.zenotiSyncStatus = 'synced';
+    } else {
+      booking.zenotiSyncStatus = 'skipped';
+      booking.zenotiSyncError = `No Zenoti lifecycle action for ${booking.status}`;
+    }
+
+    if (booking.zenotiSyncStatus === 'synced') booking.zenotiSyncError = null;
+    booking.zenotiSyncedAt = new Date();
+    booking.$locals.skipZenotiWrite = true;
+    await booking.save({ validateModifiedOnly: true });
+  } catch (error) {
+    booking.zenotiSyncStatus = 'failed';
+    booking.zenotiSyncError = error.message;
+    booking.$locals.skipZenotiWrite = true;
+    await booking.save({ validateModifiedOnly: true }).catch(() => {});
+    logger.error('Zenoti syncBookingState failed', { bookingId, error: error.message });
   }
 }
 
@@ -353,7 +715,12 @@ module.exports = {
   isOff,
   isLive,
   ensureGuest,
+  syncGuestProfile,
+  syncConsultationNote,
+  syncMembership,
+  syncPackageAssignment,
   syncBooking,
+  syncBookingState,
   syncOrder,
   resolveServiceId,
   resolveProductId,

@@ -3,7 +3,8 @@ const mongoose = require('mongoose');
 /** One row per roster import / crawl window, so the panel can show sync health. */
 const ZenotiSyncRunSchema = new mongoose.Schema(
   {
-    type: { type: String, enum: ['roster', 'details'], required: true },
+    type: { type: String, enum: ['roster', 'details', 'appointments'], required: true },
+    mode: { type: String, enum: ['incremental', 'full'], default: 'incremental' },
     status: { type: String, enum: ['running', 'completed', 'failed'], default: 'running' },
     trigger: { type: String, enum: ['schedule', 'manual', 'boot'], default: 'schedule' },
     startedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', default: null },
@@ -15,6 +16,7 @@ const ZenotiSyncRunSchema = new mongoose.Schema(
     updated: { type: Number, default: 0 },
     skipped: { type: Number, default: 0 },
     failed: { type: Number, default: 0 },
+    datasets: { type: mongoose.Schema.Types.Mixed, default: {} },
     error: { type: String, default: null },
   },
   { timestamps: true }

@@ -231,13 +231,23 @@ const packageAssignmentSchema = new mongoose.Schema({
   cancellationOtp: {
     otp: String,
     expiresAt: Date
-  }
+  },
+  zenotiPackageId: { type: String, default: null },
+  zenotiInvoiceId: { type: String, default: null },
+  zenotiSyncStatus: {
+    type: String,
+    enum: ['pending', 'synced', 'failed', 'skipped', 'dryrun', null],
+    default: null
+  },
+  zenotiSyncError: { type: String, default: null },
+  zenotiSyncedAt: { type: Date, default: null }
 }, {
   timestamps: true
 });
 
 // Generate assignment ID before saving
 packageAssignmentSchema.pre('save', async function(next) {
+  this._wasNew = this.isNew;
   if (!this.assignmentId) {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     let assignmentId;
@@ -269,6 +279,15 @@ packageAssignmentSchema.pre('save', async function(next) {
   }
   
   next();
+});
+
+packageAssignmentSchema.post('save', function(doc) {
+  if (doc.$locals?.skipZenotiWrite || !doc._wasNew || doc.zenotiInvoiceId) return;
+  setImmediate(() => {
+    try {
+      require('../services/zenotiWriteService').syncPackageAssignment(doc._id).catch(() => {});
+    } catch (_) { /* package sale sync is best-effort */ }
+  });
 });
 
 // Method to check if all services are completed

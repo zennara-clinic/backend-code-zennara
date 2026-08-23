@@ -1,7 +1,9 @@
 const cron = require('node-cron');
 const zenoti = require('../services/zenotiService');
 const importer = require('../services/zenotiImportService');
+const appointmentSync = require('../services/zenotiAppointmentSyncService');
 const User = require('../models/User');
+const ZenotiGuestData = require('../models/ZenotiGuestData');
 const logger = require('./logger');
 
 /**
@@ -12,6 +14,8 @@ const logger = require('./logger');
  *    imported.
  *  - History: every 5 minutes, the 40 stalest guests — a rolling pass that
  *    covers the whole roster roughly daily inside Zenoti's rate limit.
+ *  - Appointment book: every 2 minutes, one compact request per clinic for
+ *    yesterday through the next five days. These rows become real Bookings.
  *
  * Disable with ZENOTI_SYNC_ENABLED=false (e.g. on a second PM2 instance).
  */
@@ -33,20 +37,39 @@ function startZenotiScheduler() {
     importer.crawlDetails({ limit: 40, trigger: 'schedule' }).catch(() => {});
   });
 
-  // First boot on a fresh database: pull the roster straight away.
+  cron.schedule('*/2 * * * *', () => {
+    appointmentSync.syncRecentAppointments({ trigger: 'schedule' }).catch(() => {});
+  });
+
+  // On boot, resume whichever part of the initial import is incomplete. A
+  // restart must not leave thousands of roster-only patients waiting for tiny
+  // five-minute batches before their histories appear in the panel.
   setTimeout(async () => {
     try {
-      const linked = await User.countDocuments({ source: 'zenoti' });
+      // The appointment book is the operational priority and takes only one
+      // request per clinic. Do it before a potentially long history backlog.
+      await appointmentSync.syncRecentAppointments({ trigger: 'boot' });
+      const [linked, mirrored] = await Promise.all([
+        User.countDocuments({ zenotiGuestId: { $exists: true, $ne: null } }),
+        ZenotiGuestData.countDocuments({ syncedAt: { $ne: null } }),
+      ]);
       if (linked === 0) {
         logger.info('No Zenoti guests mirrored yet — running initial roster import');
-        await importer.importRoster({ trigger: 'boot' });
+        await importer.fullImport({ trigger: 'boot' });
+      } else if (mirrored < linked) {
+        logger.info('Zenoti history import incomplete — resuming full backlog', { linked, mirrored });
+        await importer.crawlDetails({
+          limit: Number.MAX_SAFE_INTEGER,
+          trigger: 'boot',
+          mode: 'full',
+        });
       }
     } catch (err) {
       logger.warn('Initial Zenoti roster import skipped', { error: err.message });
     }
   }, 15000);
 
-  logger.info('Zenoti scheduler started (roster nightly 02:30 IST, history crawl every 5 min)');
+  logger.info('Zenoti scheduler started (appointments every 2 min, history every 5 min, roster nightly 02:30 IST)');
 }
 
 module.exports = { startZenotiScheduler };

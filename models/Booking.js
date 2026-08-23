@@ -21,7 +21,10 @@ const bookingSchema = new mongoose.Schema({
   consultationId: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Consultation',
-    required: true,
+    // A Zenoti service may not exist in the app catalogue yet. The external
+    // service id/name below keep that appointment complete until catalogue
+    // mapping is configured; app/reception-created bookings still require it.
+    required: [function () { return this.source !== 'zenoti'; }, 'Consultation is required'],
     index: true
   },
 
@@ -33,12 +36,12 @@ const bookingSchema = new mongoose.Schema({
   },
   mobileNumber: {
     type: String,
-    required: true,
+    required: [function () { return this.source !== 'zenoti'; }, 'Mobile number is required'],
     trim: true
   },
   email: {
     type: String,
-    required: true,
+    required: [function () { return this.source !== 'zenoti'; }, 'Email is required'],
     lowercase: true,
     trim: true
   },
@@ -238,6 +241,15 @@ const bookingSchema = new mongoose.Schema({
   // Zenoti write-back (Phase 2): the appointment this booking created in the CRM,
   // and its sync status, for idempotency + observability.
   zenotiAppointmentId: { type: String, default: null },
+  zenotiAppointmentGroupId: { type: String, default: null, index: true },
+  zenotiAppointmentSegmentId: { type: String, default: null },
+  zenotiInvoiceId: { type: String, default: null, index: true },
+  zenotiInvoiceItemId: { type: String, default: null },
+  zenotiServiceId: { type: String, default: null, index: true },
+  externalServiceName: { type: String, default: null, trim: true },
+  externalServiceCategory: { type: String, default: null, trim: true },
+  zenotiSource: { type: mongoose.Schema.Types.Mixed, default: null },
+  zenotiLastInboundAt: { type: Date, default: null },
   zenotiSyncStatus: {
     type: String,
     enum: ['pending', 'synced', 'failed', 'skipped', 'dryrun', null],
@@ -281,6 +293,14 @@ bookingSchema.index(
   { razorpayPaymentId: 1 },
   { unique: true, sparse: true, name: 'one_booking_per_razorpay_payment' }
 );
+bookingSchema.index(
+  { zenotiAppointmentId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { zenotiAppointmentId: { $type: 'string' } },
+    name: 'one_booking_per_zenoti_appointment',
+  }
+);
 
 // Reading a dermatologist's diary for a date range — the slot engine's
 // hottest query, run for every calendar paint and every slot list.
@@ -303,7 +323,10 @@ bookingSchema.index(
   { specialistId: 1, preferredDate: 1, slotTime: 1 },
   {
     unique: true,
-    partialFilterExpression: { slotHeld: true },
+    // Only dermatologist diaries have specialistId. Zenoti/general-treatment
+    // appointments may legitimately share a time across multiple therapists;
+    // indexing null specialist ids made those rows collide with each other.
+    partialFilterExpression: { slotHeld: true, specialistId: { $type: 'string' } },
     name: 'one_live_booking_per_slot',
   }
 );
@@ -355,18 +378,36 @@ bookingSchema.methods.canBeRescheduled = function(now = new Date()) {
 // pushes newly-created bookings to Zenoti (not every status update).
 bookingSchema.pre('save', function (next) {
   this._wasNew = this.isNew;
+  this._zenotiOperationalChanged = [
+    'status', 'confirmedDate', 'confirmedTime', 'preferredDate', 'slotTime',
+    'cancellationReason',
+  ].some((path) => this.isModified(path));
   next();
 });
 
 // Push a newly-created booking to Zenoti as an appointment. Fire-and-forget and
 // gated by ZENOTI_WRITE_MODE — a CRM failure never affects the booking itself.
 bookingSchema.post('save', function (doc) {
+  if (doc.$locals?.skipZenotiWrite) return;
   if (!doc._wasNew) return;
   if (doc.zenotiAppointmentId) return;
   setImmediate(() => {
     try {
       require('../services/zenotiWriteService').syncBooking(doc._id).catch(() => {});
     } catch (_) { /* never let CRM wiring affect booking creation */ }
+  });
+});
+
+// Existing linked appointments also need lifecycle write-back. This separate
+// hook intentionally runs only for operational changes and is suppressed by
+// the inbound reconciler, preventing a Zenoti → Mongo → Zenoti echo loop.
+bookingSchema.post('save', function (doc) {
+  if (doc.$locals?.skipZenotiWrite || doc._wasNew || !doc._zenotiOperationalChanged) return;
+  if (!doc.zenotiAppointmentId && !doc.zenotiInvoiceId) return;
+  setImmediate(() => {
+    try {
+      require('../services/zenotiWriteService').syncBookingState(doc._id).catch(() => {});
+    } catch (_) { /* lifecycle updates remain best-effort */ }
   });
 });
 

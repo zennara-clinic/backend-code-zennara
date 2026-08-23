@@ -264,18 +264,20 @@ exports.adminGuestOverview = async (req, res) => {
     const profile = await zenoti.getGuest(gid).catch(() => null);
     const centerId = profile?.centerId || null;
 
-    const [appointments, orders, memberships, packages] = await Promise.all([
+    const [appointments, orders, memberships, packages, notes, forms] = await Promise.all([
       zenoti.getGuestAppointments(gid).catch(() => []),
       zenoti.getGuestProducts(gid).catch(() => []),
       zenoti.getGuestMemberships(gid, centerId).catch(() => []),
       zenoti.getGuestPackages(gid).catch(() => []),
+      zenoti.getGuestNotes(gid).catch(() => []),
+      zenoti.getGuestForms(gid).catch(() => []),
     ]);
 
     const safeProfile = profile ? (({ _raw, ...rest }) => rest)(profile) : null;
     logger.info('Admin viewed Zenoti customer data', { adminId: req.admin?._id, guestId: gid });
     res.status(200).json({
       success: true,
-      data: { guestId: gid, profile: safeProfile, appointments, orders, memberships, packages },
+      data: { guestId: gid, profile: safeProfile, appointments, orders, memberships, packages, notes, forms },
     });
   } catch (error) {
     logger.error('Admin Zenoti overview failed', { error: error.message });

@@ -9,7 +9,9 @@
     "seed:taxonomy": "node scripts/seedServiceTaxonomy.js",
     "seed:doctors": "node scripts/seedDoctors.js",
     "purge:seeded": "node scripts/purgeSeededData.js",
-    "test:scheduling": "node --test tests/scheduling.test.js"
+    "test:scheduling": "node --test tests/scheduling.test.js",
+    "test:zenoti": "node --test tests/zenoti.test.js",
+    "migrate:booking-slot-index": "node scripts/fixBookingSlotIndex.js"
   },
   "keywords": [
     "zennara",

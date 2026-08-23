@@ -1,9 +1,8 @@
 /**
- * Mirror every Zenoti guest into a local User (source: 'zenoti'), then
- * optionally start the per-guest history crawl.
+ * Import every Zenoti guest and every supported per-guest dataset.
  *
- *   node scripts/zenotiImportRoster.js            # full roster
- *   node scripts/zenotiImportRoster.js --crawl 40 # roster + sync 40 stalest guests' history
+ *   node scripts/zenotiImportRoster.js               # full import
+ *   node scripts/zenotiImportRoster.js --roster-only # emergency roster-only run
  *
  * Safe to re-run: guests are matched by Zenoti id, then phone/email.
  */
@@ -14,17 +13,12 @@ const mongoose = require('mongoose');
   await mongoose.connect(process.env.MONGODB_URI);
   const importer = require('../services/zenotiImportService');
   const args = process.argv.slice(2);
-  const crawlIdx = args.indexOf('--crawl');
 
   const t0 = Date.now();
-  const tally = await importer.importRoster({ trigger: 'manual' });
-  console.log('Roster:', tally, `${Math.round((Date.now() - t0) / 1000)}s`);
-
-  if (crawlIdx !== -1) {
-    const limit = parseInt(args[crawlIdx + 1], 10) || 40;
-    const c = await importer.crawlDetails({ limit, trigger: 'manual' });
-    console.log('History crawl:', c);
-  }
+  const tally = args.includes('--roster-only')
+    ? await importer.importRoster({ trigger: 'manual' })
+    : await importer.fullImport({ trigger: 'manual' });
+  console.log(args.includes('--roster-only') ? 'Roster:' : 'Full import:', tally, `${Math.round((Date.now() - t0) / 1000)}s`);
   await mongoose.disconnect();
   process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });

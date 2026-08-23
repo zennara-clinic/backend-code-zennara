@@ -89,6 +89,16 @@ const consultationNoteSchema = new mongoose.Schema(
     },
     completedAt: { type: Date, default: null },
 
+    // Zenoti guest-note mirror for the clinical record/prescription.
+    zenotiNoteId: { type: String, default: null, index: true },
+    zenotiSyncStatus: {
+      type: String,
+      enum: ['pending', 'synced', 'failed', 'skipped', 'dryrun', null],
+      default: null,
+    },
+    zenotiSyncError: { type: String, default: null },
+    zenotiSyncedAt: { type: Date, default: null },
+
     /** Snapshots of the note as it stood before each subsequent save. */
     revisions: [
       {
@@ -103,5 +113,22 @@ const consultationNoteSchema = new mongoose.Schema(
 
 consultationNoteSchema.index({ doctorId: 1, createdAt: -1 });
 consultationNoteSchema.index({ userId: 1, createdAt: -1 });
+
+consultationNoteSchema.pre('save', function (next) {
+  this._clinicalChanged = [
+    'complaint', 'examination', 'assessment', 'plan', 'prescription',
+    'followUpDate', 'doctorName', 'status',
+  ].some((path) => this.isModified(path));
+  next();
+});
+
+consultationNoteSchema.post('save', function (doc) {
+  if (doc.$locals?.skipZenotiWrite || !doc._clinicalChanged) return;
+  setImmediate(() => {
+    try {
+      require('../services/zenotiWriteService').syncConsultationNote(doc._id).catch(() => {});
+    } catch (_) { /* a Zenoti outage never loses the local clinical note */ }
+  });
+});
 
 module.exports = mongoose.model('ConsultationNote', consultationNoteSchema);

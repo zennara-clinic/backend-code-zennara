@@ -12,7 +12,7 @@ const Branch = require('../models/Branch');
 const ZenotiGuestData = require('../models/ZenotiGuestData');
 const ZenotiSyncRun = require('../models/ZenotiSyncRun');
 const importer = require('../services/zenotiImportService');
-const { isMembershipCurrentlyActive } = require('../services/zenotiSyncService');
+const appointmentSync = require('../services/zenotiAppointmentSyncService');
 const logger = require('../utils/logger');
 
 const clamp = (v, lo, hi, d) => { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
@@ -40,24 +40,38 @@ exports.getStatus = async (req, res) => {
   }
 };
 
-// POST /api/admin/zenoti/import — start a roster import in the background
+// POST /api/admin/zenoti/import — roster + every supported patient dataset
 exports.startImport = async (req, res) => {
-  if (importer.isRosterRunning()) {
-    return res.status(409).json({ success: false, message: 'A roster import is already running.' });
+  if (importer.isFullImportRunning() || importer.isRosterRunning() || importer.isDetailsRunning()) {
+    return res.status(409).json({ success: false, message: 'A Zenoti import or history refresh is already running.' });
   }
-  importer.importRoster({ trigger: 'manual', adminId: req.admin?._id }).catch(() => {});
-  logger.info('Zenoti roster import started by admin', { adminId: req.admin?._id });
-  res.status(202).json({ success: true, message: 'Import started. Guests will appear in Patients as they are mirrored.' });
+  importer.fullImport({ trigger: 'manual', adminId: req.admin?._id }).catch((error) => {
+    logger.error('Zenoti full import failed', { adminId: req.admin?._id, error: error.message });
+  });
+  logger.info('Zenoti full import started by admin', { adminId: req.admin?._id });
+  res.status(202).json({
+    success: true,
+    message: 'Full import started: patients, profiles, treatments, purchases, packages, memberships, notes and forms.',
+  });
 };
 
 // POST /api/admin/zenoti/crawl — sync the stalest N guests now
 exports.startCrawl = async (req, res) => {
-  if (importer.isDetailsRunning()) {
-    return res.status(409).json({ success: false, message: 'A history sync is already running.' });
+  if (importer.isFullImportRunning() || importer.isRosterRunning() || importer.isDetailsRunning()) {
+    return res.status(409).json({ success: false, message: 'A Zenoti import or history refresh is already running.' });
   }
   const limit = clamp(req.body?.limit, 1, 200, 40);
   importer.crawlDetails({ limit, trigger: 'manual' }).catch(() => {});
   res.status(202).json({ success: true, message: `Refreshing the ${limit} least-recently synced customers.` });
+};
+
+// POST /api/admin/zenoti/appointments/sync — immediate working-diary refresh
+exports.syncAppointments = async (_req, res) => {
+  if (appointmentSync.isAppointmentSyncRunning()) {
+    return res.status(409).json({ success: false, message: 'The live appointment refresh is already running.' });
+  }
+  appointmentSync.syncRecentAppointments({ trigger: 'manual' }).catch(() => {});
+  return res.status(202).json({ success: true, message: 'Refreshing all clinic appointment books now.' });
 };
 
 // GET /api/admin/zenoti/users/:userId  (?refresh=1 forces a live pull)
@@ -107,7 +121,10 @@ async function listUnwound(field, { match = {}, sort, page, limit, branchName, s
   pipeline.push({ $unwind: '$user' });
   if (search) {
     const rx = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-    pipeline.push({ $match: { $or: [{ 'user.fullName': rx }, { 'user.phone': rx }, { 'user.email': rx }, { [`${field}.name`]: rx }, { [`${field}.serviceName`]: rx }] } });
+    pipeline.push({ $match: { $or: [
+      { 'user.fullName': rx }, { 'user.phone': rx }, { 'user.email': rx },
+      { [`${field}.name`]: rx }, { [`${field}.serviceName`]: rx }, { [`${field}.text`]: rx },
+    ] } });
   }
   pipeline.push({ $project: { _id: 0, userId: 1, branchName: 1, user: 1, item: `$${field}`, syncedAt: 1 } });
   pipeline.push({ $sort: sort });
@@ -127,6 +144,7 @@ exports.listPackages = async (req, res) => {
     const match = {};
     if (status === 'active') {
       match.$and = [
+        { 'packages.status': { $in: [1, '1', 'active', 'Active'] } },
         { 'packages.sessionsRemaining': { $gt: 0 } },
         { $or: [{ 'packages.neverExpires': true }, { 'packages.endDate': null }, { 'packages.endDate': { $gte: now } }] },
       ];
@@ -175,13 +193,18 @@ exports.listMemberships = async (req, res) => {
     const page = clamp(req.query.page, 1, 1e6, 1);
     const limit = clamp(req.query.limit, 1, 200, 50);
     const branchName = await branchNameFrom(req.query);
+    const activeOnly = (req.query.status || 'active') === 'active';
+    const match = activeOnly ? {
+      $and: [
+        { 'memberships.status': { $in: [1, '1', 'active', 'Active'] } },
+        { $or: [{ 'memberships.expiryDate': null }, { 'memberships.expiryDate': { $gte: new Date().toISOString() } }] },
+      ],
+    } : {};
     const { rows, total } = await listUnwound('memberships', {
-      match: {}, page: 1, limit: 5000, branchName, search: req.query.search,
+      match, page, limit, branchName, search: req.query.search,
       sort: { 'item.expiryDate': -1 },
     });
-    const wanted = (req.query.status || 'active') === 'active' ? rows.filter((r) => isMembershipCurrentlyActive(r.item)) : rows;
-    const start = (page - 1) * limit;
-    res.json({ success: true, data: wanted.slice(start, start + limit), total: wanted.length || total, page, limit });
+    res.json({ success: true, data: rows, total, page, limit });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -196,6 +219,38 @@ exports.listOrders = async (req, res) => {
     const { rows, total } = await listUnwound('orders', {
       match: {}, page, limit, branchName, search: req.query.search,
       sort: { 'item.saleDate': -1 },
+    });
+    res.json({ success: true, data: rows, total, page, limit });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// GET /api/admin/zenoti/notes?branchId&search&page&limit
+exports.listNotes = async (req, res) => {
+  try {
+    const page = clamp(req.query.page, 1, 1e6, 1);
+    const limit = clamp(req.query.limit, 1, 200, 50);
+    const branchName = await branchNameFrom(req.query);
+    const { rows, total } = await listUnwound('notes', {
+      match: {}, page, limit, branchName, search: req.query.search,
+      sort: { 'item.createdAt': -1 },
+    });
+    res.json({ success: true, data: rows, total, page, limit });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// GET /api/admin/zenoti/forms?branchId&search&page&limit
+exports.listForms = async (req, res) => {
+  try {
+    const page = clamp(req.query.page, 1, 1e6, 1);
+    const limit = clamp(req.query.limit, 1, 200, 50);
+    const branchName = await branchNameFrom(req.query);
+    const { rows, total } = await listUnwound('forms', {
+      match: {}, page, limit, branchName, search: req.query.search,
+      sort: { 'item.lastFilledAt': -1 },
     });
     res.json({ success: true, data: rows, total, page, limit });
   } catch (error) {

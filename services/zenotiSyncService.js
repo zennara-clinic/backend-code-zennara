@@ -88,7 +88,15 @@ async function provisionUserFromGuest(guest, opts = {}) {
   // The bulk importer pre-loads a page's worth of candidate accounts so we
   // don't pay three round-trips per guest; otherwise look them up here.
   const pre = opts.prefetched || null;
-  const lookup = (key, value) => (pre ? Promise.resolve(pre[key].get(value) || null) : User.findOne({ [key === 'byGuest' ? 'zenotiGuestId' : key === 'byPhone' ? 'phone' : 'email']: value }));
+  const lookup = (key, value) => {
+    if (pre) return Promise.resolve(pre[key].get(value) || null);
+    if (key === 'byGuest') {
+      // Historical imports preserved Zenoti's GUID casing while the current
+      // normaliser lowercases it. GUID identity is case-insensitive.
+      return User.findOne({ zenotiGuestId: new RegExp(`^${escapeRegExp(value)}$`, 'i') });
+    }
+    return User.findOne({ [key === 'byPhone' ? 'phone' : 'email']: value });
+  };
 
   // 1) Already linked by Zenoti guest id → update the mirror.
   let user = await lookup('byGuest', guest.zenotiGuestId);
@@ -96,14 +104,17 @@ async function provisionUserFromGuest(guest, opts = {}) {
   // 2) A local account with the same phone/email predates the link → adopt it.
   //    Never steal an account that is already linked to a DIFFERENT guest —
   //    families share emails in the CRM, and the bulk import must not merge them.
-  const unlinked = (u) => u && (!u.zenotiGuestId || u.zenotiGuestId === guest.zenotiGuestId);
+  const unlinked = (u) => u && (!u.zenotiGuestId || String(u.zenotiGuestId).toLowerCase() === String(guest.zenotiGuestId).toLowerCase());
   if (!user && phone) {
     const byPhone = await lookup('byPhone', phone);
     if (unlinked(byPhone)) user = byPhone;
   }
   if (!user && email) {
     const byEmail = await lookup('byEmail', email);
-    if (unlinked(byEmail)) user = byEmail;
+    // A placeholder email is deterministically derived from this exact Zenoti
+    // guest id. If an old partial import created it but failed to persist (or
+    // differently cased) the guest id, this is still the same patient record.
+    if (unlinked(byEmail) || (byEmail && email === placeholderEmail(guest.zenotiGuestId))) user = byEmail;
   }
 
   if (user) {
@@ -115,23 +126,21 @@ async function provisionUserFromGuest(guest, opts = {}) {
     if (!user.location) user.location = location;
     const changed = ['fullName', 'gender', 'dateOfBirth', 'zenotiGuestId', 'zenotiCenterId', 'location', 'email', 'phone']
       .some((k) => String(before[k] ?? '') !== String(user[k] ?? ''));
+    user.$locals.skipZenotiWrite = true;
     await user.save({ validateModifiedOnly: true });
     if (!opts.quiet) logger.info('Linked existing local account to Zenoti guest', { userId: user._id });
     user._importOutcome = changed ? 'updated' : 'unchanged';
     return user;
   }
 
-  // 3) Brand-new mirror. A phone is mandatory on our side; a guest without a
-  //    valid Indian mobile can't sign in and is skipped by the importer.
-  if (!phone) {
-    const err = new Error('Zenoti guest has no valid mobile number');
-    err.code = 'NO_PHONE';
-    throw err;
-  }
+  // 3) Brand-new mirror. A guest with no valid mobile is still a real clinic
+  //    patient and must appear in the admin panel. The conditional User
+  //    validator permits a missing phone only for source:'zenoti'; OTP login
+  //    naturally remains unavailable until a valid number is added.
   // The CRM email may already belong to another (differently linked) account;
   // fall back to the stable placeholder rather than failing the unique index.
   const emailTaken = pre ? Boolean(pre.byEmail.get(email)) : await User.exists({ email });
-  user = await User.create({
+  user = new User({
     email: emailTaken ? placeholderEmail(guest.zenotiGuestId) : email,
     fullName: guest.fullName || 'Zennara Guest',
     phone: phone || undefined,
@@ -147,6 +156,8 @@ async function provisionUserFromGuest(guest, opts = {}) {
     termsOfServiceConsent: { accepted: true, version: 'zenoti-import', acceptedAt: new Date() },
     ...synced,
   });
+  user.$locals.skipZenotiWrite = true;
+  await user.save();
   if (!opts.quiet) logger.info('Provisioned new local account from Zenoti guest', { userId: user._id });
   user._importOutcome = 'created';
   return user;
@@ -170,16 +181,17 @@ async function findOrProvisionByPhone(phone) {
 }
 
 /**
- * A Zenoti membership counts as active if its expiry is in the future. Zenoti's
- * numeric status codes aren't reliably documented, so we trust the expiry date
- * (which we do get) and only fall back to the status when there's no expiry.
+ * A Zenoti membership is active only when its explicit status is active and it
+ * has not expired. This matters for cancelled/refunded memberships whose old
+ * expiry date can still be in the future.
  */
 function isMembershipCurrentlyActive(m) {
+  if (m.status !== undefined && m.status !== null && !isActiveMembershipStatus(m.status)) return false;
   if (m.expiryDate) {
     const exp = new Date(m.expiryDate);
     if (!Number.isNaN(exp.getTime())) return exp.getTime() > Date.now();
   }
-  return isActiveMembershipStatus(m.status);
+  return m.status !== undefined && m.status !== null ? isActiveMembershipStatus(m.status) : false;
 }
 
 /**
@@ -227,6 +239,7 @@ async function applyMembershipFromZenoti(user, prefetched) {
       if (!Number.isNaN(end.getTime())) { user.zenMembershipExpiryDate = end; changed = true; }
     }
     if (changed) {
+      user.$locals.skipZenotiWrite = true;
       await user.save({ validateModifiedOnly: true });
       logger.info('Applied Zenoti Zen membership to user', { userId: user._id, plan: active.name });
     }

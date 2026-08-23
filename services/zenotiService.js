@@ -178,7 +178,10 @@ function normalizeGuest(raw) {
   if (!raw) return null;
   const info = raw.personal_info || raw.PersonalInfo || raw;
   const contact = info.mobile_phone || info.MobilePhone || {};
-  const address = info.address_info || info.AddressInfo || {};
+  // The full guest endpoint returns address_info at the root, while some list
+  // responses nest it under personal_info. Support both; the old code only
+  // handled the latter and silently discarded every full-profile address.
+  const address = raw.address_info || raw.AddressInfo || info.address_info || info.AddressInfo || {};
   const centerId = pick(raw, 'center_id', 'CenterId') || pick(info, 'center_id', 'CenterId');
 
   const firstName = pick(info, 'first_name', 'FirstName') || '';
@@ -188,7 +191,7 @@ function normalizeGuest(raw) {
     normalizeIndianMobile(pick(info, 'mobile_phone', 'phone'));
 
   return {
-    zenotiGuestId: pick(raw, 'id', 'Id', 'guest_id'),
+    zenotiGuestId: String(pick(raw, 'id', 'Id', 'guest_id') || '').toLowerCase() || null,
     firstName,
     lastName,
     fullName: `${firstName} ${lastName}`.trim(),
@@ -201,6 +204,28 @@ function normalizeGuest(raw) {
     centerName: centerById(centerId)?.name || null,
     branchName: branchNameForCenter(centerId),
     code: pick(raw, 'code', 'Code'),
+    preferredName: pick(info, 'preferred_name', 'PreferredName'),
+    memberSince: pick(info, 'member_since', 'MemberSince'),
+    anniversaryDate: pick(info, 'anniversary_date', 'AnniversaryDate'),
+    isMinor: Boolean(info.is_minor),
+    isVirtualGuest: Boolean(raw.is_virtual_guest),
+    isOnlineBookingBlocked: Boolean(raw.is_online_booking_blocked),
+    isClassBookingBlocked: Boolean(raw.is_class_booking_blocked),
+    isBlockedForNoShow: Boolean(raw.is_blocked_for_no_show),
+    preferredServiceId: pick(raw, 'preferred_service_id'),
+    wellnessId: pick(raw, 'wellness_id'),
+    preferences: raw.preferences || null,
+    tags: raw.tags || null,
+    referral: raw.referral || null,
+    primaryEmployee: raw.primary_employee || null,
+    guestPasses: raw.guest_passes || null,
+    milestoneDetails: raw.guest_milestone_details || null,
+    additionalDetails: raw.additional_details || null,
+    emergencyContact: {
+      firstName: pick(info, 'emergency_contact_first_name'),
+      lastName: pick(info, 'emergency_contact_last_name'),
+      phone: pick(info.emergency_contact_phone_number || {}, 'number'),
+    },
     address: {
       line1: pick(address, 'address1', 'Address1'),
       line2: pick(address, 'address2', 'Address2'),
@@ -225,28 +250,124 @@ function normalizeAppointmentGroup(group) {
   if (!group) return [];
   const centerId = pick(group, 'center_id', 'CenterId');
   const centerName = centerById(centerId)?.name || null;
-  const services = Array.isArray(group.appointment_services) ? group.appointment_services : [];
+  const directServices = Array.isArray(group.appointment_services) ? group.appointment_services : [];
+  const packageServices = (Array.isArray(group.appointment_packages) ? group.appointment_packages : [])
+    .flatMap((pkg) => (Array.isArray(pkg.appointment_services) ? pkg.appointment_services : [])
+      .map((svc) => ({ ...svc, _packageName: pick(pkg, 'name') })));
+  const services = [...directServices, ...packageServices];
   if (!services.length) return [];
 
   return services.map((svc) => {
     const service = svc.service || {};
     const therapist = svc.therapist || {};
     const svcPrice = service.price || {};
+    const room = svc.room || {};
+    const equipment = svc.equipment || {};
+    const invoice = group.invoice || {};
     return {
       id: pick(svc, 'appointment_id') || pick(group, 'appointment_group_id'),
+      appointmentGroupId: pick(group, 'appointment_group_id'),
+      appointmentSegmentId: pick(svc, 'appointment_segment_id'),
       invoiceId: pick(group, 'invoice_id'),
+      invoiceItemId: pick(svc, 'invoice_item_id'),
+      serviceId: pick(service, 'id'),
       serviceName: pick(service, 'name', 'display_name'),
       startTime: pick(svc, 'start_time'),
       endTime: pick(svc, 'end_time'),
       durationMinutes: service.duration ?? null,
+      packageName: svc._packageName || null,
       therapistName: pick(therapist, 'display_name', 'nick_name'),
+      roomName: pick(room, 'name', 'Name'),
+      equipmentName: pick(equipment, 'name', 'Name'),
+      status: svc.appointment_status ?? null,
+      invoiceNumber: pick(invoice, 'no', 'invoice_number'),
       price: svcPrice.final ?? svcPrice.sales ?? (group.price && (group.price.final ?? group.price.sales)) ?? null,
       centerId,
       centerName,
       membershipApplied: Boolean(svc.is_membership_applied),
+      hasServiceForm: Boolean(svc.has_service_form),
+      feedbackSubmitted: Boolean(group.is_feedback_submitted),
       notes: pick(group, 'notes'),
     };
   });
+}
+
+/**
+ * One row from GET /v1/appointments (the center appointment book).
+ *
+ * Unlike the guest-history endpoint this is already one row per service and it
+ * contains the operational fields the reception/doctor panels need. Keeping a
+ * normalised shape here lets the frequent poller and webhook reconciler share
+ * the exact same idempotent Booking upsert.
+ */
+function normalizeCenterAppointment(raw, centerId) {
+  if (!raw || raw.blockout || !raw.appointment_id || !raw.guest?.id) return null;
+  const guest = raw.guest || {};
+  const mobile = guest.mobile || {};
+  const service = raw.service || {};
+  const therapist = raw.therapist || {};
+  const price = raw.price || {};
+  const room = raw.room || {};
+  const equipment = raw.equipment || {};
+
+  const normalizedGuest = normalizeGuest({
+    id: guest.id,
+    center_id: centerId,
+    personal_info: {
+      first_name: guest.first_name,
+      last_name: guest.last_name,
+      email: guest.email,
+      gender: guest.gender,
+      mobile_phone: {
+        number: mobile.number || mobile.display_number,
+      },
+    },
+  });
+
+  return {
+    id: pick(raw, 'appointment_id'),
+    appointmentGroupId: pick(raw, 'appointment_group_id'),
+    appointmentSegmentId: pick(raw, 'appointment_segment_id'),
+    invoiceId: pick(raw, 'invoice_id'),
+    invoiceItemId: pick(raw, 'invoice_item_id'),
+    serviceId: pick(service, 'id'),
+    serviceName: pick(service, 'name'),
+    serviceCategory: pick(service.category || {}, 'name'),
+    serviceSubCategory: pick(service.sub_category || {}, 'name'),
+    startTime: pick(raw, 'start_time'),
+    startTimeUtc: pick(raw, 'start_time_utc'),
+    endTime: pick(raw, 'end_time'),
+    endTimeUtc: pick(raw, 'end_time_utc'),
+    actualStartTime: pick(raw, 'actual_start_time'),
+    actualCompletedTime: pick(raw, 'actual_completed_time'),
+    checkinTime: pick(raw, 'checkin_time'),
+    status: raw.status ?? null,
+    progress: raw.progress ?? null,
+    source: raw.source ?? raw.booking_source ?? null,
+    notes: pick(raw, 'notes') || pick(raw, 'group_notes'),
+    therapistId: pick(therapist, 'id'),
+    therapistName: pick(therapist, 'display_name', 'nick_name') ||
+      `${pick(therapist, 'first_name') || ''} ${pick(therapist, 'last_name') || ''}`.trim() || null,
+    roomName: pick(room, 'name'),
+    equipmentName: pick(equipment, 'name'),
+    price: price.final ?? price.sales ?? null,
+    invoiceNumber: pick(raw, 'invoice_number'),
+    receiptNumber: pick(raw, 'receipt_number'),
+    centerId,
+    centerName: centerById(centerId)?.name || null,
+    branchName: branchNameForCenter(centerId),
+    guest: normalizedGuest,
+    formId: pick(raw, 'form_id'),
+    packageId: pick(raw, 'package_id'),
+    packageName: pick(raw, 'package_name'),
+    isPrescriptionSigned: raw.is_prescription_signed ?? null,
+    hasUnexpiredPackages: Boolean(raw.has_unexpired_packages),
+    membershipApplied: Boolean(raw.autoapply_membership || raw.has_active_membership_for_auto_pay),
+    isStarted: Boolean(raw.is_started) || Number(raw.progress) === 1,
+    isCompleted: Boolean(raw.is_completed) || Number(raw.progress) === 2,
+    createdAt: pick(raw, 'creation_date'),
+    updatedAt: pick(raw, 'last_date'),
+  };
 }
 
 /** A single product purchase line from /guests/{id}/products. */
@@ -275,7 +396,16 @@ function normalizePackage(p) {
     balance: s.balance ?? null,
   }));
   const sum = (key) => services.reduce((n, s) => n + (Number(s[key]) || 0), 0);
+  const products = (Array.isArray(p.products) ? p.products : []).map((product) => ({
+    name: pick(product.product_info || product.product || {}, 'name', 'Name'),
+    total: product.total ?? null,
+    used: product.used ?? null,
+    balance: product.balance ?? null,
+    balanceAmount: product.balance_amount ?? null,
+  }));
   const date = p.date || {};
+  const invoice = p.invoice || {};
+  const redemption = p.redemption_setting_details || {};
   return {
     id: pick(p, 'user_package_id', 'id'),
     name: pick(p.package || {}, 'name', 'Name'),
@@ -286,9 +416,20 @@ function normalizePackage(p) {
     neverExpires: Boolean(p.never_expires),
     price: p.purchase_price ?? null,
     centerName: pick(p.center || {}, 'name', 'Name'),
+    redeemable: p.redeemable ?? null,
+    invoice: {
+      id: pick(invoice, 'id'),
+      number: pick(invoice, 'no', 'invoice_number'),
+      receiptNumber: pick(invoice, 'receipt_no', 'receipt_number'),
+      status: invoice.status ?? null,
+    },
     services,
+    products,
     sessionsTotal: sum('total'),
     sessionsRemaining: sum('balance'),
+    totalPayment: redemption.total_payment ?? p.purchase_price ?? null,
+    isFrozen: Boolean(redemption.is_frozen),
+    restrictRedemptionToCenter: Boolean(redemption.restrict_redemption_in_this_center),
   };
 }
 
@@ -302,6 +443,14 @@ function normalizeMembership(m) {
     balance: s.balance ?? null,
     expiryDate: pick(s, 'expiry_date'),
   }));
+  const products = (Array.isArray(m.products) ? m.products : []).map((p) => ({
+    name: pick(p.product || p.product_info || {}, 'name', 'Name'),
+    total: p.total ?? null,
+    used: p.used ?? null,
+    balance: p.balance ?? null,
+    expiryDate: pick(p, 'expiry_date'),
+  }));
+  const invoice = m.invoice || {};
   return {
     id: pick(m, 'user_membership_id', 'id'),
     name: pick(m.membership || {}, 'name', 'Name'),
@@ -312,6 +461,64 @@ function normalizeMembership(m) {
     creditBalance: m.credit_balance ? (m.credit_balance.total ?? null) : null,
     centerName: centerById(pick(m, 'invoice_center_id'))?.name || null,
     services,
+    products,
+    isRefunded: Boolean(m.is_refunded),
+    recurrenceStatus: m.recurrence_status ?? null,
+    redeemable: m.redeemable ?? null,
+    isAddonMember: Boolean(m.is_addon_member),
+    guestPassType: m.guestpass_type ?? null,
+    guestPassTotal: m.guestpass_total ?? null,
+    guestPassBalance: m.guestpass_balance ?? null,
+    htmlBenefits: m.html_benefits || null,
+    invoice: {
+      id: pick(invoice, 'id'),
+      number: pick(invoice, 'no', 'invoice_number'),
+      receiptNumber: pick(invoice, 'receipt_no', 'receipt_number'),
+      status: invoice.status ?? null,
+    },
+    historicalInvoices: Array.isArray(m.historical_invoices) ? m.historical_invoices : [],
+  };
+}
+
+/** A staff-visible guest note. Private notes are never requested. */
+function normalizeGuestNote(n) {
+  if (!n) return null;
+  const creator = n.created_by || n.createdBy || {};
+  const modifier = n.modified_by || n.modifiedBy || {};
+  return {
+    id: pick(n, 'id', 'note_id', 'guest_note_id'),
+    text: pick(n, 'note', 'notes', 'text', 'description'),
+    type: pick(n, 'note_type_name', 'type_name', 'type') ?? n.note_type ?? null,
+    isPrivate: Boolean(n.is_private),
+    isProfileAlert: Boolean(n.is_profile_alert),
+    createdAt: pick(n, 'created_date', 'created_at') || pick(creator, 'date'),
+    createdBy: pick(creator, 'name') || pick(n, 'created_by_name'),
+    modifiedAt: pick(n, 'modified_date', 'modified_at') || pick(modifier, 'date'),
+    modifiedBy: pick(modifier, 'name') || pick(n, 'modified_by_name'),
+    centerName: pick(n.center || {}, 'name', 'Name'),
+  };
+}
+
+/** Metadata for a form attached to the guest. Form contents remain in Zenoti. */
+function normalizeGuestForm(f) {
+  if (!f) return null;
+  return {
+    id: pick(f, 'form_id', 'id'),
+    name: pick(f, 'name', 'form_name'),
+    status: f.form_filled_status ?? f.filled_status ?? null,
+    isExpired: Boolean(f.is_expired),
+    lastFilledAt: pick(f, 'last_filled_date', 'lastfilled_date'),
+    lastFilledBy: pick(f, 'last_filled_by', 'lastfilled_by'),
+    formType: f.form_type ?? null,
+    viewOnly: Boolean(f.viewonly ?? f.is_viewonly),
+    formUrl: pick(f, 'form_url'),
+    history: (Array.isArray(f.form_history) ? f.form_history : []).map((h) => ({
+      versionId: pick(h, 'version_id'),
+      versionDate: pick(h, 'version_date'),
+      createdBy: pick(h, 'created_by'),
+      formName: pick(h, 'form_name'),
+      formUrl: pick(h, 'form_url'),
+    })),
   };
 }
 
@@ -429,7 +636,9 @@ async function listCenterGuests(centerId, page = 1, size = 100) {
 /** GET /v1/guests/{id} — full guest profile. */
 async function getGuest(guestId) {
   if (!guestId) return null;
-  const json = await request(`/v1/guests/${guestId}`);
+  const json = await request(`/v1/guests/${guestId}`, {
+    query: { expand: 'tags,address_info,preferences,referrals' },
+  });
   return normalizeGuest(json);
 }
 
@@ -440,24 +649,57 @@ async function getGuest(guestId) {
  */
 async function getGuestAppointments(guestId, { from, to } = {}) {
   if (!guestId) return [];
-  const start = from || isoDaysFromNow(-1095);
+  const start = from || process.env.ZENOTI_HISTORY_START_DATE || '2000-01-01';
   const end = to || isoDaysFromNow(90);
-  const json = await request(`/v1/guests/${guestId}/appointments`, {
-    query: { start_date: start, end_date: end },
-  });
-  const groups = json?.appointments || json?.Appointments || [];
+  const groups = [];
+  for (let page = 1; page <= 500; page += 1) {
+    const json = await request(`/v1/guests/${guestId}/appointments`, {
+      query: { start_date: start, end_date: end, page, size: 100 },
+    });
+    const list = json?.appointments || json?.Appointments || [];
+    groups.push(...list);
+    const info = json?.page_info || json?.page_Info || {};
+    if (!list.length || list.length < 100 || (info.total && groups.length >= Number(info.total))) break;
+  }
   const flat = groups.flatMap(normalizeAppointmentGroup).filter(Boolean);
   // Newest first — Zenoti doesn't guarantee order.
   flat.sort((a, b) => new Date(b.startTime || 0) - new Date(a.startTime || 0));
   return flat;
 }
 
+/**
+ * The working appointment book for one center and a window of at most 7 days.
+ * This endpoint is intentionally used for the two-minute operational poll: it
+ * is one request per clinic instead of one request per patient.
+ */
+async function getCenterAppointments(centerId, { from, to, includeCancelled = true } = {}) {
+  if (!centerId) return [];
+  const start = from || isoDaysFromNow(-1);
+  const end = to || isoDaysFromNow(6);
+  const json = await request('/v1/appointments', {
+    query: {
+      center_id: centerId,
+      start_date: start,
+      end_date: end,
+      include_no_show_cancel: includeCancelled,
+    },
+  });
+  const rows = Array.isArray(json) ? json : json?.appointments || json?.Appointments || [];
+  return rows.map((row) => normalizeCenterAppointment(row, centerId)).filter(Boolean);
+}
+
 /** Product / retail purchase history for a guest. */
 async function getGuestProducts(guestId) {
   if (!guestId) return [];
-  const json = await request(`/v1/guests/${guestId}/products`);
-  const list = json?.products || json?.Products || json?.items || [];
-  return list.map(normalizeProductPurchase).filter(Boolean);
+  const all = [];
+  for (let page = 1; page <= 500; page += 1) {
+    const json = await request(`/v1/guests/${guestId}/products`, { query: { page, size: 100 } });
+    const list = json?.products || json?.Products || json?.items || [];
+    all.push(...list);
+    const info = json?.page_info || json?.page_Info || {};
+    if (!list.length || list.length < 100 || (info.total && all.length >= Number(info.total))) break;
+  }
+  return all.map(normalizeProductPurchase).filter(Boolean);
 }
 
 /**
@@ -468,7 +710,7 @@ async function getGuestProducts(guestId) {
 async function getGuestMemberships(guestId, centerId) {
   if (!guestId) return [];
   const json = await request(`/v1/guests/${guestId}/memberships`, {
-    query: { center_id: centerId },
+    query: { center_id: centerId, is_active: -1, show_redeemable: true },
   });
   const list = json?.guest_memberships || json?.memberships || json?.Memberships || [];
   return list.map(normalizeMembership).filter(Boolean);
@@ -480,17 +722,47 @@ async function getGuestMemberships(guestId, centerId) {
  */
 async function getGuestPackages(guestId) {
   if (!guestId) return [];
-  const json = await request(`/v1/guests/${guestId}/packages`);
+  const json = await request(`/v1/guests/${guestId}/packages`, {
+    query: { page_num: -1, page_size: 0, show_redeemable: false },
+  });
   const list = Array.isArray(json)
     ? json
     : json?.packages || json?.Packages || json?.series_packages || [];
   return list.map(normalizePackage).filter(Boolean);
 }
 
+/** All non-private notes visible to this API key, paged to completion. */
+async function getGuestNotes(guestId) {
+  if (!guestId) return [];
+  const all = [];
+  for (let page = 1; page <= 100; page += 1) {
+    const json = await request(`/v1/guests/${guestId}/notes`, {
+      query: { view_private: false, page, size: 100 },
+    });
+    const list = json?.notes || json?.Notes || [];
+    all.push(...list.map(normalizeGuestNote).filter(Boolean));
+    const info = json?.page_info || json?.page_Info || {};
+    if (!list.length || list.length < 100 || (info.total && all.length >= Number(info.total))) break;
+  }
+  return all;
+}
+
+/** Guest-level form metadata, including version history when Zenoti exposes it. */
+async function getGuestForms(guestId) {
+  if (!guestId) return [];
+  const json = await request(`/v1/guests/${guestId}/guest_forms`, { query: { expand: 'history' } });
+  const list = Array.isArray(json) ? json : json?.forms || json?.guest_forms || [];
+  return list.map(normalizeGuestForm).filter(Boolean);
+}
+
 function isoDaysFromNow(days) {
   const d = new Date();
   d.setDate(d.getDate() + days);
-  return d.toISOString().slice(0, 10); // YYYY-MM-DD
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(d);
+  const part = (type) => parts.find((item) => item.type === type)?.value;
+  return `${part('year')}-${part('month')}-${part('day')}`;
 }
 
 module.exports = {
@@ -505,13 +777,19 @@ module.exports = {
   listCenterGuests,
   getGuest,
   getGuestAppointments,
+  getCenterAppointments,
   getGuestProducts,
   getGuestMemberships,
   getGuestPackages,
+  getGuestNotes,
+  getGuestForms,
   // exported for reuse/testing
   normalizeGuest,
   normalizeAppointmentGroup,
+  normalizeCenterAppointment,
   normalizeProductPurchase,
   normalizePackage,
   normalizeMembership,
+  normalizeGuestNote,
+  normalizeGuestForm,
 };
