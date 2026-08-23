@@ -1,5 +1,42 @@
 const Package = require('../models/Package');
 const Consultation = require('../models/Consultation');
+const mongoose = require('mongoose');
+
+/** A package by Mongo _id, legacy `pkg-…` id, or slug-like name. */
+async function findPackage(key) {
+  const or = [{ id: key }];
+  if (mongoose.Types.ObjectId.isValid(key)) or.unshift({ _id: key });
+  return Package.findOne({ $or: or });
+}
+
+/**
+ * Normalise the services array the panel sends into the stored shape.
+ * Accepts either plain ids (legacy) or objects:
+ *   { serviceId | _id | id | slug, sessions?, customPrice?, name? }
+ * and resolves each against the Consultation catalogue for the name/price.
+ */
+async function resolveServices(input, customPrices) {
+  if (!Array.isArray(input)) return [];
+  return Promise.all(input.map(async (item) => {
+    const key = typeof item === 'string' ? item : (item.serviceId || item._id || item.id || item.slug);
+    if (!key) throw new Error('Each service needs an id');
+    const or = [{ id: key }, { slug: key }];
+    if (mongoose.Types.ObjectId.isValid(key)) or.unshift({ _id: key });
+    const service = await Consultation.findOne({ $or: or });
+    if (!service) throw new Error(`Service ${typeof item === 'object' && item.name ? item.name : key} not found`);
+    const row = {
+      serviceId: service.id || String(service._id),
+      serviceName: service.name,
+      servicePrice: service.price,
+      sessions: typeof item === 'object' && Number(item.sessions) >= 1 ? Math.round(Number(item.sessions)) : 1,
+    };
+    const custom = typeof item === 'object' && item.customPrice !== undefined && item.customPrice !== null
+      ? item.customPrice
+      : customPrices && customPrices[key] !== undefined && customPrices[key] !== null ? customPrices[key] : undefined;
+    if (custom !== undefined) row.customPrice = Number(custom);
+    return row;
+  }));
+}
 
 // @desc    Create new package
 // @route   POST /api/packages
@@ -36,48 +73,8 @@ exports.createPackage = async (req, res) => {
     // Generate unique ID
     const id = `pkg-${Date.now()}`;
 
-    // Fetch service details to get prices
-    const serviceDetails = await Promise.all(
-      services.map(async (serviceId) => {
-        const service = await Consultation.findOne({ id: serviceId });
-        if (!service) {
-          throw new Error(`Service ${serviceId} not found`);
-        }
-        const serviceDetail = {
-          serviceId: service.id,
-          serviceName: service.name,
-          servicePrice: service.price
-        };
-        // Add custom price if provided
-        if (customPrices && customPrices[serviceId] !== undefined && customPrices[serviceId] !== null) {
-          serviceDetail.customPrice = customPrices[serviceId];
-        }
-        return serviceDetail;
-      })
-    );
-
-    // Fetch consultation service details if provided
-    let consultationServiceDetails = [];
-    if (consultationServices && consultationServices.length > 0) {
-      consultationServiceDetails = await Promise.all(
-        consultationServices.map(async (serviceId) => {
-          const service = await Consultation.findOne({ id: serviceId });
-          if (!service) {
-            throw new Error(`Consultation service ${serviceId} not found`);
-          }
-          const serviceDetail = {
-            serviceId: service.id,
-            serviceName: service.name,
-            servicePrice: service.price
-          };
-          // Add custom price if provided
-          if (customPrices && customPrices[serviceId] !== undefined && customPrices[serviceId] !== null) {
-            serviceDetail.customPrice = customPrices[serviceId];
-          }
-          return serviceDetail;
-        })
-      );
-    }
+    const serviceDetails = await resolveServices(services, customPrices);
+    const consultationServiceDetails = await resolveServices(consultationServices, customPrices);
 
     const packageData = await Package.create({
       id,
@@ -88,7 +85,9 @@ exports.createPackage = async (req, res) => {
       consultationServices: consultationServiceDetails,
       price,
       image: image || '',
-      media: media || []
+      media: media || [],
+      isActive: req.body.isActive !== undefined ? !!req.body.isActive : true,
+      isPopular: req.body.isPopular !== undefined ? !!req.body.isPopular : false
     });
 
     res.status(201).json({
@@ -118,7 +117,15 @@ exports.createPackage = async (req, res) => {
 // @access  Public
 exports.getAllPackages = async (req, res) => {
   try {
-    const packages = await Package.find().sort({ createdAt: -1 });
+    const { isActive, includeInactive, search, limit } = req.query;
+    const q = {};
+    // The app only ever sees active packages; staff opt in to the rest.
+    if (isActive === 'true' || (!req.admin && includeInactive !== 'true')) q.isActive = true;
+    else if (isActive === 'false') q.isActive = false;
+    if (search) q.name = { $regex: String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+    let find = Package.find(q).sort({ isPopular: -1, createdAt: -1 });
+    if (limit) find = find.limit(Math.min(500, parseInt(limit, 10) || 50));
+    const packages = await find;
 
     res.status(200).json({
       success: true,
@@ -139,7 +146,7 @@ exports.getAllPackages = async (req, res) => {
 // @access  Public
 exports.getPackage = async (req, res) => {
   try {
-    const packageData = await Package.findOne({ id: req.params.id });
+    const packageData = await findPackage(req.params.id);
 
     if (!packageData) {
       return res.status(404).json({
@@ -180,7 +187,7 @@ exports.updatePackage = async (req, res) => {
       customPrices  // Object mapping serviceId to custom price
     } = req.body;
 
-    const packageData = await Package.findOne({ id: req.params.id });
+    const packageData = await findPackage(req.params.id);
 
     if (!packageData) {
       return res.status(404).json({
@@ -189,54 +196,11 @@ exports.updatePackage = async (req, res) => {
       });
     }
 
-    // Update service details if services changed
-    if (services && services.length > 0) {
-      const serviceDetails = await Promise.all(
-        services.map(async (serviceId) => {
-          const service = await Consultation.findOne({ id: serviceId });
-          if (!service) {
-            throw new Error(`Service ${serviceId} not found`);
-          }
-          const serviceDetail = {
-            serviceId: service.id,
-            serviceName: service.name,
-            servicePrice: service.price
-          };
-          // Add custom price if provided
-          if (customPrices && customPrices[serviceId] !== undefined && customPrices[serviceId] !== null) {
-            serviceDetail.customPrice = customPrices[serviceId];
-          }
-          return serviceDetail;
-        })
-      );
-      packageData.services = serviceDetails;
+    if (services !== undefined) {
+      packageData.services = await resolveServices(services, customPrices);
     }
-
-    // Update consultation services if changed
     if (consultationServices !== undefined) {
-      if (consultationServices.length > 0) {
-        const consultationServiceDetails = await Promise.all(
-          consultationServices.map(async (serviceId) => {
-            const service = await Consultation.findOne({ id: serviceId });
-            if (!service) {
-              throw new Error(`Consultation service ${serviceId} not found`);
-            }
-            const serviceDetail = {
-              serviceId: service.id,
-              serviceName: service.name,
-              servicePrice: service.price
-            };
-            // Add custom price if provided
-            if (customPrices && customPrices[serviceId] !== undefined && customPrices[serviceId] !== null) {
-              serviceDetail.customPrice = customPrices[serviceId];
-            }
-            return serviceDetail;
-          })
-        );
-        packageData.consultationServices = consultationServiceDetails;
-      } else {
-        packageData.consultationServices = [];
-      }
+      packageData.consultationServices = await resolveServices(consultationServices, customPrices);
     }
 
     // Update other fields
@@ -270,7 +234,8 @@ exports.updatePackage = async (req, res) => {
 // @access  Private (Admin only)
 exports.deletePackage = async (req, res) => {
   try {
-    const packageData = await Package.findOneAndDelete({ id: req.params.id });
+    const found = await findPackage(req.params.id);
+    const packageData = found ? await Package.findByIdAndDelete(found._id) : null;
 
     if (!packageData) {
       return res.status(404).json({
@@ -297,7 +262,7 @@ exports.deletePackage = async (req, res) => {
 // @access  Private (Admin only)
 exports.togglePackageStatus = async (req, res) => {
   try {
-    const packageData = await Package.findOne({ id: req.params.id });
+    const packageData = await findPackage(req.params.id);
 
     if (!packageData) {
       return res.status(404).json({

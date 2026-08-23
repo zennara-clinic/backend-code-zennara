@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Booking = require('../models/Booking');
 const ProductOrder = require('../models/ProductOrder');
 const PackageAssignment = require('../models/PackageAssignment');
@@ -7,6 +8,23 @@ const User = require('../models/User');
 const Inventory = require('../models/Inventory');
 
 // Get Financial Dashboard Analytics
+
+/** Booking filter fragment for a branch (by id) — empty when not scoped. */
+const branchScope = (req) => {
+  const b = req.query.branchId;
+  if (!b || b === 'all') return {};
+  return mongoose.Types.ObjectId.isValid(b) ? { branchId: new mongoose.Types.ObjectId(b) } : { preferredLocation: b };
+};
+/** Optional date window from startDate/endDate query params. */
+const dateScope = (req, field = 'createdAt') => {
+  const { startDate, endDate } = req.query;
+  if (!startDate && !endDate) return {};
+  const r = {};
+  if (startDate) r.$gte = new Date(startDate);
+  if (endDate) { const d = new Date(endDate); d.setHours(23, 59, 59, 999); r.$lte = d; }
+  return { [field]: r };
+};
+
 exports.getFinancialAnalytics = async (req, res) => {
   try {
     const { startDate, endDate, branchId } = req.query;
@@ -251,7 +269,8 @@ exports.getMonthlyRevenueTrend = async (req, res) => {
       
       const bookings = await Booking.find({
         createdAt: { $gte: startOfMonth, $lte: endOfMonth },
-        status: { $in: ['Confirmed', 'Completed', 'In Progress'] }
+        status: { $in: ['Confirmed', 'Completed', 'In Progress'] },
+        ...branchScope(req)
       }).populate('consultationId', 'price');
       
       const orders = await ProductOrder.find({
@@ -348,8 +367,9 @@ exports.getDailyTargetProgress = async (req, res) => {
 exports.getPatientAnalytics = async (req, res) => {
   try {
     const { days = 30 } = req.query;
-    const startDate = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-    const endDate = new Date();
+    // Accept an explicit window too, so the panel's range picker applies here.
+    const startDate = req.query.startDate ? new Date(req.query.startDate) : new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    const endDate = req.query.endDate ? new Date(req.query.endDate) : new Date();
     
     // Get all patients
     const totalPatients = await User.countDocuments();
@@ -367,7 +387,8 @@ exports.getPatientAnalytics = async (req, res) => {
       {
         $match: {
           createdAt: { $gte: startDate, $lte: endDate },
-          status: { $in: ['Confirmed', 'Completed', 'In Progress'] }
+          status: { $in: ['Confirmed', 'Completed', 'In Progress'] },
+          ...branchScope(req)
         }
       },
       {
@@ -614,7 +635,9 @@ exports.getTopPatients = async (req, res) => {
     const topPatients = await Booking.aggregate([
       {
         $match: {
-          status: { $in: ['Confirmed', 'Completed', 'In Progress'] }
+          status: { $in: ['Confirmed', 'Completed', 'In Progress'] },
+          ...branchScope(req),
+          ...dateScope(req)
         }
       },
       {
@@ -656,10 +679,12 @@ exports.getTopPatients = async (req, res) => {
         $project: {
           _id: 1,
           name: '$patient.fullName',
+          fullName: '$patient.fullName',
           email: '$patient.email',
           phone: '$patient.phone',
           totalSpent: 1,
-          visitCount: 1
+          visitCount: 1,
+          visits: "$visitCount"
         }
       }
     ]);
@@ -860,7 +885,8 @@ exports.getAppointmentAnalytics = async (req, res) => {
     
     // Get all bookings in date range
     const bookings = await Booking.find({
-      createdAt: { $gte: start, $lte: end }
+      createdAt: { $gte: start, $lte: end },
+      ...branchScope(req)
     }).populate('consultationId', 'name category');
 
     const totalBookings = bookings.length;
@@ -1047,7 +1073,8 @@ exports.getServiceAnalytics = async (req, res) => {
     // Get all bookings with consultation details
     const bookings = await Booking.find({
       createdAt: { $gte: start, $lte: end },
-      status: { $in: ['Confirmed', 'Completed', 'In Progress'] }
+      status: { $in: ['Confirmed', 'Completed', 'In Progress'] },
+      ...branchScope(req)
     }).populate('consultationId', 'name category price duration');
 
     // Get all consultations/services

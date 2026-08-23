@@ -118,6 +118,33 @@ exports.protect = async (req, res, next) => {
 };
 
 // Protect admin routes - verify admin JWT token
+/**
+ * Identify a staff caller on a PUBLIC route without ever rejecting.
+ *
+ * Some listings are read by both the app (anonymous) and the panel (staff),
+ * and the staff view is allowed to carry fields the app must not see. This
+ * sets `req.admin` when a valid, active staff token is present and otherwise
+ * leaves it undefined. It never answers 401/403 — that is protectAdmin's job.
+ */
+exports.identifyAdmin = async (req, res, next) => {
+  try {
+    const header = req.headers.authorization || '';
+    if (!header.startsWith('Bearer')) return next();
+    const token = header.split(' ')[1];
+    if (!token) return next();
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const isAdminToken = decoded.type === 'admin' || !!decoded.adminId;
+    if (!isAdminToken) return next();
+    const admin = await Admin.findById(decoded.adminId).lean();
+    if (admin && admin.isActive) {
+      req.admin = { _id: admin._id, email: admin.email, name: admin.name, role: admin.role };
+    }
+  } catch (_) {
+    // A bad or expired token on a public route is simply an anonymous call.
+  }
+  return next();
+};
+
 exports.protectAdmin = async (req, res, next) => {
   try {
     let token;

@@ -3,16 +3,11 @@ const Doctor = require('../models/Doctor');
 const AdminAuditLog = require('../models/AdminAuditLog');
 const { effectiveFeeForDoctor, tierFee } = require('../utils/consultationPricing');
 
-/** The Doctor profile belonging to the signed-in account, matched on email. */
+const { resolveDoctorForAdmin } = require('../utils/doctorIdentity');
+
+/** The Doctor profile belonging to the signed-in account. */
 async function myDoctorProfile(req) {
-  const email = req.admin?.email?.toLowerCase();
-  if (!email) return null;
-  let doctor = await Doctor.findOne({ email }).lean();
-  if (!doctor && req.admin?.name) {
-    const name = req.admin.name.replace(/^dr\.?\s+/i, '').trim();
-    doctor = await Doctor.findOne({ name: new RegExp(`^${name}$`, 'i') }).lean();
-  }
-  return doctor;
+  return resolveDoctorForAdmin(req);
 }
 
 // @desc    List fee requests (admins see all; doctors see only their own)

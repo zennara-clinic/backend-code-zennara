@@ -822,7 +822,7 @@ exports.approveReturn = async (req, res) => {
     // Update order with approval
     order.returnApproved = true;
     order.returnApprovedAt = new Date();
-    order.returnApprovedBy = req.user?._id || null;
+    order.returnApprovedBy = req.admin?._id || req.user?._id || null;
     
     // Add to status history
     order.statusHistory.push({
@@ -908,7 +908,7 @@ exports.rejectReturn = async (req, res) => {
     order.orderStatus = 'Delivered';
     order.returnRejected = true;
     order.returnRejectedAt = new Date();
-    order.returnRejectedBy = req.user?._id || null;
+    order.returnRejectedBy = req.admin?._id || req.user?._id || null;
     order.returnRejectionReason = reason;
     
     // Add to status history

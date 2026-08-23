@@ -268,11 +268,13 @@ exports.submitForm = async (req, res) => {
 // @access  Private/Admin
 exports.getAllForms = async (req, res) => {
   try {
-    const { status, clientId, page = 1, limit = 20 } = req.query;
+    const { status, clientId, userId, bookingId, page = 1, limit = 20 } = req.query;
 
     const query = {};
     if (status) query.status = status;
     if (clientId) query.clientId = clientId;
+    if (userId) query.userId = userId;
+    if (bookingId) query.bookingId = bookingId;
 
     const forms = await PreConsultForm.find(query)
       .populate('userId', 'fullName email phone patientId')

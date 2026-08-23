@@ -27,7 +27,9 @@ const packageSchema = new mongoose.Schema({
     },
     serviceName: String,
     servicePrice: Number,
-    customPrice: Number  // Optional custom price for this service in the package
+    customPrice: Number,  // Optional custom price for this service in the package
+    /** How many sittings of this treatment the package includes. */
+    sessions: { type: Number, default: 1, min: 1 }
   }],
   consultationServices: [{
     serviceId: {
@@ -85,8 +87,9 @@ const packageSchema = new mongoose.Schema({
 packageSchema.pre('save', function(next) {
   if (this.services && this.services.length > 0) {
     this.originalPrice = this.services.reduce((total, service) => {
-      // Use customPrice if available, otherwise use servicePrice
-      return total + (service.customPrice !== undefined ? service.customPrice : (service.servicePrice || 0));
+      // Use customPrice if available, otherwise use servicePrice — per session.
+      const unit = service.customPrice !== undefined && service.customPrice !== null ? service.customPrice : (service.servicePrice || 0);
+      return total + unit * (service.sessions || 1);
     }, 0);
     
     // Add consultation services to original price

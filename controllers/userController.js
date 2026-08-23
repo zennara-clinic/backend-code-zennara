@@ -1,4 +1,6 @@
 const User = require('../models/User');
+const DeletedAccountArchive = require('../models/DeletedAccountArchive');
+const accountDeletion = require('../services/accountDeletionService');
 
 // @desc    Get all patients/users
 // @route   GET /api/users
@@ -77,9 +79,13 @@ exports.getAllUsers = async (req, res) => {
       gender: user.gender,
       profilePhoto: user.profilePicture?.url || null, // Changed to profilePhoto and return null if not exists
       profilePicture: user.profilePicture?.url || null, // Keep for backwards compatibility
-      totalVisits: user.appOpenCount || 0, // Now shows app opens instead of clinic visits
+      totalVisits: user.totalVisits || 0,
+      appOpenCount: user.appOpenCount || 0,
       totalSpent: user.totalSpent || 0,
       upcomingAppointments: user.upcomingAppointments || 0,
+      drugAllergies: user.drugAllergies || '',
+      medicalHistory: user.medicalHistory || '',
+      isActive: user.isActive !== undefined ? user.isActive : true,
       isVerified: user.isVerified,
       createdAt: user.createdAt,
       lastLogin: user.lastLogin
@@ -146,9 +152,14 @@ exports.getUserById = async (req, res) => {
       gender: user.gender,
       profilePhoto: user.profilePicture?.url || null,
       profilePicture: user.profilePicture?.url || null,
-      totalVisits: user.appOpenCount || 0, // Now shows app opens instead of clinic visits
+      totalVisits: user.totalVisits || 0,
+      appOpenCount: user.appOpenCount || 0,
       totalSpent: user.totalSpent || 0,
       upcomingAppointments: user.upcomingAppointments || 0,
+      drugAllergies: user.drugAllergies || '',
+      medicalHistory: user.medicalHistory || '',
+      source: user.source,
+      zenotiGuestId: user.zenotiGuestId || null,
       isActive: user.isActive !== undefined ? user.isActive : true,
       isVerified: user.isVerified,
       emailVerified: user.emailVerified,
@@ -175,7 +186,7 @@ exports.getUserById = async (req, res) => {
 // @access  Private (Admin only)
 exports.updateUser = async (req, res) => {
   try {
-    const { fullName, phone, location, memberType, dateOfBirth, gender, removeProfilePicture } = req.body;
+    const { fullName, phone, email, location, memberType, dateOfBirth, gender, drugAllergies, medicalHistory, removeProfilePicture } = req.body;
     const { deleteFromCloudinary } = require('../middleware/upload');
 
     const user = await User.findById(req.params.id);
@@ -206,6 +217,15 @@ exports.updateUser = async (req, res) => {
     // Update fields if provided
     if (fullName) user.fullName = fullName;
     if (phone) user.phone = phone;
+    if (email && email !== user.email) {
+      const emailOwner = await User.findOne({ email: String(email).toLowerCase().trim(), _id: { $ne: user._id } });
+      if (emailOwner) {
+        return res.status(400).json({ success: false, message: 'That email is already used by another patient' });
+      }
+      user.email = String(email).toLowerCase().trim();
+    }
+    if (drugAllergies !== undefined) user.drugAllergies = drugAllergies;
+    if (medicalHistory !== undefined) user.medicalHistory = medicalHistory;
     if (location) user.location = location;
     if (memberType) user.memberType = memberType;
     if (dateOfBirth) user.dateOfBirth = dateOfBirth;
@@ -274,26 +294,72 @@ exports.updateUser = async (req, res) => {
 // @access  Private (Admin only)
 exports.deleteUser = async (req, res) => {
   try {
-    const user = await User.findById(req.params.id);
-
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
-    }
-
-    await user.deleteOne();
+    // Same archive-then-scrub path as a self-service deletion, so the
+    // account can be restored from "Deleted accounts".
+    const archive = await accountDeletion.deleteAccount({
+      userId: req.params.id,
+      deletedBy: 'admin',
+      reason: String(req.body?.reason || ''),
+      adminId: req.admin?._id || null,
+    });
 
     res.status(200).json({
       success: true,
-      message: 'User deleted successfully'
+      message: 'User deleted and archived',
+      data: { archiveId: archive._id },
     });
   } catch (error) {
     console.error('❌ Delete user failed:', error);
-    res.status(500).json({
+    res.status(error.status || 500).json({
       success: false,
-      message: 'Failed to delete user'
+      message: error.status ? error.message : 'Failed to delete user',
+    });
+  }
+};
+
+// @desc    Deleted accounts (restorable archive)
+// @route   GET /api/admin/users/deleted
+// @access  Private (Admin only)
+exports.getDeletedAccounts = async (req, res) => {
+  try {
+    const { search, includeRestored } = req.query;
+    const filter = {};
+    if (includeRestored !== 'true') filter.restoredAt = null;
+    if (search) {
+      const rx = new RegExp(String(search).trim(), 'i');
+      filter.$or = [{ email: rx }, { phone: rx }, { fullName: rx }, { patientId: rx }];
+    }
+    const rows = await DeletedAccountArchive.find(filter)
+      .select('-snapshot')
+      .sort({ deletedAt: -1 })
+      .limit(200)
+      .lean();
+    res.status(200).json({ success: true, count: rows.length, data: rows });
+  } catch (error) {
+    console.error('❌ List deleted accounts failed:', error);
+    res.status(500).json({ success: false, message: 'Failed to load deleted accounts' });
+  }
+};
+
+// @desc    Restore a deleted account from its archive
+// @route   POST /api/admin/users/deleted/:archiveId/restore
+// @access  Private (Admin only)
+exports.restoreDeletedAccount = async (req, res) => {
+  try {
+    const archive = await accountDeletion.restoreAccount({
+      archiveId: req.params.archiveId,
+      adminId: req.admin?._id || null,
+    });
+    res.status(200).json({
+      success: true,
+      message: `Restored ${archive.fullName || archive.email}`,
+      data: { userId: archive.originalUserId },
+    });
+  } catch (error) {
+    console.error('❌ Restore account failed:', error);
+    res.status(error.status || 500).json({
+      success: false,
+      message: error.status ? error.message : 'Failed to restore account',
     });
   }
 };
@@ -536,7 +602,8 @@ exports.cancelMembership = async (req, res) => {
 // @access  Private (Admin only)
 exports.toggleUserStatus = async (req, res) => {
   try {
-    const { isActive } = req.body;
+    // No body means "flip it"; an explicit boolean sets it.
+    let { isActive } = req.body || {};
     const user = await User.findById(req.params.id);
 
     if (!user) {
@@ -547,6 +614,7 @@ exports.toggleUserStatus = async (req, res) => {
     }
 
     // Update user status
+    if (typeof isActive !== 'boolean') isActive = !(user.isActive !== false);
     user.isActive = isActive;
     await user.save();
 

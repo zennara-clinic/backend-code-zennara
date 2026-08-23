@@ -9,7 +9,7 @@ const emailService = require('../utils/emailService');
 // @access  Private/Admin
 exports.getAllOrders = async (req, res) => {
   try {
-    const { status, paymentStatus, limit, page = 1 } = req.query;
+    const { status, paymentStatus, userId, search, startDate, endDate, limit, page = 1 } = req.query;
     
     const query = {};
     
@@ -19,6 +19,26 @@ exports.getAllOrders = async (req, res) => {
     
     if (paymentStatus) {
       query.paymentStatus = paymentStatus;
+    }
+
+    if (userId) query.userId = userId;
+
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) { const d = new Date(endDate); d.setHours(23, 59, 59, 999); query.createdAt.$lte = d; }
+    }
+
+    if (search) {
+      const rx = new RegExp(String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      const User = require('../models/User');
+      const users = await User.find({ $or: [{ fullName: rx }, { email: rx }, { phone: rx }] }).select('_id').lean();
+      query.$or = [
+        { orderNumber: rx },
+        { 'shippingAddress.fullName': rx },
+        { 'shippingAddress.phone': rx },
+        { userId: { $in: users.map((u) => u._id) } },
+      ];
     }
     
     const pageSize = limit ? parseInt(limit) : 50;

@@ -38,12 +38,8 @@ async function canEdit(req, doctorId) {
   const role = req.admin?.role;
   if (role === 'super_admin' || role === 'admin') return true;
   if (role !== 'doctor') return false;
-
-  const email = String(req.admin?.email || '').toLowerCase();
-  if (!email) return false;
-
-  const doctor = await Doctor.findOne({ doctorId }).select('email').lean();
-  return !!doctor?.email && doctor.email.toLowerCase() === email;
+  const mine = await require('../utils/doctorIdentity').resolveDoctorForAdmin(req);
+  return !!mine && mine.doctorId === doctorId;
 }
 
 /** Reject a payload before it can half-write a broken week. */

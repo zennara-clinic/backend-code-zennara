@@ -8,7 +8,9 @@ const {
   resetCustomizationSettings,
   addConsultationCard,
   updateConsultationCard,
-  deleteConsultationCard
+  deleteConsultationCard,
+  addReelVideo,
+  deleteReelVideo
 } = require('../controllers/appCustomizationController');
 const { protectAdmin } = require('../middleware/auth');
 const upload = require('../config/multer');
@@ -26,5 +28,14 @@ router.post('/admin/reset', protectAdmin, resetCustomizationSettings);
 router.post('/admin/consultation-card', protectAdmin, upload.single('image'), addConsultationCard);
 router.put('/admin/consultation-card/:cardId', protectAdmin, upload.single('image'), updateConsultationCard);
 router.delete('/admin/consultation-card/:cardId', protectAdmin, deleteConsultationCard);
+
+// Self-hosted reels for the home rail (video + optional poster image)
+router.post(
+  '/admin/reel-videos',
+  protectAdmin,
+  upload.fields([{ name: 'video', maxCount: 1 }, { name: 'poster', maxCount: 1 }]),
+  addReelVideo
+);
+router.delete('/admin/reel-videos/:reelId', protectAdmin, deleteReelVideo);
 
 module.exports = router;

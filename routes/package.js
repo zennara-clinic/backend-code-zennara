@@ -9,10 +9,10 @@ const {
   togglePackageStatus,
   getPackageStats
 } = require('../controllers/packageController');
-const { protectAdmin } = require('../middleware/auth');
+const { protectAdmin, identifyAdmin } = require('../middleware/auth');
 
 // Public routes
-router.get('/', getAllPackages);
+router.get('/', identifyAdmin, getAllPackages);
 router.get('/stats', getPackageStats);
 router.get('/:id', getPackage);
 

@@ -50,7 +50,9 @@ const paymentSchema = new mongoose.Schema({
   },
   metadata: {
     type: mongoose.Schema.Types.Mixed
-  }
+  },
+  /** Set when the owner deleted their account; kept, anonymised, for accounting. */
+  accountDeleted: { type: Boolean, default: false },
 }, {
   timestamps: true
 });

@@ -2,6 +2,15 @@ const express = require('express');
 const router = express.Router();
 const ConsultationReview = require('../../models/ConsultationReview');
 const Consultation = require('../../models/Consultation');
+
+/** Recompute a treatment's rating/count from its approved reviews. */
+async function syncConsultationRating(consultationId) {
+  if (!consultationId) return;
+  const rows = await ConsultationReview.find({ consultationId, isApproved: true }).select('rating').lean();
+  const count = rows.length;
+  const avg = count ? rows.reduce((sum, r) => sum + (r.rating || 0), 0) / count : 0;
+  await Consultation.findByIdAndUpdate(consultationId, { rating: Math.round(avg * 10) / 10, reviews: count });
+}
 const { protectAdmin } = require('../../middleware/auth');
 
 // Admin authentication middleware
@@ -12,14 +21,28 @@ router.use(protectAdmin);
 // @access  Private/Admin
 router.get('/', async (req, res) => {
   try {
-    const reviews = await ConsultationReview.find()
-      .populate('userId', 'fullName email phone profilePicture')
-      .populate('consultationId', 'name title description')
-      .populate('bookingId', 'date time')
-      .sort({ createdAt: -1 });
+    const { isApproved, limit, page = 1, search } = req.query;
+    const q = {};
+    if (isApproved === 'true') q.isApproved = true;
+    if (isApproved === 'false') q.isApproved = false;
+    if (search) q.comment = { $regex: String(search).trim(), $options: 'i' };
+    const perPage = Math.min(500, parseInt(limit, 10) || 200);
+    const pageNo = Math.max(1, parseInt(page, 10) || 1);
+    const [reviews, total] = await Promise.all([
+      ConsultationReview.find(q)
+        .populate('userId', 'fullName email phone profilePicture')
+        .populate('consultationId', 'name title description')
+        .populate('bookingId', 'date time')
+        .sort({ createdAt: -1 })
+        .skip((pageNo - 1) * perPage)
+        .limit(perPage),
+      ConsultationReview.countDocuments(q),
+    ]);
 
     res.json({
       success: true,
+      total,
+      pagination: { currentPage: pageNo, totalPages: Math.ceil(total / perPage), total },
       data: reviews
     });
   } catch (error) {
@@ -52,6 +75,8 @@ router.put('/:id/approval', async (req, res) => {
       });
     }
 
+    await syncConsultationRating(review.consultationId?._id || review.consultationId);
+
     res.json({
       success: true,
       message: `Review ${isApproved ? 'approved' : 'unapproved'} successfully`,
@@ -81,26 +106,7 @@ router.delete('/:id', async (req, res) => {
       });
     }
 
-    // Update consultation rating after deletion
-    const reviews = await ConsultationReview.find({ 
-      consultationId: review.consultationId, 
-      isApproved: true 
-    });
-    
-    if (reviews.length === 0) {
-      await Consultation.findByIdAndUpdate(review.consultationId, {
-        rating: 0,
-        reviews: 0
-      });
-    } else {
-      const totalRating = reviews.reduce((sum, r) => sum + r.rating, 0);
-      const averageRating = totalRating / reviews.length;
-      
-      await Consultation.findByIdAndUpdate(review.consultationId, {
-        rating: Math.round(averageRating * 10) / 10,
-        reviews: reviews.length
-      });
-    }
+    await syncConsultationRating(review.consultationId);
 
     res.json({
       success: true,

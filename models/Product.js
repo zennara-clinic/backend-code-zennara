@@ -13,18 +13,10 @@ const productSchema = new mongoose.Schema({
   formulation: {
     type: String,
     required: [true, 'Product formulation is required'],
-    enum: [
-      'Cleansers',
-      'Toners / Essences',
-      'Serums',
-      'Moisturizers',
-      'Sunscreens',
-      'Exfoliants',
-      'Masks',
-      'Eye Creams / Eye Serums',
-      'Spot Treatments',
-      'Face Oils'
-    ]
+    // Free text, validated against the Formulation collection at write time
+    // (see adminProductController). A fixed enum here meant a formulation the
+    // panel created could never be used on a product.
+    trim: true
   },
   OrgName: {
     type: String,

@@ -9,7 +9,8 @@ const {
   getInventoryStatistics,
   bulkUpdateStock
 } = require('../controllers/inventoryController');
-const { protectAdmin } = require('../middleware/auth');
+const { protectAdmin, requireRole } = require('../middleware/auth');
+const inventoryController = require('../controllers/inventoryController');
 
 // Apply admin authentication middleware to all routes
 router.use(protectAdmin);
@@ -17,17 +18,23 @@ router.use(protectAdmin);
 // Statistics route (must be before :id route)
 router.get('/statistics', getInventoryStatistics);
 
+// Ledger + session consumption (therapists may consume; only admins adjust/edit)
+router.get('/movements', inventoryController.getStockMovements);
+router.post('/consume', requireRole('super_admin', 'admin', 'therapist', 'receptionist'), inventoryController.consumeStock);
+
+const MANAGE = requireRole('super_admin', 'admin');
+
 // Bulk operations
-router.post('/bulk-update-stock', bulkUpdateStock);
+router.post('/bulk-update-stock', MANAGE, bulkUpdateStock);
 
 // CRUD routes
 router.route('/')
   .get(getAllInventory)
-  .post(createInventory);
+  .post(MANAGE, createInventory);
 
 router.route('/:id')
   .get(getInventoryById)
-  .put(updateInventory)
-  .delete(deleteInventory);
+  .put(MANAGE, updateInventory)
+  .delete(MANAGE, deleteInventory);
 
 module.exports = router;

@@ -10,11 +10,12 @@ const {
   toggleDoctorStatus,
   deleteDoctor,
 } = require('../controllers/doctorController');
-const { protectAdmin, requireRole, auditLog } = require('../middleware/auth');
+const { protectAdmin, requireRole, auditLog, identifyAdmin } = require('../middleware/auth');
 
 // Public — the mobile app reads the team and the tier fees.
-router.get('/', getAllDoctors);
+router.get('/', identifyAdmin, getAllDoctors);
 router.get('/tiers/list', getTiers);
+router.get('/me', protectAdmin, require('../controllers/doctorController').getMyDoctor);
 
 // Admin — tier pricing. Declared before /:id so "tiers" is never read as an id.
 router.put(
@@ -36,7 +37,9 @@ router.post(
 router.put(
   '/:id',
   protectAdmin,
-  requireRole('super_admin', 'admin'),
+  // Doctors may edit their own profile; the controller enforces ownership
+  // and strips fee/tier for them.
+  requireRole('super_admin', 'admin', 'doctor'),
   auditLog('DOCTOR_UPDATED', 'DOCTOR'),
   updateDoctor,
 );
@@ -56,6 +59,6 @@ router.delete(
 );
 
 // Public single lookup — last so it does not shadow the routes above.
-router.get('/:id', getDoctorById);
+router.get('/:id', identifyAdmin, getDoctorById);
 
 module.exports = router;

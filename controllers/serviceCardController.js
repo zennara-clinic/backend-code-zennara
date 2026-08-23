@@ -158,10 +158,11 @@ exports.getServiceHistory = async (req, res) => {
 // ADMIN ENDPOINTS
 exports.getAllServiceCards = async (req, res) => {
   try {
-    const { isActive, clientId, page = 1, limit = 20 } = req.query;
+    const { isActive, clientId, userId, page = 1, limit = 20 } = req.query;
     const query = {};
     if (isActive !== undefined) query.isActive = isActive === 'true';
     if (clientId) query.clientId = clientId;
+    if (userId) query.userId = userId;
 
     const cards = await ServiceCard.find(query)
       .populate('userId', 'fullName email phone patientId')

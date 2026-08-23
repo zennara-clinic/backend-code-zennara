@@ -10,8 +10,31 @@ class NotificationHelper {
    * Create a notification
    * @param {Object} data - Notification data
    */
+  /**
+   * Where the panel should land when this notification is tapped. Derived
+   * from the related record so every caller gets it for free.
+   */
+  static panelUrlFor(data) {
+    if (data.actionUrl) return data.actionUrl;
+    const id = data.relatedId ? String(data.relatedId) : '';
+    switch (data.relatedModel) {
+      case 'Booking': return id ? `/bookings?booking=${id}` : '/bookings';
+      case 'ProductOrder': return id ? `/orders?order=${id}` : '/orders';
+      case 'Product': return id ? `/products?product=${id}` : '/products';
+      case 'Consultation': return id ? `/service-editor?id=${id}` : '/services';
+      case 'Inventory': return id ? `/inventory?item=${id}` : '/inventory';
+      case 'User': return id ? `/patient?id=${id}` : '/patients';
+      default: return data.userId ? undefined : undefined;
+    }
+  }
+
   static async create(data) {
     try {
+      // Admin notifications (userId null) carry a panel link.
+      if (!data.userId && !data.actionUrl) {
+        const url = NotificationHelper.panelUrlFor(data);
+        if (url) data.actionUrl = url;
+      }
       const notification = new Notification(data);
       await notification.save();
       return notification;
@@ -517,6 +540,8 @@ class NotificationHelper {
   /**
    * Inventory Notifications
    */
+  static async lowStock(inventory) { return this.lowStockAlert(inventory); }
+
   static async lowStockAlert(inventory) {
     try {
       return await this.create({

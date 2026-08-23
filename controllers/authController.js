@@ -13,6 +13,7 @@ const whatsappService = require('../services/whatsappService');
 const zenotiSync = require('../services/zenotiSyncService');
 const logger = require('../utils/logger');
 const { filterFields, validateOwnership } = require('../middleware/securityMiddleware');
+const accountDeletion = require('../services/accountDeletionService');
 
 const serializeUser = (user) => ({
   id: user._id,
@@ -1309,45 +1310,8 @@ exports.deleteAccount = async (req, res) => {
     }
 
     console.log(`🗑️ Account deletion requested by: ${user.email} (${user.fullName})`);
-    console.log(`📋 Reason: ${reason || 'Not provided'}`);
 
-    // Automatically cancel all active bookings
-    const activeBookingsResult = await Booking.updateMany(
-      {
-        userId: userId,
-        status: { $in: ['Confirmed', 'Pending', 'Awaiting Confirmation'] },
-        appointmentDate: { $gte: new Date() }
-      },
-      {
-        $set: {
-          status: 'Cancelled',
-          cancellationReason: 'Account deleted by user',
-          cancelledAt: new Date()
-        }
-      }
-    );
-    console.log(`✅ Cancelled ${activeBookingsResult.modifiedCount} active bookings`);
-
-    // Automatically cancel all pending orders
-    const pendingOrdersResult = await ProductOrder.updateMany(
-      {
-        userId: userId,
-        orderStatus: { $in: ['Order Placed', 'Confirmed', 'Processing'] }
-      },
-      {
-        $set: {
-          orderStatus: 'Cancelled',
-          cancellationReason: 'Account deleted by user',
-          cancelledAt: new Date()
-        }
-      }
-    );
-    console.log(`✅ Cancelled ${pendingOrdersResult.modifiedCount} pending orders`);
-
-    // Note: Orders that are "Shipped" or "Out for Delivery" will be anonymized but not cancelled
-    // as they are already in transit and cannot be stopped
-
-    // Log security event
+    // Log security event before the user row disappears.
     await SecurityLog.create({
       userId: userId,
       eventType: 'account_deletion',
@@ -1363,62 +1327,22 @@ exports.deleteAccount = async (req, res) => {
       severity: 'high'
     });
 
-    // Delete user's profile picture from Cloudinary
     if (user.profilePicture?.publicId) {
       try {
         await deleteFromCloudinary(user.profilePicture.publicId);
-        console.log('✅ Profile picture deleted from Cloudinary');
       } catch (error) {
         console.error('⚠️ Failed to delete profile picture:', error);
       }
     }
 
-    // Delete ALL user-related data
-    console.log('🗑️ Deleting all user data...');
-
-    // Delete user tokens
-    await Token.deleteMany({ userId: userId });
-    console.log('✅ Deleted user tokens');
-
-    // Delete user addresses
-    const Address = require('../models/Address');
-    await Address.deleteMany({ userId: userId });
-    console.log('✅ Deleted user addresses');
-
-    // Delete or anonymize bookings
-    // Note: For legal/accounting, we anonymize instead of delete
-    await Booking.updateMany(
-      { userId: userId },
-      { 
-        $set: { 
-          'contact.email': '[deleted]',
-          'contact.phone': '[deleted]',
-          notes: '[User account deleted]'
-        }
-      }
-    );
-    console.log('✅ Anonymized user bookings');
-
-    // Delete or anonymize orders
-    await ProductOrder.updateMany(
-      { userId: userId },
-      {
-        $set: {
-          'shippingAddress.fullName': '[deleted]',
-          'shippingAddress.phone': '[deleted]',
-          'shippingAddress.addressLine1': '[deleted]',
-          'shippingAddress.addressLine2': '[deleted]',
-        }
-      }
-    );
-    console.log('✅ Anonymized user orders');
-
-    // Delete package assignments if any
-    await PackageAssignment.deleteMany({ userId: userId });
-    console.log('✅ Deleted package assignments');
-
-    // Finally, delete the user account
-    await User.findByIdAndDelete(userId);
+    // Archive everything first, then scrub the live collections — see
+    // services/accountDeletionService.js. Staff can restore from the archive.
+    const archive = await accountDeletion.deleteAccount({
+      userId,
+      deletedBy: 'user',
+      reason: reason || '',
+    });
+    console.log(`🗄️ Archived as ${archive._id}`);
 
     console.log(`✅ Account deleted successfully: ${user.email}`);
 

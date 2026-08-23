@@ -40,18 +40,25 @@ exports.getVendors = async (req, res) => {
       query.status = status;
     }
     
-    const vendors = await Vendor.find(query).sort({ createdAt: -1 });
-    
-    // Get products count for each vendor
+    // Bank details never ride along with the list — see getVendorBankDetails.
+    const vendors = await Vendor.find(query).select('-bankDetails').sort({ createdAt: -1 });
+    const Inventory = require('../models/Inventory');
+
+    // Items supplied = inventory rows naming this vendor.
     const vendorsWithCount = await Promise.all(
       vendors.map(async (vendor) => {
-        const productsCount = await Product.countDocuments({ vendor: vendor._id });
+        const productsCount = await Inventory.countDocuments({ vendorName: vendor.name });
         return {
           ...vendor.toObject(),
-          productsSupplied: productsCount
+          productsSupplied: productsCount,
+          productsCount,
+          hasBankDetails: false
         };
       })
     );
+    const withBank = await Vendor.find({ _id: { $in: vendors.map((v) => v._id) }, 'bankDetails.accountNumber': { $nin: [null, ''] } }).select('_id').lean();
+    const bankSet = new Set(withBank.map((v) => String(v._id)));
+    vendorsWithCount.forEach((v) => { v.hasBankDetails = bankSet.has(String(v._id)); });
     
     res.json({
       success: true,
@@ -82,7 +89,7 @@ exports.getVendor = async (req, res) => {
     }
     
     // Get products supplied by this vendor
-    const productsCount = await Product.countDocuments({ vendor: vendor._id });
+    const productsCount = await require('../models/Inventory').countDocuments({ vendorName: vendor.name });
     
     res.json({
       success: true,
@@ -227,7 +234,7 @@ exports.deleteVendor = async (req, res) => {
     }
     
     // Check if vendor has associated products
-    const productsCount = await Product.countDocuments({ vendor: vendor._id });
+    const productsCount = await require('../models/Inventory').countDocuments({ vendorName: vendor.name });
     if (productsCount > 0) {
       return res.status(400).json({
         success: false,
@@ -265,7 +272,7 @@ exports.getVendorStats = async (req, res) => {
     let totalProductsSupplied = 0;
     
     for (const vendor of vendors) {
-      const count = await Product.countDocuments({ vendor: vendor._id });
+      const count = await require('../models/Inventory').countDocuments({ vendorName: vendor.name });
       totalProductsSupplied += count;
     }
     
@@ -285,5 +292,20 @@ exports.getVendorStats = async (req, res) => {
       message: 'Failed to fetch vendor statistics',
       error: error.message
     });
+  }
+};
+
+
+// @desc    Reveal a vendor's bank details (audited)
+// @route   GET /api/vendors/:id/bank-details
+// @access  Private (super_admin, admin)
+exports.getVendorBankDetails = async (req, res) => {
+  try {
+    const vendor = await Vendor.findById(req.params.id).select('name bankDetails').lean();
+    if (!vendor) return res.status(404).json({ success: false, message: 'Vendor not found' });
+    return res.status(200).json({ success: true, data: vendor.bankDetails || {} });
+  } catch (error) {
+    console.error('Vendor bank details error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to load bank details' });
   }
 };

@@ -145,7 +145,7 @@ exports.initiateRefund = async (req, res) => {
           },
           transactionId: transactionId || null,
           refundInitiatedAt: new Date(),
-          refundedBy: req.user._id,
+          refundedBy: (req.admin?._id || req.user?._id),
           notes: notes || 'COD order refund initiated',
           retryCount: 0,
           lastRetryAt: null
@@ -158,7 +158,7 @@ exports.initiateRefund = async (req, res) => {
           status: 'Processing',
           transactionId: transactionId || null,
           refundInitiatedAt: new Date(),
-          refundedBy: req.user._id,
+          refundedBy: (req.admin?._id || req.user?._id),
           notes: notes || `${refundMethod} refund initiated`,
           retryCount: 0,
           lastRetryAt: null
@@ -170,7 +170,7 @@ exports.initiateRefund = async (req, res) => {
         status: 'Refund Initiated',
         timestamp: new Date(),
         note: `${refundMethod} refund of Rs.${amountToRefund} initiated by admin`,
-        initiatedBy: req.user._id
+        initiatedBy: (req.admin?._id || req.user?._id)
       });
       
     } else {
@@ -199,7 +199,7 @@ exports.initiateRefund = async (req, res) => {
               'refundDetails.amount': amountToRefund,
               'refundDetails.method': 'Razorpay',
               'refundDetails.refundInitiatedAt': new Date(),
-              'refundDetails.refundedBy': req.user._id,
+              'refundDetails.refundedBy': (req.admin?._id || req.user?._id),
             },
           }
         );
@@ -228,7 +228,7 @@ exports.initiateRefund = async (req, res) => {
           transactionId: refundResult.id,
           refundInitiatedAt: new Date(),
           refundCompletedAt: refundCompleted ? new Date() : undefined,
-          refundedBy: req.user._id,
+          refundedBy: (req.admin?._id || req.user?._id),
           notes: notes || 'Online payment refund processed via Razorpay',
           retryCount: 0,
           lastRetryAt: null
@@ -247,7 +247,7 @@ exports.initiateRefund = async (req, res) => {
           status: 'Refund Initiated',
           timestamp: new Date(),
           note: `Razorpay refund of Rs.${amountToRefund} initiated. Refund ID: ${refundResult.id}`,
-          initiatedBy: req.user._id
+          initiatedBy: (req.admin?._id || req.user?._id)
         });
         
       } catch (error) {
@@ -398,7 +398,7 @@ exports.completeRefund = async (req, res) => {
     order.refundDetails.refundCompletedAt = new Date();
     order.refundDetails.transactionId = transactionId;
     order.refundDetails.transactionProof = transactionProof || null;
-    order.refundDetails.completedBy = req.user._id;
+    order.refundDetails.completedBy = (req.admin?._id || req.user?._id);
     
     if (notes) {
       order.refundDetails.notes = (order.refundDetails.notes || '') + '\n' + notes;
@@ -412,7 +412,7 @@ exports.completeRefund = async (req, res) => {
       status: 'Refund Completed',
       timestamp: new Date(),
       note: `Refund of Rs.${order.refundDetails.amount} completed. Transaction ID: ${transactionId}`,
-      completedBy: req.user._id
+      completedBy: (req.admin?._id || req.user?._id)
     });
     
     await order.save();
@@ -521,7 +521,7 @@ exports.updateBankDetails = async (req, res) => {
   try {
     const { accountHolderName, bankName, accountNumber, ifscCode, upiId, preferredMethod } = req.body;
     
-    const user = await User.findById(req.user._id);
+    const user = await User.findById((req.admin?._id || req.user?._id));
     
     if (!user) {
       return res.status(404).json({
@@ -588,7 +588,7 @@ exports.updateBankDetails = async (req, res) => {
  */
 exports.getMyBankDetails = async (req, res) => {
   try {
-    const user = await User.findById(req.user._id).select('refundBankDetails');
+    const user = await User.findById((req.admin?._id || req.user?._id)).select('refundBankDetails');
     
     if (!user) {
       return res.status(404).json({

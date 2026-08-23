@@ -564,7 +564,10 @@ exports.verifyProductPayment = async (req, res) => {
 // @access  Private
 exports.createMembershipPayment = async (req, res) => {
   try {
-    const amount = 110000; // VIP Wellness Package price (₹1,10,000)
+    // The membership price is a clinic setting (App Studio → Membership), not a literal.
+    const AppCustomization = require('../models/AppCustomization');
+    const settings = await AppCustomization.getSettings();
+    const amount = Number(settings?.membership?.priceInr) > 0 ? Number(settings.membership.priceInr) : 110000;
     
     console.log('👑 Creating membership payment for user:', req.user._id);
     
@@ -1017,7 +1020,10 @@ async function activateMembership(userId, payment) {
   user.memberType = 'Zen Member';
   user.zenMembershipStartDate = new Date();
   // VIP Wellness Package is a one-time, 1-year (365-day) membership.
-  user.zenMembershipExpiryDate = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+  const AppCustomizationM = require('../models/AppCustomization');
+  const months = Number((await AppCustomizationM.getSettings())?.membership?.durationMonths) || 12;
+  const expiry = new Date(); expiry.setMonth(expiry.getMonth() + months);
+  user.zenMembershipExpiryDate = expiry;
   user.zenMembershipAutoRenew = false;
   await user.save();
 

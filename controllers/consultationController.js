@@ -46,25 +46,33 @@ exports.createConsultation = async (req, res) => {
       rating,
       showPriceInApp,
       chargeOnlineBooking,
-      isPopular
+      isPopular,
+      type,
+      media,
+      isActive,
+      displayOrder
     } = req.body;
 
-    // Validate required fields
-    if (!name || !category || !summary || !about || !price || !image) {
+    // Validate required fields. Image is optional (the app shows a placeholder
+    // panel) and price may be 0 for enquiry-only treatments.
+    if (!name || !category || !summary || !about || price === undefined || price === null || price === '') {
       return res.status(400).json({
         success: false,
-        message: 'Please provide all required fields'
+        message: 'Please provide name, category, summary, about and price'
       });
     }
 
-    // Generate unique ID and slug
+    // Generate unique ID and slug; keep the slug unique if the name repeats.
     const id = `consult-${Date.now()}`;
-    const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    const baseSlug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    let slug = baseSlug;
+    for (let n = 2; await Consultation.exists({ slug }); n++) slug = `${baseSlug}-${n}`;
 
     const consultation = await Consultation.create({
       id,
       slug,
       name,
+      type,
       category,
       summary,
       about,
@@ -77,7 +85,10 @@ exports.createConsultation = async (req, res) => {
       pre_care,
       post_care,
       image,
+      media,
       rating,
+      displayOrder,
+      isActive: isActive !== undefined ? isActive : true,
       showPriceInApp: showPriceInApp !== undefined ? showPriceInApp : false,
       chargeOnlineBooking: chargeOnlineBooking !== undefined ? chargeOnlineBooking : true,
       isPopular: isPopular !== undefined ? isPopular : false
@@ -138,10 +149,10 @@ exports.updateConsultation = async (req, res) => {
     delete updateData.duration_minutes;
     delete updateData.reviews;
 
-    // If name is being updated, update slug too
-    if (updateData.name) {
-      updateData.slug = updateData.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
-    }
+    // The slug is a permanent deep-link key — a rename must not change it
+    // (that broke every existing link and could collide on the unique index).
+    delete updateData.slug;
+    delete updateData.id;
 
     const consultation = await Consultation.findOneAndUpdate(
       { $or: [{ _id: mongoose.Types.ObjectId.isValid(id) ? id : null }, { id: id }, { slug: id }] },
@@ -360,8 +371,11 @@ exports.getAllConsultations = async (req, res) => {
       isPopularType: typeof isPopular
     });
 
-    // Build query
-    let query = { isActive: true };
+    // Build query. Staff can ask for the inactive ones too.
+    const wantsInactive = req.admin && (req.query.includeInactive === 'true' || req.query.isActive === 'false' || req.query.isActive === 'all');
+    let query = wantsInactive
+      ? (req.query.isActive === 'false' ? { isActive: false } : {})
+      : { isActive: true };
 
     // Level 1 of the taxonomy — Skin, Hair, Skin & Hair, Wellness, …
     if (type && type !== 'All') {
@@ -423,15 +437,15 @@ exports.getAllConsultations = async (req, res) => {
         sortOption = { name: 1 };
         break;
       default:
-        sortOption = { createdAt: -1 };
+        sortOption = { displayOrder: 1, createdAt: -1 };
     }
 
     console.log('🔍 Final query:', query);
     console.log('📊 Sort option:', sortOption);
 
-    const consultations = await Consultation.find(query)
-      .sort(sortOption)
-      .select('-__v');
+    let find = Consultation.find(query).sort(sortOption).select('-__v');
+    if (req.query.limit) find = find.limit(Math.min(1000, parseInt(req.query.limit, 10) || 50));
+    const consultations = await find;
 
     console.log('📦 Found consultations:', {
       count: consultations.length,
@@ -459,10 +473,9 @@ exports.getConsultation = async (req, res) => {
   try {
     const { identifier } = req.params;
 
-    // Build query - check if identifier is a valid MongoDB ObjectId
-    const query = {
-      isActive: true
-    };
+    // Build query - check if identifier is a valid MongoDB ObjectId.
+    // Staff can open a deactivated service; the app cannot.
+    const query = req.admin ? {} : { isActive: true };
 
     // Check if it's a valid MongoDB ObjectId (24 hex characters)
     const isValidObjectId = /^[0-9a-fA-F]{24}$/.test(identifier);
@@ -666,5 +679,26 @@ exports.searchConsultations = async (req, res) => {
       success: false,
       message: 'Failed to search consultations'
     });
+  }
+};
+
+
+// @desc    Reorder services (bulk displayOrder)
+// @route   PATCH /api/consultations/reorder   body: { order: [{ id, displayOrder }] }
+// @access  Private (Admin)
+exports.reorderConsultations = async (req, res) => {
+  try {
+    const order = Array.isArray(req.body.order) ? req.body.order : [];
+    if (!order.length) return res.status(400).json({ success: false, message: 'order[] is required' });
+    await Consultation.bulkWrite(order.map((o, i) => ({
+      updateOne: {
+        filter: mongoose.Types.ObjectId.isValid(o.id) ? { _id: o.id } : { $or: [{ id: o.id }, { slug: o.id }] },
+        update: { $set: { displayOrder: typeof o.displayOrder === 'number' ? o.displayOrder : i } },
+      },
+    })));
+    return res.status(200).json({ success: true, message: 'Order saved' });
+  } catch (error) {
+    console.error('Reorder consultations error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to reorder', error: error.message });
   }
 };

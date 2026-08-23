@@ -77,6 +77,25 @@ exports.uploadToS3 = async (file, folder = 'uploads') => {
 };
 
 /**
+ * Upload a file to S3 as-is (no image processing) — for video.
+ * @param {Object} file - Multer file object with buffer + mimetype
+ * @param {String} folder - Folder name in S3 bucket
+ * @returns {Promise<String>} - URL of uploaded file
+ */
+exports.uploadRawToS3 = async (file, folder = 'uploads') => {
+  const ext = (file.originalname && file.originalname.split('.').pop()) || 'mp4';
+  const fileKey = `${folder}/${crypto.randomBytes(16).toString('hex')}-${Date.now()}.${ext.toLowerCase()}`;
+  await s3Client.send(new PutObjectCommand({
+    Bucket: S3_BUCKET,
+    Key: fileKey,
+    Body: file.buffer,
+    ContentType: file.mimetype || 'video/mp4',
+    CacheControl: 'public, max-age=31536000, immutable',
+  }));
+  return `https://${S3_BUCKET}.s3.${process.env.AWS_S3_REGION}.amazonaws.com/${fileKey}`;
+};
+
+/**
  * Delete a file from S3 using its URL
  * @param {String} fileUrl - Full S3 URL of the file
  * @returns {Promise<void>}

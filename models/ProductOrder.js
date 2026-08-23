@@ -196,6 +196,8 @@ const productOrderSchema = new mongoose.Schema({
   zenotiSyncError: { type: String, default: null },
   zenotiSyncedAt: { type: Date, default: null },
 
+  /** Set when the owner deleted their account; kept, anonymised, for accounting. */
+  accountDeleted: { type: Boolean, default: false },
 }, {
   timestamps: true
 });

@@ -13,6 +13,7 @@ const { protectAdmin, auditLog } = require('../middleware/auth');
 
 // Public routes — the mobile app browses categories.
 router.get('/', getAllCategories);
+router.patch('/reorder', protectAdmin, auditLog('CATALOGUE_UPDATED', 'CATALOGUE'), require('../controllers/categoryController').reorderCategories);
 router.get('/:id', getCategoryById);
 
 // Admin routes. These used to be open: anyone who knew the path could create,

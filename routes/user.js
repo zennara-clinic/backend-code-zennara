@@ -10,7 +10,9 @@ const {
   createUser,
   assignMembership,
   cancelMembership,
-  toggleUserStatus
+  toggleUserStatus,
+  getDeletedAccounts,
+  restoreDeletedAccount,
 } = require('../controllers/userController');
 const { protectAdmin } = require('../middleware/auth');
 const { uploadProfilePicture } = require('../middleware/upload');
@@ -22,6 +24,8 @@ router.use(protectAdmin);
 router.post('/', createUser); // Create new user (admin)
 router.get('/', getAllUsers);
 router.get('/export', exportUsers);
+router.get('/deleted', getDeletedAccounts);
+router.post('/deleted/:archiveId/restore', restoreDeletedAccount);
 router.get('/:id', getUserById);
 router.put('/:id', uploadProfilePicture, updateUser); // Add upload middleware
 router.delete('/:id', deleteUser);

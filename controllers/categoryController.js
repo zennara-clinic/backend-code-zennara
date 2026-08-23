@@ -64,7 +64,7 @@ exports.getCategoryById = async (req, res) => {
 // @access  Private/Admin
 exports.createCategory = async (req, res) => {
   try {
-    const { name, description } = req.body;
+    const { name, description, type, displayOrder } = req.body;
 
     // Validation
     if (!name || name.trim() === '') {
@@ -96,6 +96,8 @@ exports.createCategory = async (req, res) => {
     const category = await Category.create({
       name: name.trim(),
       description: description || '',
+      type: type || undefined,
+      displayOrder: typeof displayOrder === 'number' ? displayOrder : undefined,
       consultationCount
     });
 
@@ -119,7 +121,7 @@ exports.createCategory = async (req, res) => {
 // @access  Private/Admin
 exports.updateCategory = async (req, res) => {
   try {
-    const { name, description, isActive } = req.body;
+    const { name, description, isActive, type, displayOrder } = req.body;
 
     const category = await Category.findById(req.params.id);
     
@@ -146,9 +148,17 @@ exports.updateCategory = async (req, res) => {
     }
 
     // Update fields
+    const oldName = category.name;
     if (name) category.name = name.trim();
     if (description !== undefined) category.description = description;
     if (isActive !== undefined) category.isActive = isActive;
+    if (type !== undefined) category.type = type || undefined;
+    if (displayOrder !== undefined && displayOrder !== null) category.displayOrder = Number(displayOrder);
+
+    // Services reference the category by name — carry a rename through.
+    if (name && name.trim() !== oldName) {
+      await Consultation.updateMany({ category: oldName }, { $set: { category: name.trim() } });
+    }
 
     // Update consultation count
     const consultationCount = await Consultation.countDocuments({ 
@@ -277,5 +287,23 @@ exports.syncCategoryCounts = async (req, res) => {
       message: 'Failed to sync category counts',
       error: error.message
     });
+  }
+};
+
+
+// @desc    Reorder categories  body: { order: [{ id, displayOrder }] }
+// @route   PATCH /api/categories/reorder
+// @access  Private/Admin
+exports.reorderCategories = async (req, res) => {
+  try {
+    const order = Array.isArray(req.body.order) ? req.body.order : [];
+    if (!order.length) return res.status(400).json({ success: false, message: 'order[] is required' });
+    await Category.bulkWrite(order.map((o, i) => ({
+      updateOne: { filter: { _id: o.id }, update: { $set: { displayOrder: typeof o.displayOrder === 'number' ? o.displayOrder : i } } },
+    })));
+    return res.status(200).json({ success: true, message: 'Order saved' });
+  } catch (error) {
+    console.error('Reorder categories error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to reorder', error: error.message });
   }
 };

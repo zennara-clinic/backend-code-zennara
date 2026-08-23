@@ -14,6 +14,7 @@ exports.getAllAssignments = async (req, res) => {
       search, 
       status, 
       memberType, 
+      userId,
       sortBy = 'createdAt', 
       sortOrder = 'desc',
       page = 1,
@@ -21,6 +22,8 @@ exports.getAllAssignments = async (req, res) => {
     } = req.query;
 
     const query = {};
+    // Scope to one guest (the patient record's Packages tab).
+    if (userId) query.userId = userId;
 
     // Search filter
     if (search) {
@@ -111,7 +114,7 @@ exports.createAssignment = async (req, res) => {
       packageId,
       discountPercentage,
       isZenMemberDiscount,
-      paymentReceived,
+      paymentReceived: paymentReceivedRaw,
       paymentMethod,
       transactionId,
       notes,
@@ -121,6 +124,9 @@ exports.createAssignment = async (req, res) => {
       branchId,
       sessions
     } = req.body;
+    // The panel may send `payment: { isReceived, receivedDate }` instead of the flat flag.
+    const paymentReceived = paymentReceivedRaw !== undefined ? !!paymentReceivedRaw : !!(req.body.payment && req.body.payment.isReceived);
+    const paymentReceivedDate = req.body.payment && req.body.payment.receivedDate ? new Date(req.body.payment.receivedDate) : undefined;
 
     // Validate user exists
     const user = await User.findById(userId);
@@ -191,7 +197,8 @@ exports.createAssignment = async (req, res) => {
       },
       payment: {
         isReceived: paymentReceived || false,
-        paymentMethod: paymentMethod || null,
+        receivedDate: paymentReceived ? (paymentReceivedDate || new Date()) : null,
+        paymentMethod: paymentMethod || (req.body.payment && req.body.payment.method) || null,
         transactionId: transactionId || null
       },
       notes: notes || '',

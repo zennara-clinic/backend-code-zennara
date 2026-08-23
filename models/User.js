@@ -58,7 +58,10 @@ const UserSchema = new mongoose.Schema({
   // two local accounts can never claim the same Zenoti guest.
   zenotiGuestId: {
     type: String,
-    default: null,
+    // No default. The index is unique+sparse, and sparse only skips documents
+    // where the field is ABSENT — an explicit null is indexed, so a `default:
+    // null` let exactly one app account exist before every later signup
+    // failed with a duplicate-key error. Leave it unset until Zenoti links it.
     index: true,
     sparse: true,
     unique: true

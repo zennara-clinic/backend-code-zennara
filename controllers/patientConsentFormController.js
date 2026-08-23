@@ -253,10 +253,12 @@ exports.addDoctorSignature = async (req, res) => {
 // @access  Private/Admin
 exports.getAllConsentForms = async (req, res) => {
   try {
-    const { status, page = 1, limit = 20 } = req.query;
+    const { status, userId, bookingId, page = 1, limit = 20 } = req.query;
 
     const query = {};
     if (status) query.status = status;
+    if (userId) query.userId = userId;
+    if (bookingId) query.bookingId = bookingId;
 
     const forms = await PatientConsentForm.find(query)
       .populate('userId', 'fullName email phone patientId')

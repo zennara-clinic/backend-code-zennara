@@ -1,4 +1,12 @@
 const Product = require('../models/Product');
+const Formulation = require('../models/Formulation');
+
+/** A product's formulation must be one the clinic has defined. */
+async function formulationError(name) {
+  if (!name) return null;
+  const exists = await Formulation.exists({ name: String(name).trim() });
+  return exists ? null : `Unknown formulation "${name}" — add it under Formulations first`;
+}
 const { DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { s3Client, S3_BUCKET } = require('../config/s3');
 const NotificationHelper = require('../utils/notificationHelper');
@@ -140,6 +148,9 @@ exports.createProduct = async (req, res) => {
       });
     }
 
+    const fErr = await formulationError(formulation);
+    if (fErr) return res.status(400).json({ success: false, message: fErr });
+
     // Create product
     const product = await Product.create({
       name,
@@ -212,6 +223,11 @@ exports.updateProduct = async (req, res) => {
       isActive,
       isPopular
     } = req.body;
+
+    if (formulation) {
+      const fErr = await formulationError(formulation);
+      if (fErr) return res.status(400).json({ success: false, message: fErr });
+    }
 
     // Update fields
     if (name) product.name = name;

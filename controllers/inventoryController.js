@@ -1,4 +1,5 @@
 const Inventory = require('../models/Inventory');
+const StockMovement = require('../models/StockMovement');
 const NotificationHelper = require('../utils/notificationHelper');
 
 // Get all inventory items with filters
@@ -150,13 +151,36 @@ exports.updateInventory = async (req, res) => {
       });
     }
 
+    // Ledger row for a manual quantity edit from the panel.
+    try {
+      const before = Number(oldInventory?.qohAllBatches) || 0;
+      const after = Number(inventory.qohAllBatches) || 0;
+      if (before !== after) {
+        await StockMovement.create({
+          inventoryId: inventory._id,
+          inventoryName: inventory.inventoryName,
+          batchNo: inventory.batchNo || '',
+          type: after > before ? 'receive' : 'adjust',
+          delta: after - before,
+          before,
+          after,
+          reason: String(req.body.reason || req.body.movementReason || 'Manual edit'),
+          adminId: req.admin?._id || null,
+          adminEmail: req.admin?.email || '',
+        });
+      }
+    } catch (ledgerErr) {
+      console.error('Stock ledger write failed:', ledgerErr.message);
+    }
+
     // Check for stock changes and send notifications
     try {
       const newQty = inventory.qohAllBatches;
       const oldQty = oldInventory.qohAllBatches;
-      
-      // Low stock alert (threshold: 5 units)
-      if (newQty <= 5 && newQty > 0 && oldQty > 5) {
+      const threshold = Number(inventory.reOrderLevel) > 0 ? Number(inventory.reOrderLevel) : 5;
+
+      // Low stock alert (item's own re-order level, else 5 units)
+      if (newQty <= threshold && newQty > 0 && oldQty > threshold) {
         await NotificationHelper.lowStockAlert({
           _id: inventory._id,
           product: { name: inventory.inventoryName },
@@ -300,5 +324,112 @@ exports.bulkUpdateStock = async (req, res) => {
       message: 'Failed to update stock',
       error: error.message
     });
+  }
+};
+
+
+// @desc    Consume stock for a session — atomic, per line, with a ledger row
+// @route   POST /api/admin/inventory/consume
+// @body    { bookingId?, branchId?, lines: [{ inventoryId, qty, wastedQty?, reason?, batchNo? }] }
+// @access  Private (Admin/Therapist)
+exports.consumeStock = async (req, res) => {
+  try {
+    const { bookingId = null, branchId = null } = req.body || {};
+    const lines = Array.isArray(req.body?.lines) ? req.body.lines : [];
+    if (!lines.length) {
+      return res.status(400).json({ success: false, message: 'lines[] is required' });
+    }
+
+    const results = [];
+    const failures = [];
+
+    for (const line of lines) {
+      const qty = Math.max(0, Number(line.qty) || 0);
+      const wasted = Math.max(0, Number(line.wastedQty) || 0);
+      const need = qty + wasted;
+      if (!line.inventoryId || need <= 0) continue;
+
+      // $inc guarded by a "still enough" filter, so two rooms consuming the
+      // same item at once cannot both succeed on the last unit.
+      const updated = await Inventory.findOneAndUpdate(
+        { _id: line.inventoryId, qohAllBatches: { $gte: need } },
+        { $inc: { qohAllBatches: -need, qohBatchWise: -need } },
+        { new: true }
+      );
+
+      if (!updated) {
+        const current = await Inventory.findById(line.inventoryId).select('inventoryName qohAllBatches').lean();
+        failures.push({
+          inventoryId: line.inventoryId,
+          name: current?.inventoryName || '',
+          available: current?.qohAllBatches ?? 0,
+          requested: need,
+          message: current ? 'Not enough stock' : 'Item not found',
+        });
+        continue;
+      }
+
+      const before = updated.qohAllBatches + need;
+      const rows = [];
+      if (qty > 0) rows.push({ type: 'consume', delta: -qty, before, after: before - qty, reason: line.reason || '' });
+      if (wasted > 0) rows.push({ type: 'wastage', delta: -wasted, before: before - qty, after: before - need, reason: line.reason || 'wastage' });
+      await StockMovement.insertMany(rows.map((r) => ({
+        ...r,
+        inventoryId: updated._id,
+        inventoryName: updated.inventoryName,
+        batchNo: line.batchNo || updated.batchNo || '',
+        bookingId,
+        branchId,
+        adminId: req.admin?._id || null,
+        adminEmail: req.admin?.email || '',
+      })));
+
+      results.push({ inventoryId: updated._id, name: updated.inventoryName, consumed: qty, wasted, remaining: updated.qohAllBatches });
+
+      if (updated.qohAllBatches <= (updated.reOrderLevel || 0)) {
+        try {
+          const NotificationHelper = require('../utils/notificationHelper');
+          if (NotificationHelper.lowStock) await NotificationHelper.lowStock(updated);
+        } catch (_) { /* notification is best-effort */ }
+      }
+    }
+
+    const ok = failures.length === 0;
+    return res.status(ok ? 200 : 409).json({
+      success: ok,
+      message: ok ? 'Stock consumed' : 'Some lines could not be consumed',
+      data: { consumed: results, failed: failures },
+    });
+  } catch (error) {
+    console.error('Consume stock error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to consume stock', error: error.message });
+  }
+};
+
+// @desc    Stock movement ledger
+// @route   GET /api/admin/inventory/movements?inventoryId=&bookingId=&type=&limit=
+// @access  Private (Admin)
+exports.getStockMovements = async (req, res) => {
+  try {
+    const { inventoryId, bookingId, type, startDate, endDate, limit = 100, page = 1 } = req.query;
+    const q = {};
+    if (inventoryId) q.inventoryId = inventoryId;
+    if (bookingId) q.bookingId = bookingId;
+    if (type) q.type = type;
+    if (startDate || endDate) {
+      q.createdAt = {};
+      if (startDate) q.createdAt.$gte = new Date(startDate);
+      if (endDate) { const d = new Date(endDate); d.setHours(23, 59, 59, 999); q.createdAt.$lte = d; }
+    }
+    const perPage = Math.min(500, Math.max(1, parseInt(limit, 10) || 100));
+    const pageNo = Math.max(1, parseInt(page, 10) || 1);
+    const [rows, total] = await Promise.all([
+      StockMovement.find(q).sort({ createdAt: -1 }).skip((pageNo - 1) * perPage).limit(perPage).lean(),
+      StockMovement.countDocuments(q),
+    ]);
+    return res.status(200).json({ success: true, count: rows.length, total, pagination: { currentPage: pageNo, totalPages: Math.ceil(total / perPage), total }, data: rows });
+  } catch (error) {
+    console.error('Stock movements error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to load movements', error: error.message });
   }
 };

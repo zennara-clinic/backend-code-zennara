@@ -1,5 +1,5 @@
 const AppCustomization = require('../models/AppCustomization');
-const { uploadToS3, deleteFromS3 } = require('../services/s3Service');
+const { uploadToS3, uploadRawToS3, deleteFromS3 } = require('../services/s3Service');
 const AdminAuditLog = require('../models/AdminAuditLog');
 
 // @desc    Get app customization settings
@@ -199,76 +199,22 @@ exports.resetCustomizationSettings = async (req, res) => {
   try {
     const settings = await AppCustomization.getSettings();
     
-    // Reset to default values
-    settings.appLogo = 'https://res.cloudinary.com/dgcpuirdo/image/upload/v1749817496/zennara_logo_wtk8lz.png';
-    settings.homeScreen = {
-      heroBannerImage: 'https://zennara-bucket.s3.ap-south-1.amazonaws.com/default-hero-banner.jpg',
-      heroBannerRoute: 'consultations',
-      consultationsButtonText: 'Book Consultation',
-      productsButtonText: 'Shop Products',
-      consultationCategoryCards: [
-        {
-          image: 'https://zennara-storage.s3.ap-south-1.amazonaws.com/zennara/Manual+Upload/SKIN.png',
-          categoryName: 'Skin',
-          searchTerm: 'Skin',
-          displayOrder: 1
-        },
-        {
-          image: 'https://zennara-storage.s3.ap-south-1.amazonaws.com/zennara/Manual+Upload/HAIR.png',
-          categoryName: 'Hair',
-          searchTerm: 'Hair',
-          displayOrder: 2
-        },
-        {
-          image: 'https://zennara-storage.s3.ap-south-1.amazonaws.com/zennara/Manual+Upload/FACIALS.png',
-          categoryName: 'Facials',
-          searchTerm: 'Facials',
-          displayOrder: 3
-        },
-        {
-          image: 'https://zennara-storage.s3.ap-south-1.amazonaws.com/zennara/Manual+Upload/AESTHETICS.png',
-          categoryName: 'Aesthetics',
-          searchTerm: 'Aesthetics',
-          displayOrder: 4
-        }
-      ],
-      consultationsSectionHeading: 'Consultations',
-      consultationsSectionButtonText: 'See All',
-      popularConsultationsSectionHeading: 'Popular Consultations',
-      popularConsultationsSectionButtonText: 'See All',
-      popularProductsSectionHeading: 'Popular Products',
-      popularProductsSectionButtonText: 'See All',
-      zenMembershipCardImage: null,
-      zenMembershipCardTitle: 'Zen Membership',
-      zenMembershipCardDescription: 'Unlock exclusive benefits and save more'
+    // Rebuild every copy field from the schema's own defaults, so a reset can
+    // never drift from what a fresh install shows. Uploaded media — logo,
+    // banners, reels — is the clinic's content, not "settings", and is kept.
+    const defaults = new AppCustomization().toObject();
+    const keepHome = {
+      heroBannerImage: settings.homeScreen?.heroBannerImage,
+      zenMembershipCardImage: settings.homeScreen?.zenMembershipCardImage,
+      consultationCategoryCards: settings.homeScreen?.consultationCategoryCards || [],
+      reels: settings.homeScreen?.reels || [],
+      reelVideos: settings.homeScreen?.reelVideos || [],
     };
-
-    settings.consultationsScreen = {
-      heading: 'Consultations',
-      subHeading: 'Book your consultation with our expert dermatologists',
-      searchbarPlaceholder: 'Search consultations...'
-    };
-
-    settings.appointmentsScreen = {
-      heading: 'My Appointments',
-      subHeading: 'View and manage your upcoming appointments'
-    };
-
-    settings.productsScreen = {
-      heading: 'Products',
-      subHeading: 'Discover our curated skincare collection',
-      searchbarPlaceholder: 'Search products...'
-    };
-
-    settings.profileScreen = {
-      heading: 'Profile',
-      subHeading: 'Manage your account and preferences',
-      searchbarPlaceholder: 'Search settings...',
-      membershipCardText: 'Zen Membership',
-      ordersCardText: 'My Orders',
-      appointmentsCardText: 'My Appointments',
-      addressesCardText: 'Saved Addresses'
-    };
+    settings.homeScreen = { ...defaults.homeScreen, ...keepHome };
+    settings.consultationsScreen = defaults.consultationsScreen;
+    settings.appointmentsScreen = defaults.appointmentsScreen;
+    settings.productsScreen = defaults.productsScreen;
+    settings.profileScreen = defaults.profileScreen;
 
     settings.lastUpdatedBy = req.admin._id;
     settings.lastUpdatedAt = new Date();
@@ -519,5 +465,67 @@ exports.deleteConsultationCard = async (req, res) => {
       message: 'Failed to delete consultation category card',
       error: error.message
     });
+  }
+};
+
+
+// @desc    Add a self-hosted reel video to the home rail
+// @route   POST /api/app-customization/admin/reel-videos   (multipart: video, optional poster, permalink, title)
+// @access  Private (Admin)
+exports.addReelVideo = async (req, res) => {
+  try {
+    const video = req.files?.video?.[0];
+    const poster = req.files?.poster?.[0];
+    if (!video) {
+      return res.status(400).json({ success: false, message: 'No video file provided' });
+    }
+    if (!video.mimetype.startsWith('video/')) {
+      return res.status(400).json({ success: false, message: 'The reel must be a video file (MP4 recommended)' });
+    }
+
+    const settings = await AppCustomization.getSettings();
+    const url = await uploadRawToS3(video, 'reels');
+    const posterUrl = poster ? await uploadToS3(poster, 'reels') : '';
+
+    const entry = {
+      url,
+      poster: posterUrl,
+      permalink: String(req.body.permalink || '').trim(),
+      title: String(req.body.title || '').trim(),
+    };
+    const list = [entry, ...(settings.homeScreen.reelVideos || [])];
+    await settings.updateSettings({ homeScreen: { reelVideos: list } }, req.admin._id);
+
+    return res.status(201).json({ success: true, message: 'Reel added', data: settings });
+  } catch (error) {
+    console.error('Add reel video error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to add reel', error: error.message });
+  }
+};
+
+// @desc    Remove a self-hosted reel video (and its files)
+// @route   DELETE /api/app-customization/admin/reel-videos/:reelId
+// @access  Private (Admin)
+exports.deleteReelVideo = async (req, res) => {
+  try {
+    const settings = await AppCustomization.getSettings();
+    const list = settings.homeScreen.reelVideos || [];
+    const entry = list.find((r) => String(r._id) === req.params.reelId);
+    if (!entry) {
+      return res.status(404).json({ success: false, message: 'Reel not found' });
+    }
+    await settings.updateSettings(
+      { homeScreen: { reelVideos: list.filter((r) => String(r._id) !== req.params.reelId) } },
+      req.admin._id
+    );
+    for (const fileUrl of [entry.url, entry.poster]) {
+      if (fileUrl) {
+        try { await deleteFromS3(fileUrl); } catch (e) { console.error('Reel file delete failed:', e.message); }
+      }
+    }
+    return res.status(200).json({ success: true, message: 'Reel removed', data: settings });
+  } catch (error) {
+    console.error('Delete reel video error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to remove reel', error: error.message });
   }
 };

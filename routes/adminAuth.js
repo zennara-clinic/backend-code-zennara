@@ -15,7 +15,7 @@ const { protectAdmin } = require('../middleware/auth');
 router.post('/login', adminLoginLimiter, adminLogin);
 router.post('/verify-otp', adminOTPLimiter, adminVerifyOTP);
 router.post('/resend-otp', adminLoginLimiter, adminResendOTP);
-router.post('/check-email', checkAuthorizedEmail);
+router.post('/check-email', adminLoginLimiter, checkAuthorizedEmail);
 
 // Protected routes (require admin authentication)
 router.post('/logout', protectAdmin, adminLogout);

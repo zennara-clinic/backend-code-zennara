@@ -97,6 +97,33 @@ const appCustomizationSchema = new mongoose.Schema({
       type: String,
       default: 'See All'
     },
+    /**
+     * Instagram reel permalinks featured in the "From our clinic" rail,
+     * newest first. The app has always read this key; it was never declared
+     * here, so every panel value was dropped and the rail silently fell back
+     * to the list bundled in the build. Accepts /reel/, /reels/, /p/ and /tv/
+     * URLs — the app extracts the shortcode and ignores anything else.
+     */
+    reels: {
+      type: [String],
+      default: []
+    },
+    /**
+     * Self-hosted clips for the same rail. An Instagram embed inside a
+     * WebView cannot be relied on to play on iOS, so the clinic uploads the
+     * reel's MP4 here and the app plays it natively; `permalink` keeps the
+     * "View on Instagram" link. When this list has entries it is what the
+     * rail shows; `reels` is only used when it is empty.
+     */
+    reelVideos: {
+      type: [{
+        url: { type: String, required: true },
+        poster: { type: String, default: '' },
+        permalink: { type: String, default: '' },
+        title: { type: String, default: '' }
+      }],
+      default: []
+    },
     zenMembershipCardImage: {
       type: String,
       default: null
@@ -109,6 +136,17 @@ const appCustomizationSchema = new mongoose.Schema({
       type: String,
       default: 'Unlock exclusive benefits and save more'
     }
+  },
+
+  /**
+   * Commercial settings the panel and app both read. The Zen member discount
+   * used to be a literal in the therapist screen; it lives here so the clinic
+   * can change it without a deploy.
+   */
+  membership: {
+    discountPercent: { type: Number, default: 15, min: 0, max: 100 },
+    priceInr: { type: Number, default: 110000 },
+    durationMonths: { type: Number, default: 12 }
   },
 
   // Consultations Screen
@@ -217,6 +255,29 @@ const appCustomizationSchema = new mongoose.Schema({
       type: String,
       default: 'Privacy'
     }
+  },
+
+  /**
+   * Legal documents, in plain text, edited in the panel.
+   *
+   * These were already living on this document — `updateLegalContent.js` wrote
+   * them — but were never declared here, so mongoose's strict mode silently
+   * dropped them on the next panel save. Declaring them is what makes them
+   * survive an edit. Empty means "not published"; the app then renders its own
+   * bundled copy rather than a blank page.
+   *
+   * The app parses the conventions these already follow: "1. HEADING" in upper
+   * case is a section, "3.1 Subheading" a subsection, a leading bullet a list
+   * item, and a first "Last Updated: …" line becomes the revision date shown
+   * under the title. Keep to those and the rendering follows.
+   */
+  termsOfService: {
+    type: String,
+    default: ''
+  },
+  privacyPolicy: {
+    type: String,
+    default: ''
   },
 
   // Last updated info

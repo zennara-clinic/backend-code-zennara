@@ -8,16 +8,16 @@ const {
   deleteFormulation,
   getFormulationStatistics
 } = require('../controllers/formulationController');
-const { protectAdmin } = require('../middleware/auth');
+const { protectAdmin, requireRole } = require('../middleware/auth');
+const MANAGE = requireRole('super_admin', 'admin');
 
-// Public routes - guests can view formulations
+// Mounted under /api/admin — staff only. /statistics must precede /:id.
+router.use(protectAdmin);
+router.get('/statistics', getFormulationStatistics);
 router.get('/', getAllFormulations);
 router.get('/:id', getFormulationById);
-
-// Admin protected routes
-router.get('/statistics', protectAdmin, getFormulationStatistics);
-router.post('/', protectAdmin, createFormulation);
-router.put('/:id', protectAdmin, updateFormulation);
-router.delete('/:id', protectAdmin, deleteFormulation);
+router.post('/', MANAGE, createFormulation);
+router.put('/:id', MANAGE, updateFormulation);
+router.delete('/:id', MANAGE, deleteFormulation);
 
 module.exports = router;

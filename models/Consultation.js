@@ -145,6 +145,11 @@ const consultationSchema = new mongoose.Schema({
     type: Boolean,
     default: false,
     index: true
+  },
+  /** Manual ordering within a category (lower first); ties fall back to newest. */
+  displayOrder: {
+    type: Number,
+    default: 0
   }
 }, {
   timestamps: true

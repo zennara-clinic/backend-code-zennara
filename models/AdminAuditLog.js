@@ -54,6 +54,7 @@ const AdminAuditLogSchema = new mongoose.Schema({
       'BOOKING_NO_SHOW',
       'BOOKING_CREATED',
       'BOOKING_RESCHEDULED',
+      'BOOKING_UPDATED',
 
       // Catalogue (services, categories, packages, coupons)
       'CATALOGUE_CREATED',

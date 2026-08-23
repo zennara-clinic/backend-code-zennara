@@ -16,6 +16,12 @@ const AdminSchema = new mongoose.Schema({
       return this.email.split('@')[0];
     }
   },
+  /** Explicit link to the Doctor profile for role `doctor` logins. */
+  doctorId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Doctor',
+    default: null
+  },
   role: {
     type: String,
     // 'therapist' backs the aesthetician floor panel, which signs in with the

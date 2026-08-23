@@ -94,11 +94,14 @@ exports.saveNote = async (req, res) => {
         snapshot: snapshotOf(note),
       });
     } else {
+      // The booking's specialist owns the note; when a booking carries none
+      // (walk-in, "any available"), the signed-in doctor does.
+      const fallbackDoctorId = req.body.doctorId ? String(req.body.doctorId).toLowerCase() : null;
       note = new ConsultationNote({
         bookingId,
         userId: booking.userId,
-        doctorId: booking.specialistId || null,
-        doctorName: booking.specialistName || null,
+        doctorId: (booking.specialistId || fallbackDoctorId || '').toLowerCase() || null,
+        doctorName: booking.specialistName || req.body.doctorName || req.admin?.name || null,
       });
     }
 

@@ -27,6 +27,7 @@ const shape = (admin, allowList) => ({
   isVerified: admin.isVerified,
   lastLogin: admin.lastLogin,
   createdAt: admin.createdAt,
+  doctorId: admin.doctorId || null,
   /** False when the address is missing from ADMIN_EMAILS — login would fail. */
   canSignIn: allowList.includes(String(admin.email).toLowerCase()),
 });
@@ -77,7 +78,7 @@ exports.getStaff = async (req, res) => {
 // @access  super_admin
 exports.createStaff = async (req, res) => {
   try {
-    const { email, name, role = 'receptionist' } = req.body;
+    const { email, name, role = 'receptionist', doctorId } = req.body;
 
     if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
       return res.status(400).json({ success: false, message: 'A valid email is required' });
@@ -95,6 +96,7 @@ exports.createStaff = async (req, res) => {
       email: email.toLowerCase(),
       name: name || email.split('@')[0],
       role,
+      doctorId: role === 'doctor' && doctorId ? doctorId : null,
       isActive: true,
     });
 
@@ -123,7 +125,7 @@ exports.createStaff = async (req, res) => {
 // @access  super_admin
 exports.updateStaff = async (req, res) => {
   try {
-    const { name, role } = req.body;
+    const { name, role, doctorId } = req.body;
     const admin = await Admin.findById(req.params.id);
 
     if (!admin) {
@@ -148,6 +150,7 @@ exports.updateStaff = async (req, res) => {
     const previousRole = admin.role;
     if (name !== undefined) admin.name = name;
     if (role !== undefined) admin.role = role;
+    if (doctorId !== undefined) admin.doctorId = doctorId || null;
     await admin.save();
 
     if (role && role !== previousRole) {

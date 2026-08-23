@@ -1,4 +1,5 @@
 const Doctor = require('../models/Doctor');
+const { canEditDoctor, resolveDoctorForAdmin } = require('../utils/doctorIdentity');
 const DoctorTier = require('../models/DoctorTier');
 const Booking = require('../models/Booking');
 const DermatologistAvailability = require('../models/DermatologistAvailability');
@@ -66,7 +67,10 @@ exports.getAllDoctors = async (req, res) => {
       filter.$or = [{ name: rx }, { designation: rx }, { expertise: rx }];
     }
 
-    const doctors = await Doctor.find(filter)
+    // Contact details are for the panel only; the app sees the public profile.
+    const projection = req.admin ? {} : { email: 0, phone: 0 };
+
+    const doctors = await Doctor.find(filter, projection)
       .sort({ displayOrder: 1, tier: 1, name: 1 })
       .lean();
 
@@ -96,7 +100,7 @@ exports.getDoctorById = async (req, res) => {
         ...(id.match(/^[0-9a-fA-F]{24}$/) ? [{ _id: id }] : []),
         { doctorId: id.toLowerCase() },
       ],
-    }).lean();
+    }, req.admin ? {} : { email: 0, phone: 0 }).lean();
 
     if (!doctor) {
       return res.status(404).json({ success: false, message: 'Doctor not found' });
@@ -260,6 +264,11 @@ exports.updateDoctor = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Doctor not found' });
     }
 
+    // A doctor may edit only their own profile.
+    if (!(await canEditDoctor(req, doctor))) {
+      return res.status(403).json({ success: false, message: 'You can only edit your own profile' });
+    }
+
     // doctorId is deliberately immutable: bookings, availability rows and the
     // app's deep links all point at it.
     const update = pickBody(req.body);
@@ -270,6 +279,8 @@ exports.updateDoctor = async (req, res) => {
     if (req.admin?.role === 'doctor') {
       delete update.fee;
       delete update.tier;
+      delete update.isActive;
+      delete update.displayOrder;
     }
 
     Object.assign(doctor, update);
@@ -355,5 +366,19 @@ exports.deleteDoctor = async (req, res) => {
       message: 'Failed to delete doctor',
       error: error.message,
     });
+  }
+};
+
+
+// @desc    The Doctor profile behind the signed-in staff login (role doctor)
+// @route   GET /api/doctors/me
+// @access  Staff
+exports.getMyDoctor = async (req, res) => {
+  try {
+    const doctor = await resolveDoctorForAdmin(req);
+    return res.status(200).json({ success: true, linked: !!doctor, data: doctor });
+  } catch (error) {
+    console.error('Get my doctor error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to resolve doctor profile' });
   }
 };

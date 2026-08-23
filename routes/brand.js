@@ -8,16 +8,16 @@ const {
   deleteBrand,
   getBrandStatistics
 } = require('../controllers/brandController');
-const { protectAdmin } = require('../middleware/auth');
+const { protectAdmin, requireRole } = require('../middleware/auth');
+const MANAGE = requireRole('super_admin', 'admin');
 
-// Public routes - guests can view brands
+// Mounted under /api/admin — staff only. /statistics must precede /:id.
+router.use(protectAdmin);
+router.get('/statistics', getBrandStatistics);
 router.get('/', getAllBrands);
 router.get('/:id', getBrandById);
-
-// Admin protected routes
-router.get('/statistics', protectAdmin, getBrandStatistics);
-router.post('/', protectAdmin, createBrand);
-router.put('/:id', protectAdmin, updateBrand);
-router.delete('/:id', protectAdmin, deleteBrand);
+router.post('/', MANAGE, createBrand);
+router.put('/:id', MANAGE, updateBrand);
+router.delete('/:id', MANAGE, deleteBrand);
 
 module.exports = router;

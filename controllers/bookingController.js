@@ -13,6 +13,35 @@ const { SESSION_SLOT_MINUTES } = require('../config/scheduling');
 // @desc    Create new booking
 // @route   POST /api/bookings
 // @access  Private
+
+/**
+ * Fold the therapist's session summary (structured `session` and/or a free
+ * `notes` string) into the booking at checkout.
+ */
+function applySessionFromBody(booking, req) {
+  const body = req.body || {};
+  if (body.session && typeof body.session === 'object') {
+    const sess = body.session;
+    booking.session = {
+      items: Array.isArray(sess.items) ? sess.items : [],
+      wastage: Array.isArray(sess.wastage) ? sess.wastage : [],
+      serviceFee: Number(sess.serviceFee) || 0,
+      productTotal: Number(sess.productTotal) || 0,
+      discount: Number(sess.discount) || 0,
+      total: Number(sess.total) || 0,
+      grading: sess.grading || '',
+      notes: sess.notes || '',
+      therapist: sess.therapist || req.admin?.name || '',
+      completedAt: new Date(),
+    };
+    if (!booking.therapistName && booking.session.therapist) booking.therapistName = booking.session.therapist;
+    if (!booking.therapistId && req.admin?.role === 'therapist') booking.therapistId = req.admin._id;
+  }
+  if (typeof body.notes === 'string' && body.notes.trim()) {
+    booking.adminNotes = [booking.adminNotes, `Session: ${body.notes.trim()}`].filter(Boolean).join('\n');
+  }
+}
+
 exports.createBooking = async (req, res) => {
   try {
     console.log('🔍 User from auth middleware:', req.user);
@@ -872,7 +901,7 @@ exports.rateBooking = async (req, res) => {
 // @access  Private (Admin)
 exports.getAllBookingsAdmin = async (req, res) => {
   try {
-    const { status, location, date, search } = req.query;
+    const { status, location, branchId, date, startDate: from, endDate: to, search, userId, specialistId, therapistId, page, limit } = req.query;
 
     // Build query
     const query = {};
@@ -881,16 +910,32 @@ exports.getAllBookingsAdmin = async (req, res) => {
       query.status = status;
     }
 
-    if (location && location !== 'all') {
+    if (branchId) {
+      query.branchId = branchId;
+    } else if (location && location !== 'all') {
       query.preferredLocation = location;
     }
+
+    if (userId) query.userId = userId;
+    if (specialistId) query.specialistId = String(specialistId).toLowerCase();
+    if (therapistId) query.therapistId = therapistId;
 
     if (date) {
       const startDate = new Date(date);
       startDate.setHours(0, 0, 0, 0);
       const endDate = new Date(date);
       endDate.setHours(23, 59, 59, 999);
-      query.preferredDate = { $gte: startDate, $lte: endDate };
+      // A rescheduled booking lives on its confirmed date, not the one first asked for.
+      query.$and = [{
+        $or: [
+          { confirmedDate: { $gte: startDate, $lte: endDate } },
+          { confirmedDate: { $in: [null, undefined] }, preferredDate: { $gte: startDate, $lte: endDate } },
+        ],
+      }];
+    } else if (from || to) {
+      query.preferredDate = {};
+      if (from) { const d = new Date(from); d.setHours(0, 0, 0, 0); query.preferredDate.$gte = d; }
+      if (to) { const d = new Date(to); d.setHours(23, 59, 59, 999); query.preferredDate.$lte = d; }
     }
 
     if (search) {
@@ -902,16 +947,34 @@ exports.getAllBookingsAdmin = async (req, res) => {
       ];
     }
 
-    const bookings = await Booking.find(query)
+    // Pagination is opt-in (`limit`) so existing callers keep the full list.
+    const perPage = limit ? Math.min(500, Math.max(1, parseInt(limit, 10))) : null;
+    const pageNo = Math.max(1, parseInt(page || '1', 10));
+
+    let find = Booking.find(query)
       .populate('consultationId', 'name category price image')
       .populate('userId', 'fullName email phone patientId')
       .populate('branchId', 'name address')
       .sort({ createdAt: -1 })
       .select('-__v');
+    if (perPage) find = find.skip((pageNo - 1) * perPage).limit(perPage);
+
+    const [bookings, total, statusCounts] = await Promise.all([
+      find,
+      Booking.countDocuments(query),
+      // Counts per status for the same scope minus the status filter — the tab badges.
+      Booking.aggregate([
+        { $match: Object.fromEntries(Object.entries(query).filter(([k]) => k !== 'status')) },
+        { $group: { _id: '$status', n: { $sum: 1 } } },
+      ]),
+    ]);
 
     res.status(200).json({
       success: true,
       count: bookings.length,
+      total,
+      statusCounts: Object.fromEntries(statusCounts.map((r) => [r._id, r.n])),
+      pagination: perPage ? { currentPage: pageNo, totalPages: Math.ceil(total / perPage), total } : undefined,
       data: bookings
     });
   } catch (error) {
@@ -1041,10 +1104,10 @@ exports.markNoShow = async (req, res) => {
       });
     }
 
-    if (booking.status !== 'Confirmed' && booking.status !== 'Rescheduled') {
+    if (!['Confirmed', 'Rescheduled', 'Awaiting Confirmation'].includes(booking.status)) {
       return res.status(400).json({
         success: false,
-        message: 'Only confirmed bookings can be marked as no-show'
+        message: 'Only upcoming bookings can be marked as no-show'
       });
     }
 
@@ -1132,7 +1195,7 @@ exports.getBookingByIdAdmin = async (req, res) => {
   try {
     const booking = await Booking.findById(req.params.id)
       .populate('consultationId', 'name category price image duration_minutes')
-      .populate('userId', 'name email patientId');
+      .populate('userId', 'fullName email phone patientId');
 
     if (!booking) {
       return res.status(404).json({
@@ -1271,6 +1334,7 @@ exports.checkOutBookingAdmin = async (req, res) => {
     if (booking.checkInTime) {
       booking.sessionDuration = Math.max(0, Math.round((booking.checkOutTime - booking.checkInTime) / 60000));
     }
+    applySessionFromBody(booking, req);
 
     await booking.save();
 
@@ -1570,8 +1634,10 @@ exports.verifyCheckOutCode = async (req, res) => {
     if (booking.checkInTime) {
       booking.sessionDuration = Math.max(0, Math.round((booking.checkOutTime - booking.checkInTime) / 60000));
     }
+    applySessionFromBody(booking, req);
     booking.checkOutCode = null;
     booking.checkOutCodeAt = null;
+    applySessionFromBody(booking, req);
     await booking.save();
     await booking.populate('consultationId', 'name');
 
@@ -1619,7 +1685,7 @@ exports.verifyCheckOutCode = async (req, res) => {
 // @access  Private (Admin)
 exports.cancelBookingAdmin = async (req, res) => {
   try {
-    const { reason } = req.body;
+    const reason = req.body.reason || req.body.cancellationReason;
 
     const booking = await Booking.findById(req.params.id);
 
@@ -1630,11 +1696,11 @@ exports.cancelBookingAdmin = async (req, res) => {
       });
     }
 
-    // Admin can cancel Confirmed or Rescheduled bookings
-    if (!['Confirmed', 'Rescheduled'].includes(booking.status)) {
+    // The desk can cancel anything that has not already ended.
+    if (['Cancelled', 'Completed', 'No Show'].includes(booking.status)) {
       return res.status(400).json({
         success: false,
-        message: 'Only confirmed or rescheduled bookings can be cancelled'
+        message: `A ${booking.status.toLowerCase()} booking cannot be cancelled`
       });
     }
 
@@ -1883,6 +1949,7 @@ exports.createBookingAdmin = async (req, res) => {
       paymentStatus: paymentStatus || 'pending',
       status: confirmNow ? 'Confirmed' : 'Awaiting Confirmation',
       notes: notes || undefined,
+      source: 'reception',
       adminNotes: `Created at reception by ${req.admin?.email || 'admin'}`,
     });
 
@@ -2026,5 +2093,69 @@ exports.rescheduleBookingAdmin = async (req, res) => {
   } catch (error) {
     console.error('❌ Admin reschedule error:', error);
     return res.status(500).json({ success: false, message: 'Failed to reschedule booking' });
+  }
+};
+
+
+// @desc    Record the payment on a booking (desk payments — cash, card, UPI, package)
+// @route   PUT /api/bookings/admin/:id/payment
+// @access  Private (Admin)
+exports.updateBookingPaymentAdmin = async (req, res) => {
+  try {
+    const { paymentStatus, paymentMethod, amount, note } = req.body;
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) {
+      return res.status(404).json({ success: false, message: 'Booking not found' });
+    }
+
+    const allowedStatus = ['pending', 'paid', 'failed', 'refunded'];
+    if (paymentStatus !== undefined) {
+      if (!allowedStatus.includes(paymentStatus)) {
+        return res.status(400).json({ success: false, message: `paymentStatus must be one of ${allowedStatus.join(', ')}` });
+      }
+      booking.paymentStatus = paymentStatus;
+      if (paymentStatus === 'paid' && !booking.paidAt) booking.paidAt = new Date();
+      if (paymentStatus !== 'paid') booking.paidAt = undefined;
+    }
+    if (paymentMethod !== undefined) booking.paymentMethod = paymentMethod;
+    if (amount !== undefined && amount !== null && amount !== '') {
+      const n = Number(amount);
+      if (!Number.isFinite(n) || n < 0) {
+        return res.status(400).json({ success: false, message: 'amount must be a non-negative number' });
+      }
+      booking.amount = n;
+    }
+    if (note && String(note).trim()) {
+      booking.adminNotes = [booking.adminNotes, `Payment: ${String(note).trim()} (${req.admin?.email || 'admin'})`]
+        .filter(Boolean).join('\n');
+    }
+
+    await booking.save();
+    await booking.populate('consultationId', 'name category price image');
+    await booking.populate('userId', 'fullName email phone patientId');
+
+    return res.status(200).json({ success: true, message: 'Payment updated', data: booking });
+  } catch (error) {
+    console.error('Update booking payment error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to update payment', error: error.message });
+  }
+};
+
+// @desc    Append a desk note to a booking
+// @route   PUT /api/bookings/admin/:id/notes
+// @access  Private (Admin)
+exports.addBookingNoteAdmin = async (req, res) => {
+  try {
+    const text = String(req.body.note || '').trim();
+    if (!text) return res.status(400).json({ success: false, message: 'Note is required' });
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
+    const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+    booking.adminNotes = [booking.adminNotes, `[${stamp} ${req.admin?.email || 'admin'}] ${text}`].filter(Boolean).join('\n');
+    await booking.save();
+    return res.status(200).json({ success: true, data: booking });
+  } catch (error) {
+    console.error('Add booking note error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to add note', error: error.message });
   }
 };

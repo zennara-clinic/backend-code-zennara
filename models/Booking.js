@@ -97,6 +97,7 @@ const bookingSchema = new mongoose.Schema({
   specialistId: {
     type: String,
     trim: true,
+    lowercase: true,
     index: true
   },
   specialistName: {
@@ -106,6 +107,42 @@ const bookingSchema = new mongoose.Schema({
   specialistTier: {
     type: String,
     trim: true
+  },
+
+  // Floor assignment — who is delivering the session and where.
+  therapistId: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', default: null, index: true },
+  therapistName: { type: String, trim: true, default: '' },
+  room: { type: String, trim: true, default: '' },
+
+  /**
+   * What happened in the chair, written by the therapist at checkout and
+   * read by reception for billing. Stored structured so it can be queried
+   * and reconciled, not as a notes string.
+   */
+  session: {
+    items: [{
+      inventoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Inventory' },
+      name: String,
+      batchNo: String,
+      qty: { type: Number, default: 0 },
+      unit: String,
+      rate: { type: Number, default: 0 },
+      billable: { type: Boolean, default: false },
+    }],
+    wastage: [{
+      inventoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Inventory' },
+      name: String,
+      qty: { type: Number, default: 0 },
+      reason: String,
+    }],
+    serviceFee: { type: Number, default: 0 },
+    productTotal: { type: Number, default: 0 },
+    discount: { type: Number, default: 0 },
+    total: { type: Number, default: 0 },
+    grading: String,
+    notes: String,
+    therapist: String,
+    completedAt: Date,
   },
 
   // Booking Status
@@ -187,10 +224,16 @@ const bookingSchema = new mongoose.Schema({
   },
   paymentMethod: {
     type: String,
-    enum: ['Razorpay'],
+    enum: ['Razorpay', 'Cash', 'Card', 'UPI', 'Package', 'Membership', 'Other'],
     default: 'Razorpay'
   },
   paidAt: Date,
+  /** Where the booking was made. */
+  source: {
+    type: String,
+    enum: ['app', 'reception', 'package', 'zenoti'],
+    default: 'app'
+  },
 
   // Zenoti write-back (Phase 2): the appointment this booking created in the CRM,
   // and its sync status, for idempotency + observability.
@@ -205,6 +248,8 @@ const bookingSchema = new mongoose.Schema({
 
   // Metadata
   notes: String,
+  /** Set when the owner deleted their account; the record is kept, anonymised, for accounting. */
+  accountDeleted: { type: Boolean, default: false },
   adminNotes: String,
 
 }, {
