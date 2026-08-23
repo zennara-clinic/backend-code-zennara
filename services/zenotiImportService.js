@@ -55,9 +55,10 @@ async function importRoster({ trigger = 'schedule', adminId = null } = {}) {
   try {
     for (const centerId of Object.keys(CENTERS)) {
       let page = 1;
+      let centerTotal = Infinity;
       for (;;) {
         const { guests, total } = await zenoti.listCenterGuests(centerId, page, PAGE_SIZE);
-        if (page === 1) { tally.total += total; await run.updateOne({ total: tally.total }); }
+        if (page === 1) { centerTotal = total; tally.total += total; await run.updateOne({ total: tally.total }); }
         if (!guests.length) break;
 
         // One round of lookups for the whole page instead of three per guest.
@@ -107,8 +108,11 @@ async function importRoster({ trigger = 'schedule', adminId = null } = {}) {
         }
         if (stubOps.length) await ZenotiGuestData.bulkWrite(stubOps, { ordered: false }).catch((e) => logger.warn('Zenoti roster: stub upsert failed', { error: e.message }));
         await run.updateOne({ ...tally });
-        if (guests.length < PAGE_SIZE) break;
+        // Zenoti sometimes returns 99 on a full page, so a short page is NOT the
+        // end — trust the centre-wide total and keep going until it's covered.
+        if (page * PAGE_SIZE >= centerTotal) break;
         page += 1;
+        if (page > 500) break; // safety stop
       }
     }
     await run.updateOne({ ...tally, status: 'completed', finishedAt: new Date() });
