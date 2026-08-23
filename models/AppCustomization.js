@@ -183,7 +183,19 @@ const appCustomizationSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.Mixed,
     default: {},
   },
+  /** Help & Support screen — panel-managed FAQs (empty = the app's bundled set). */
+  helpScreen: {
+    faqs: [{
+      q: { type: String, required: true, trim: true },
+      a: { type: String, required: true, trim: true },
+    }],
+  },
   membership: {
+    /** "What's included" list on the membership screen (empty = bundled set). */
+    benefits: [{
+      title: { type: String, required: true, trim: true },
+      copy: { type: String, default: '', trim: true },
+    }],
     discountPercent: { type: Number, default: 15, min: 0, max: 100 },
     priceInr: { type: Number, default: 110000 },
     durationMonths: { type: Number, default: 12 }
