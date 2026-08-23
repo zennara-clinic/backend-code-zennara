@@ -9,6 +9,28 @@ const appCustomizationSchema = new mongoose.Schema({
 
   // Home Screen
   homeScreen: {
+    /** Section order + visibility for the new-layout home page. */
+    sections: [{
+      id: { type: String, required: true },
+      visible: { type: Boolean, default: true },
+    }],
+    /** Celebrity/press quotes for the reviews carousel; empty = bundled set. */
+    testimonials: [{
+      name: { type: String, required: true, trim: true },
+      role: { type: String, default: '', trim: true },
+      quote: { type: String, required: true, trim: true },
+      image: { type: String, default: '' },
+    }],
+    /** Quick-action tiles; empty = the bundled four. Routes validated app-side. */
+    quickActions: [{
+      key: { type: String, default: '' },
+      label: { type: String, required: true, trim: true },
+      image: { type: String, default: '' },
+      route: { type: String, default: 'consultation' },
+      visible: { type: Boolean, default: true },
+    }],
+    instagramHandle: { type: String, default: '' },
+    instagramUrl: { type: String, default: '' },
     heroBannerImage: {
       type: String,
       default: 'https://zennara-storage.s3.ap-south-1.amazonaws.com/zennara/Manual+Upload/ZEN+UPDATED+HERO+BANNER.png'
