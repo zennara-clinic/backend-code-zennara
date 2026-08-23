@@ -38,10 +38,14 @@ const doctorSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
-    /** Neutral, non-ranking label shown on profile and selection cards. */
+    /**
+     * Label shown on profile and selection cards. Exactly two, mirroring the
+     * two fee tiers: 'senior' → "Senior Dermatologist", 'dermatologist' →
+     * "Dermatologist". Derived from `tier` on save so they can never disagree.
+     */
     level: {
       type: String,
-      enum: ['specialist', 'senior', 'dermatologist'],
+      enum: ['senior', 'dermatologist'],
       default: 'dermatologist',
     },
     designation: {
@@ -119,5 +123,14 @@ doctorSchema.statics.slugify = function (name) {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
 };
+
+
+/** Level and the default designation follow the fee tier — there are only two. */
+doctorSchema.pre('save', function (next) {
+  this.level = this.tier === 'senior-consultant' ? 'senior' : 'dermatologist';
+  const expected = this.level === 'senior' ? 'Senior Dermatologist' : 'Dermatologist';
+  if (!this.designation || /specialist/i.test(this.designation) || /dermatologist/i.test(this.designation)) this.designation = expected;
+  next();
+});
 
 module.exports = mongoose.model('Doctor', doctorSchema);

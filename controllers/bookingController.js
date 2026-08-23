@@ -980,7 +980,7 @@ exports.exportBookingsAdmin = async (req, res) => {
         'Date': fmtDate(slotDate),
         'Time': slotTime,
         'Status': b.status,
-        'Doctor': b.specialistName || '',
+        'Dermatologist': b.specialistName || '',
         'Therapist': b.therapistName || '',
         'Room': b.room || '',
         'Source': b.source || 'app',

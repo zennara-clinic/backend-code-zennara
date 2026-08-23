@@ -355,7 +355,10 @@ bookingSchema.index(
 bookingSchema.pre('save', function (next) {
   if (this.slotTime) {
     const live = ['Awaiting Confirmation', 'Confirmed', 'Rescheduled', 'In Progress', 'Completed'];
-    this.slotHeld = live.includes(this.status);
+    // Zenoti mirrors still block the diary (the slot engine filters on status),
+    // but they sit outside the unique-slot race guard: a clinic visit can have
+    // several services with one dermatologist at the same time.
+    this.slotHeld = live.includes(this.status) && this.source !== 'zenoti';
   } else {
     this.slotHeld = false;
   }

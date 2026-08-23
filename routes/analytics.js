@@ -19,6 +19,9 @@ const { protectAdmin } = require('../middleware/auth');
 // All routes are admin-protected
 router.use(protectAdmin);
 
+// One-call clinic dashboard (revenue per stream, counts, dermatologist board).
+router.get('/dashboard', require('../controllers/dashboardController').getDashboard);
+
 // Financial analytics
 router.get('/financial', getFinancialAnalytics);
 router.get('/revenue/monthly', getMonthlyRevenueTrend);

@@ -16,6 +16,8 @@ const ZenotiSyncRun = require('../models/ZenotiSyncRun');
 const zenoti = require('./zenotiService');
 const { provisionUserFromGuest } = require('./zenotiSyncService');
 const { CENTERS, branchNameForCenter } = require('../config/zenoti');
+const Doctor = require('../models/Doctor');
+const { buildDoctorMatcher, tierTitle } = require('../utils/dermatologistMatch');
 const logger = require('../utils/logger');
 
 let appointmentSyncRunning = false;
@@ -63,13 +65,14 @@ function localStatus(appointment) {
 }
 
 async function lookupContext() {
-  const [consultations, branches] = await Promise.all([
+  const [consultations, branches, doctors] = await Promise.all([
     Consultation.find({}).select('_id name slug').lean(),
     Branch.find({}).select('_id name').lean(),
+    Doctor.find({}).select('doctorId name tier').lean(),
   ]);
   const consultationByName = new Map(consultations.map((c) => [norm(c.name), c]));
   const branchByName = new Map(branches.map((b) => [norm(b.name), b]));
-  return { consultationByName, branchByName };
+  return { consultationByName, branchByName, matchDoctor: buildDoctorMatcher(doctors) };
 }
 
 function amountOf(appointment) {
@@ -134,10 +137,26 @@ async function upsertAppointment(appointment, { user = null, context = null } = 
   booking.confirmedDate = parts.date;
   booking.confirmedTime = parts.time;
   booking.status = status;
-  booking.amount = amountOf(appointment);
+  // The centre appointment book reports price 0; the guest-history feed has the
+  // invoiced value. Never let a zero overwrite a known amount.
+  const price = amountOf(appointment);
+  if (price > 0 || isNew) booking.amount = price > 0 ? price : (booking.amount || 0);
   booking.source = booking.source === 'zenoti' || isNew ? 'zenoti' : booking.source;
   booking.paymentMethod = booking.paymentMethod || 'Other';
-  booking.therapistName = appointment.therapistName || booking.therapistName || '';
+  // Zenoti files the dermatologist under `therapist`; attribute to our roster.
+  const derm = ctx.matchDoctor ? ctx.matchDoctor(appointment.therapistName) : null;
+  if (derm) {
+    booking.specialistId = derm.doctorId;
+    booking.specialistName = derm.name;
+    booking.specialistTier = tierTitle(derm);
+  } else {
+    booking.therapistName = appointment.therapistName || booking.therapistName || '';
+  }
+  // A completed clinic visit with a value was settled on the Zenoti invoice.
+  if (status === 'Completed' && (booking.amount || 0) > 0 && booking.paymentStatus !== 'paid') {
+    booking.paymentStatus = 'paid';
+    booking.paidAt = clinicDate(appointment.actualCompletedTime) || parts.date || new Date();
+  }
   booking.room = appointment.roomName || booking.room || '';
   booking.checkInTime = clinicDate(appointment.checkinTime) || booking.checkInTime;
   booking.checkOutTime = clinicDate(appointment.actualCompletedTime) || booking.checkOutTime;
