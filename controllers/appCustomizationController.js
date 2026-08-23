@@ -1,6 +1,7 @@
 const AppCustomization = require('../models/AppCustomization');
 const { uploadToS3, uploadRawToS3, deleteFromS3 } = require('../services/s3Service');
 const AdminAuditLog = require('../models/AdminAuditLog');
+const { sanitizeAppearance } = require('../utils/appAppearance');
 
 // @desc    Get app customization settings
 // @route   GET /api/app-customization
@@ -51,7 +52,10 @@ exports.getAdminCustomizationSettings = async (req, res) => {
 exports.updateCustomizationSettings = async (req, res) => {
   try {
     const settings = await AppCustomization.getSettings();
-    const updates = req.body;
+    const updates = { ...req.body };
+    if (Object.prototype.hasOwnProperty.call(updates, 'appearance')) {
+      updates.appearance = sanitizeAppearance(updates.appearance);
+    }
 
     // Update settings using the model method
     await settings.updateSettings(updates, req.admin._id);
@@ -78,7 +82,7 @@ exports.updateCustomizationSettings = async (req, res) => {
     });
   } catch (error) {
     console.error('Error updating app customization settings:', error);
-    res.status(500).json({
+    res.status(error.statusCode || 500).json({
       success: false,
       message: 'Failed to update customization settings',
       error: error.message
@@ -215,6 +219,10 @@ exports.resetCustomizationSettings = async (req, res) => {
     settings.appointmentsScreen = defaults.appointmentsScreen;
     settings.productsScreen = defaults.productsScreen;
     settings.profileScreen = defaults.profileScreen;
+    settings.appearance = {};
+    settings.copy = {};
+    settings.markModified('appearance');
+    settings.markModified('copy');
 
     settings.lastUpdatedBy = req.admin._id;
     settings.lastUpdatedAt = new Date();

@@ -169,7 +169,8 @@ const appCustomizationSchema = new mongoose.Schema({
    * Remote design system for the app. `colors` is a flat map of theme tokens
    * (dot paths for text.*, e.g. "text.primary") to colour strings; empty means
    * the bundled palette. `typography.fontScale` multiplies every type size
-   * (0.85–1.3). Applied by the app at launch and on refresh.
+   * (0.85–1.3), while `typography.sizeOverrides` controls every exact base
+   * size used by the active mobile layout. Applied at launch and on refresh.
    */
   appearance: {
     type: mongoose.Schema.Types.Mixed,
@@ -379,7 +380,13 @@ appCustomizationSchema.statics.getSettings = async function() {
 appCustomizationSchema.methods.updateSettings = async function(updates, adminId) {
   // Deep merge updates
   Object.keys(updates).forEach(screen => {
-    if (this[screen] && typeof this[screen] === 'object' && !Array.isArray(this[screen])) {
+    if (screen === 'appearance' || screen === 'copy') {
+      // These Mixed fields are complete documents from App Control. Replacing
+      // them (instead of merging only supplied keys) makes Reset actually
+      // remove old overrides and prevents deleted controls from resurfacing.
+      this[screen] = updates[screen];
+      this.markModified(screen);
+    } else if (this[screen] && typeof this[screen] === 'object' && !Array.isArray(this[screen])) {
       // Handle nested objects (homeScreen, consultationsScreen, etc.)
       Object.keys(updates[screen]).forEach(field => {
         this[screen][field] = updates[screen][field];
@@ -388,8 +395,6 @@ appCustomizationSchema.methods.updateSettings = async function(updates, adminId)
       // Handle root-level fields (appLogo, etc.)
       this[screen] = updates[screen];
     }
-    // Mixed fields (appearance, copy) don't track nested mutation on their own.
-    if (screen === 'appearance' || screen === 'copy') this.markModified(screen);
   });
 
   this.lastUpdatedBy = adminId;
