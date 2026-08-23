@@ -352,7 +352,25 @@ bookingSchema.index(
  * must put the time back on sale — otherwise the diary slowly fills with slots
  * nobody is coming to.
  */
+/**
+ * Appointment dates are calendar days at the clinic (IST). Whatever a client
+ * sends — a bare YYYY-MM-DD, a UTC instant, a datetime-local string — store
+ * the day at IST midnight so "today / tomorrow" never drifts around midnight
+ * in the panel or the app.
+ */
+const toClinicMidnight = (value) => {
+  if (!value) return value;
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(d);
+  const part = (t) => parts.find((x) => x.type === t)?.value;
+  return new Date(`${part('year')}-${part('month')}-${part('day')}T00:00:00+05:30`);
+};
+bookingSchema.statics.toClinicMidnight = toClinicMidnight;
+
 bookingSchema.pre('save', function (next) {
+  if (this.isModified('preferredDate') && this.preferredDate) this.preferredDate = toClinicMidnight(this.preferredDate);
+  if (this.isModified('confirmedDate') && this.confirmedDate) this.confirmedDate = toClinicMidnight(this.confirmedDate);
   if (this.slotTime) {
     const live = ['Awaiting Confirmation', 'Confirmed', 'Rescheduled', 'In Progress', 'Completed'];
     // Zenoti mirrors still block the diary (the slot engine filters on status),

@@ -1277,6 +1277,7 @@ exports.checkInBookingAdmin = async (req, res) => {
     await booking.populate('consultationId', 'name');
     await visitCodes.deliver(booking, 'checkout', { by: req.admin });
     await booking.save();
+    await notifyManualCheck(booking, 'checkin');
 
     // Create notification for check-in (admin endpoint)
     try {
@@ -1375,6 +1376,8 @@ exports.checkOutBookingAdmin = async (req, res) => {
     applySessionFromBody(booking, req);
 
     await booking.save();
+    await booking.populate('consultationId', 'name');
+    await notifyManualCheck(booking, 'checkout');
 
     // Populate consultation details
     await booking.populate('consultationId', 'name');
@@ -1480,6 +1483,37 @@ function appointmentStart(booking) {
   const hm = parseTimeToHM(timeStr);
   if (hm) d.setHours(hm.h, hm.m, 0, 0);
   return d;
+}
+
+
+/**
+ * Tell the guest that reception started / closed their session without a
+ * code: an in-app notification plus an email. Never throws.
+ */
+async function notifyManualCheck(booking, kind) {
+  const isOut = kind === 'checkout';
+  const treatment = (booking.consultationId && booking.consultationId.name) || booking.externalServiceName || 'your appointment';
+  const line = isOut ? 'You are checked out without code for this session.' : 'You are checked in without code for this session.';
+  try {
+    if (booking.userId) {
+      await NotificationHelper.create({
+        userId: booking.userId,
+        type: 'booking',
+        title: isOut ? 'Session completed' : 'Session started',
+        message: `${line} ${treatment}${booking.preferredLocation ? ` · ${booking.preferredLocation}` : ''}`,
+        relatedId: booking._id,
+        relatedModel: 'Booking',
+        priority: 'medium',
+      });
+    }
+  } catch (e) { console.error('⚠️ Manual check notification failed:', e.message); }
+  try {
+    if (booking.email && !/@guest\.zennara\.in$|@zennara\.local$/i.test(booking.email)) {
+      await emailService.sendManualCheckNotice(booking.email, booking.fullName, {
+        kind, treatment, location: booking.preferredLocation, referenceNumber: booking.referenceNumber, at: new Date(),
+      });
+    }
+  } catch (e) { console.error('⚠️ Manual check email failed:', e.message); }
 }
 
 // @desc    Staff send (or resend) the guest's check-in / check-out code by email / WhatsApp
@@ -2011,8 +2045,9 @@ exports.createBookingAdmin = async (req, res) => {
         email: safeEmail,
         phone: mobileNumber,
         location: preferredLocation,
-        dateOfBirth: req.body.dateOfBirth || '',
-        gender: req.body.gender || 'Other',
+        dateOfBirth: req.body.dateOfBirth || undefined,
+        gender: req.body.gender || undefined,
+        source: 'reception',
         isVerified: false,
         isActive: true,
       });

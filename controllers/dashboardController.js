@@ -21,7 +21,7 @@ const Branch = require('../models/Branch');
 const ZenotiGuestData = require('../models/ZenotiGuestData');
 const { consultationIdsByKind } = require('../utils/listFilters');
 
-const CONSULT_RX = /consultation/i;
+const CONSULT_RX = /consult|counsel/i;
 const dayKey = (d) => { const x = new Date(d); x.setMinutes(x.getMinutes() - x.getTimezoneOffset()); return x.toISOString().slice(0, 10); };
 const sum = (arr, f) => arr.reduce((n, x) => n + (Number(f(x)) || 0), 0);
 const round = (n) => Math.round((Number(n) || 0) * 100) / 100;

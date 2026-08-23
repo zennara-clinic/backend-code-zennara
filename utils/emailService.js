@@ -737,3 +737,36 @@ exports.sendRefundProcessedEmail = async (email, customerName, orderData) => {
     throw error;
   }
 };
+
+/**
+ * Sent when reception checks a guest in or out WITHOUT a code (manual override),
+ * so the guest always knows their session was started/closed on their behalf.
+ */
+exports.sendManualCheckNotice = async (email, fullName, { kind, treatment, location, referenceNumber, at }) => {
+  const GREEN = '#032F22';
+  const isOut = kind === 'checkout';
+  const line = isOut
+    ? 'You are checked out without code for this session.'
+    : 'You are checked in without code for this session.';
+  const title = isOut ? 'Session completed' : 'Session started';
+  const when = at ? new Date(at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : '';
+  const html = `
+  <div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;">
+    <div style="background:${GREEN};padding:22px 24px;border-radius:14px 14px 0 0;">
+      <div style="color:#ffffff;font-size:18px;font-weight:700;letter-spacing:0.5px;">ZENNARA</div>
+      <div style="color:#E0C391;font-size:12px;margin-top:2px;">${title}</div>
+    </div>
+    <div style="padding:24px;border:1px solid #eee;border-top:0;border-radius:0 0 14px 14px;">
+      <p style="color:#111714;font-size:14px;">Hi ${esc(fullName) || 'there'},</p>
+      <p style="color:#111714;font-size:15px;font-weight:600;line-height:22px;">${line}</p>
+      <table style="width:100%;border-collapse:collapse;margin-top:8px;">
+        ${treatment ? `<tr><td style="padding:6px 0;color:#7A827E;font-size:13px;">Session</td><td style="padding:6px 0;color:#111714;font-size:13px;font-weight:600;text-align:right;">${esc(treatment)}</td></tr>` : ''}
+        ${location ? `<tr><td style="padding:6px 0;color:#7A827E;font-size:13px;">Center</td><td style="padding:6px 0;color:#111714;font-size:13px;font-weight:600;text-align:right;">${esc(location)}</td></tr>` : ''}
+        ${when ? `<tr><td style="padding:6px 0;color:#7A827E;font-size:13px;">Time</td><td style="padding:6px 0;color:#111714;font-size:13px;font-weight:600;text-align:right;">${esc(when)}</td></tr>` : ''}
+        ${referenceNumber ? `<tr><td style="padding:6px 0;color:#7A827E;font-size:13px;">Reference</td><td style="padding:6px 0;color:#111714;font-size:13px;font-weight:600;text-align:right;">${esc(referenceNumber)}</td></tr>` : ''}
+      </table>
+      <p style="color:#7A827E;font-size:11.5px;line-height:17px;margin-top:18px;">If this wasn't you, please tell the reception team right away.</p>
+    </div>
+  </div>`;
+  return sendEmail(email, `${title} — Zennara${referenceNumber ? ` [${referenceNumber}]` : ''}`, html);
+};

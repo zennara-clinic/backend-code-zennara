@@ -55,7 +55,7 @@ const UserSchema = new mongoose.Schema({
   // 'zenoti' = auto-provisioned on first login from an existing Zenoti guest.
   source: {
     type: String,
-    enum: ['app', 'zenoti'],
+    enum: ['app', 'zenoti', 'reception'],
     default: 'app'
   },
   // The Zenoti guest id this account is linked to (if any). Sparse + unique so
@@ -137,11 +137,11 @@ const UserSchema = new mongoose.Schema({
   // required for app-originated accounts and can be completed later in-app.
   dateOfBirth: {
     type: String,
-    required: [function () { return this.source !== 'zenoti'; }, 'Date of birth is required']
+    required: [function () { return this.source === 'app'; }, 'Date of birth is required']
   },
   gender: {
     type: String,
-    required: [function () { return this.source !== 'zenoti'; }, 'Gender is required'],
+    required: [function () { return this.source === 'app'; }, 'Gender is required'],
     enum: ['Male', 'Female', 'Other']
   },
   

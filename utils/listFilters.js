@@ -20,7 +20,7 @@ const isoDate = (d) => d.toISOString().slice(0, 10);
  * `isConsultationEntry` rule (category "Consultation(s)" or a name containing
  * "consultation") so the panel and the app agree on what a "consultation" is.
  */
-const CONSULT_RX = /consultation/i;
+const CONSULT_RX = /consult|counsel/i;
 async function consultationIdsByKind() {
   const all = await Consultation.find({}).select('_id name category').lean();
   const consult = [];
@@ -170,7 +170,7 @@ async function buildUserFilter(q) {
 
   if (q.memberType && q.memberType !== 'All Members') filter.memberType = q.memberType;
   if (q.location && q.location !== 'All Locations') { const l = list(q.location); filter.location = l.length > 1 ? { $in: l } : l[0]; }
-  if (q.source === 'app' || q.source === 'zenoti') filter.source = q.source;
+  if (q.source === 'app' || q.source === 'zenoti' || q.source === 'reception') filter.source = q.source;
   if (q.gender) { const g = list(q.gender); filter.gender = g.length > 1 ? { $in: g } : g[0]; }
   if (q.isActive === 'true') filter.isActive = { $ne: false };
   if (q.isActive === 'false') filter.isActive = false;
