@@ -1,4 +1,5 @@
 const Booking = require('../models/Booking');
+const { buildBookingQuery } = require('../utils/listFilters');
 const Consultation = require('../models/Consultation');
 const User = require('../models/User');
 const Branch = require('../models/Branch');
@@ -901,51 +902,10 @@ exports.rateBooking = async (req, res) => {
 // @access  Private (Admin)
 exports.getAllBookingsAdmin = async (req, res) => {
   try {
-    const { status, location, branchId, date, startDate: from, endDate: to, search, userId, specialistId, therapistId, page, limit } = req.query;
+    const { page, limit } = req.query;
 
-    // Build query
-    const query = {};
-
-    if (status && status !== 'all') {
-      query.status = status;
-    }
-
-    if (branchId) {
-      query.branchId = branchId;
-    } else if (location && location !== 'all') {
-      query.preferredLocation = location;
-    }
-
-    if (userId) query.userId = userId;
-    if (specialistId) query.specialistId = String(specialistId).toLowerCase();
-    if (therapistId) query.therapistId = therapistId;
-
-    if (date) {
-      const startDate = new Date(date);
-      startDate.setHours(0, 0, 0, 0);
-      const endDate = new Date(date);
-      endDate.setHours(23, 59, 59, 999);
-      // A rescheduled booking lives on its confirmed date, not the one first asked for.
-      query.$and = [{
-        $or: [
-          { confirmedDate: { $gte: startDate, $lte: endDate } },
-          { confirmedDate: { $in: [null, undefined] }, preferredDate: { $gte: startDate, $lte: endDate } },
-        ],
-      }];
-    } else if (from || to) {
-      query.preferredDate = {};
-      if (from) { const d = new Date(from); d.setHours(0, 0, 0, 0); query.preferredDate.$gte = d; }
-      if (to) { const d = new Date(to); d.setHours(23, 59, 59, 999); query.preferredDate.$lte = d; }
-    }
-
-    if (search) {
-      query.$or = [
-        { fullName: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-        { mobileNumber: { $regex: search, $options: 'i' } },
-        { referenceNumber: { $regex: search, $options: 'i' } }
-      ];
-    }
+    // Filters + sort are shared with the export endpoint (utils/listFilters).
+    const { query, sort } = await buildBookingQuery(req.query);
 
     // Pagination is opt-in (`limit`) so existing callers keep the full list.
     const perPage = limit ? Math.min(500, Math.max(1, parseInt(limit, 10))) : null;
@@ -955,7 +915,7 @@ exports.getAllBookingsAdmin = async (req, res) => {
       .populate('consultationId', 'name category price image')
       .populate('userId', 'fullName email phone patientId')
       .populate('branchId', 'name address')
-      .sort({ createdAt: -1 })
+      .sort(sort)
       .select('-__v');
     if (perPage) find = find.skip((pageNo - 1) * perPage).limit(perPage);
 
@@ -983,6 +943,67 @@ exports.getAllBookingsAdmin = async (req, res) => {
       success: false,
       message: 'Failed to fetch bookings'
     });
+  }
+};
+
+// @desc    Export bookings matching the same filters as the list (Admin)
+// @route   GET /api/bookings/admin/export
+// @access  Private (Admin)
+exports.exportBookingsAdmin = async (req, res) => {
+  try {
+    const { query, sort } = await buildBookingQuery(req.query);
+    const limit = Math.min(20000, Math.max(1, parseInt(req.query.limit || '20000', 10)));
+    const bookings = await Booking.find(query)
+      .populate('consultationId', 'name category type price')
+      .populate('userId', 'fullName email phone patientId memberType')
+      .populate('branchId', 'name')
+      .sort(sort)
+      .limit(limit)
+      .lean();
+
+    const fmtDate = (d) => (d ? new Date(d).toISOString().slice(0, 10) : '');
+    const fmtWhen = (d) => (d ? new Date(d).toISOString().replace('T', ' ').slice(0, 16) : '');
+    const rows = bookings.map((b) => {
+      const slotDate = b.confirmedDate || b.preferredDate;
+      const slotTime = b.confirmedTime || b.slotTime || (b.preferredTimeSlots && b.preferredTimeSlots[0]) || '';
+      return {
+        'Reference': b.referenceNumber || '',
+        'Guest': (b.userId && b.userId.fullName) || b.fullName || '',
+        'Patient ID': (b.userId && b.userId.patientId) || '',
+        'Phone': b.mobileNumber || (b.userId && b.userId.phone) || '',
+        'Email': /@guest\.zennara\.in$/i.test(b.email || '') ? '' : (b.email || ''),
+        'Membership': (b.userId && b.userId.memberType) || '',
+        'Service': (b.consultationId && b.consultationId.name) || b.externalServiceName || '',
+        'Category': (b.consultationId && b.consultationId.category) || b.externalServiceCategory || '',
+        'Kind': /consultation/i.test(((b.consultationId && (b.consultationId.category + ' ' + b.consultationId.name)) || b.externalServiceName || '')) ? 'Consultation' : 'Treatment',
+        'Centre': (b.branchId && b.branchId.name) || b.preferredLocation || '',
+        'Date': fmtDate(slotDate),
+        'Time': slotTime,
+        'Status': b.status,
+        'Doctor': b.specialistName || '',
+        'Therapist': b.therapistName || '',
+        'Room': b.room || '',
+        'Source': b.source || 'app',
+        'Package': b.isPackageIncluded ? 'Yes' : 'No',
+        'Amount': b.amount || 0,
+        'Payment Status': b.paymentStatus || '',
+        'Payment Method': b.paymentMethod || '',
+        'Paid At': fmtWhen(b.paidAt),
+        'Checked In': fmtWhen(b.checkInTime),
+        'Checked Out': fmtWhen(b.checkOutTime),
+        'Session Minutes': b.sessionDuration || '',
+        'Rating': b.rating || '',
+        'Cancellation Reason': b.cancellationReason || '',
+        'Booked On': fmtWhen(b.createdAt),
+        'Notes': b.notes || '',
+      };
+    });
+    const fields = String(req.query.fields || '').split(',').map((f) => f.trim()).filter(Boolean);
+    const out = fields.length ? rows.map((r) => Object.fromEntries(fields.filter((f) => f in r).map((f) => [f, r[f]]))) : rows;
+    res.status(200).json({ success: true, count: out.length, data: out });
+  } catch (error) {
+    console.error('❌ Export bookings failed:', error);
+    res.status(500).json({ success: false, message: 'Failed to export bookings' });
   }
 };
 
@@ -1231,15 +1252,23 @@ exports.checkInBookingAdmin = async (req, res) => {
       });
     }
 
-    if (!['Confirmed', 'Rescheduled'].includes(booking.status)) {
+    if (!['Confirmed', 'Rescheduled', 'No Show'].includes(booking.status)) {
       return res.status(400).json({
         success: false,
         message: 'Only confirmed bookings can be checked in'
       });
     }
 
+    // Manual (no-code) check-in: used when the guest has no app and no way to
+    // receive the code. Always recorded with who did it and why.
+    const reason = String((req.body && req.body.reason) || '').trim();
+    if (!reason) {
+      return res.status(400).json({ success: false, message: 'A reason is required to check in without a code.' });
+    }
     booking.status = 'In Progress';
     booking.checkInTime = new Date();
+    booking.checkInCode = null;
+    booking.manualCheckIn = { reason, by: req.admin && req.admin._id, byName: req.admin && req.admin.name, at: new Date() };
 
     await booking.save();
 
@@ -1329,8 +1358,14 @@ exports.checkOutBookingAdmin = async (req, res) => {
       });
     }
 
+    const reason = String((req.body && req.body.reason) || '').trim();
+    if (!reason) {
+      return res.status(400).json({ success: false, message: 'A reason is required to check out without a code.' });
+    }
     booking.status = 'Completed';
     booking.checkOutTime = new Date();
+    booking.checkOutCode = null;
+    booking.manualCheckOut = { reason, by: req.admin && req.admin._id, byName: req.admin && req.admin.name, at: new Date() };
     if (booking.checkInTime) {
       booking.sessionDuration = Math.max(0, Math.round((booking.checkOutTime - booking.checkInTime) / 60000));
     }
@@ -1470,6 +1505,88 @@ async function deliverVisitCode(booking, kind, code) {
     console.error('⚠️ Visit-code WhatsApp failed:', e.message);
   }
 }
+
+// @desc    Staff send (or resend) the guest's check-in / check-out code by email / WhatsApp
+// @route   POST /api/bookings/admin/:id/visit-code
+// @access  Private (Admin)
+// For guests who don't use the app: the code is the SAME one the app would show,
+// so a guest who later opens the app sees the code they were emailed.
+exports.sendVisitCodeAdmin = async (req, res) => {
+  try {
+    const { kind = 'checkin', channel = 'email', regenerate = false } = req.body || {};
+    const booking = await Booking.findById(req.params.id).populate('consultationId', 'name');
+    if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
+
+    const isOut = kind === 'checkout';
+    if (isOut && booking.status !== 'In Progress') {
+      return res.status(400).json({ success: false, message: 'A check-out code only applies once the guest is checked in.' });
+    }
+    if (!isOut && !['Confirmed', 'No Show', 'Rescheduled', 'Awaiting Confirmation'].includes(booking.status)) {
+      return res.status(400).json({ success: false, message: `Cannot send a check-in code for a booking that is ${booking.status}.` });
+    }
+
+    const codeField = isOut ? 'checkOutCode' : 'checkInCode';
+    const atField = isOut ? 'checkOutCodeAt' : 'checkInCodeAt';
+    if (!booking[codeField] || regenerate) {
+      booking[codeField] = genVisitCode();
+      booking[atField] = new Date();
+    }
+    const code = booking[codeField];
+    const label = isOut ? 'check-out' : 'check-in';
+    const channels = channel === 'both' ? ['email', 'whatsapp'] : [channel];
+    const delivered = [];
+    const failed = [];
+
+    const realEmail = booking.email && !/@guest\.zennara\.in$/i.test(booking.email);
+    if (channels.includes('email')) {
+      if (!realEmail) failed.push({ channel: 'email', reason: 'No email on file for this guest' });
+      else {
+        try {
+          await emailService.sendVisitCodeEmail(booking.email, booking.fullName, {
+            code, kind: label, referenceNumber: booking.referenceNumber,
+            treatment: booking.consultationId && booking.consultationId.name,
+            location: booking.preferredLocation,
+          });
+          delivered.push('email');
+        } catch (e) { failed.push({ channel: 'email', reason: e.message }); }
+      }
+    }
+    if (channels.includes('whatsapp')) {
+      if (!booking.mobileNumber) failed.push({ channel: 'whatsapp', reason: 'No mobile number on file' });
+      else {
+        try {
+          const tail = isOut ? 'to complete your visit' : 'to check in';
+          const r = await whatsappService.sendMessage(booking.mobileNumber, `Your Zennara ${label} code is ${code}. Show it at reception ${tail}. (Ref ${booking.referenceNumber})`);
+          if (r && r.success === false) failed.push({ channel: 'whatsapp', reason: r.error || 'WhatsApp send failed' });
+          else delivered.push('whatsapp');
+        } catch (e) { failed.push({ channel: 'whatsapp', reason: e.message }); }
+      }
+    }
+
+    booking.visitCodeLog = booking.visitCodeLog || [];
+    booking.visitCodeLog.push({
+      kind: isOut ? 'checkout' : 'checkin',
+      channels: delivered,
+      failed: failed.map((f) => f.channel),
+      at: new Date(),
+      by: req.admin ? req.admin._id : null,
+      byName: req.admin ? req.admin.name : null,
+    });
+    if (delivered.length) booking[isOut ? 'checkOutCodeSentAt' : 'checkInCodeSentAt'] = new Date();
+    await booking.save();
+
+    res.status(delivered.length ? 200 : 502).json({
+      success: delivered.length > 0,
+      message: delivered.length
+        ? `${isOut ? 'Check-out' : 'Check-in'} code sent by ${delivered.join(' and ')}.`
+        : `Could not send the code: ${failed.map((f) => f.reason).join('; ')}`,
+      data: { kind: isOut ? 'checkout' : 'checkin', delivered, failed, sentAt: new Date(), log: booking.visitCodeLog },
+    });
+  } catch (error) {
+    console.error('❌ Send visit code failed:', error);
+    res.status(500).json({ success: false, message: 'Failed to send the visit code' });
+  }
+};
 
 // @desc    Get / generate the guest's current visit code
 // @route   GET /api/bookings/:id/visit-code

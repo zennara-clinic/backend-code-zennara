@@ -34,6 +34,7 @@ router.get('/available-slots', getAvailableTimeSlots);
 
 // Admin routes
 router.get('/admin/all', protectAdmin, getAllBookingsAdmin);
+router.get('/admin/export', protectAdmin, bookingController.exportBookingsAdmin);
 // Reception creates walk-in and phone bookings here.
 router.post('/admin', protectAdmin, auditLog('BOOKING_CREATED', 'BOOKING'), createBookingAdmin);
 router.get('/admin/:id', protectAdmin, getBookingByIdAdmin);
@@ -41,6 +42,7 @@ router.put('/admin/:id/confirm', protectAdmin, auditLog('BOOKING_CONFIRMED', 'BO
 router.put('/admin/:id/checkin', protectAdmin, auditLog('BOOKING_CHECKED_IN', 'BOOKING'), checkInBookingAdmin);
 router.put('/admin/:id/checkout', protectAdmin, auditLog('BOOKING_CHECKED_OUT', 'BOOKING'), checkOutBookingAdmin);
 // OTP-gated check-in/out: staff enter the code the guest reads to them.
+router.post('/admin/:id/visit-code', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.sendVisitCodeAdmin);
 router.put('/admin/:id/verify-checkin', protectAdmin, auditLog('BOOKING_CHECKED_IN', 'BOOKING'), verifyCheckInCode);
 router.put('/admin/:id/verify-checkout', protectAdmin, auditLog('BOOKING_CHECKED_OUT', 'BOOKING'), verifyCheckOutCode);
 router.put('/admin/:id/no-show', protectAdmin, auditLog('BOOKING_NO_SHOW', 'BOOKING'), markNoShow);

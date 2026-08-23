@@ -1,4 +1,5 @@
 const User = require('../models/User');
+const { buildUserFilter } = require('../utils/listFilters');
 const DeletedAccountArchive = require('../models/DeletedAccountArchive');
 const accountDeletion = require('../services/accountDeletionService');
 
@@ -7,55 +8,11 @@ const accountDeletion = require('../services/accountDeletionService');
 // @access  Private (Admin only)
 exports.getAllUsers = async (req, res) => {
   try {
-    const { 
-      memberType, 
-      location, 
-      search,
-      source,
-      hasFlags,
-      page = 1,
-      limit = 10,
-      sortBy = 'createdAt',
-      sortOrder = 'desc'
-    } = req.query;
+    const { page = 1, limit = 10 } = req.query;
 
-    // Build filter object
-    const filter = {};
-    
-    if (memberType && memberType !== 'All Members') {
-      filter.memberType = memberType;
-    }
-    
-    if (location && location !== 'All Locations') {
-      filter.location = location;
-    }
-
-    // 'app' = registered in the app, 'zenoti' = mirrored from the clinic CRM.
-    if (source === 'app' || source === 'zenoti') {
-      filter.source = source;
-    }
-    
-    const compoundFilters = [];
-
-    // Search by name, email, or phone
-    if (search) {
-      compoundFilters.push({ $or: [
-        { fullName: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } }
-      ] });
-    }
-
-    // Clinical/account flags must be filtered before skip/limit. Doing this in
-    // the panel only filtered the current page and produced incorrect totals.
-    if (hasFlags === 'true') {
-      compoundFilters.push({ $or: [
-        { drugAllergies: { $regex: /\S/ } },
-        { medicalHistory: { $regex: /\S/ } },
-        { isActive: false },
-      ] });
-    }
-    if (compoundFilters.length) filter.$and = compoundFilters;
+    // All filtering/sorting lives in utils/listFilters so the export endpoint
+    // produces exactly what the list shows.
+    const { filter, sort } = await buildUserFilter(req.query);
 
     // Calculate pagination
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -63,7 +20,7 @@ exports.getAllUsers = async (req, res) => {
     // Get users with pagination
     const users = await User.find(filter)
       .select('-otp -otpExpiry -__v')
-      .sort({ [sortBy]: sortOrder === 'desc' ? -1 : 1 })
+      .sort(sort)
       .skip(skip)
       .limit(parseInt(limit))
       .lean();
@@ -109,6 +66,10 @@ exports.getAllUsers = async (req, res) => {
       isActive: user.isActive !== undefined ? user.isActive : true,
       isVerified: user.isVerified,
       source: user.source || 'app',
+      zenMembershipStartDate: user.zenMembershipStartDate || null,
+      zenMembershipExpiryDate: user.zenMembershipExpiryDate || null,
+      smoking: user.smoking ?? null,
+      drinking: user.drinking ?? null,
       zenotiGuestId: user.zenotiGuestId || null,
       zenotiSyncedAt: user.zenotiSyncedAt || null,
       createdAt: user.createdAt,
@@ -675,43 +636,52 @@ exports.toggleUserStatus = async (req, res) => {
 // @access  Private (Admin only)
 exports.exportUsers = async (req, res) => {
   try {
-    const { memberType, location } = req.query;
-
-    const filter = {};
-    if (memberType && memberType !== 'All Members') {
-      filter.memberType = memberType;
-    }
-    if (location && location !== 'All Locations') {
-      filter.location = location;
-    }
+    const { filter, sort } = await buildUserFilter(req.query);
+    const limit = Math.min(20000, Math.max(1, parseInt(req.query.limit || '20000', 10)));
 
     const users = await User.find(filter)
-      .select('patientId fullName email phone location memberType dateOfBirth gender totalVisits totalSpent createdAt')
+      .select('patientId fullName email phone location memberType zenMembershipStartDate zenMembershipExpiryDate dateOfBirth gender source totalVisits totalSpent appOpenCount drugAllergies medicalHistory smoking drinking isActive isVerified createdAt lastLogin')
+      .sort(sort)
+      .limit(limit)
       .lean();
 
+    const fmtDate = (d) => (d ? new Date(d).toISOString().slice(0, 10) : '');
+    const age = (dob) => { if (!dob) return ''; const d = new Date(dob); if (Number.isNaN(d.getTime())) return ''; const t = new Date(); let a = t.getFullYear() - d.getFullYear(); if (t < new Date(t.getFullYear(), d.getMonth(), d.getDate())) a -= 1; return a; };
     const formattedData = users.map(user => ({
       'Patient ID': user.patientId || `PAT${String(user._id).slice(-6).toUpperCase()}`,
       'Full Name': user.fullName,
-      'Email': user.email,
+      'Email': /@guest\.zennara\.in$/i.test(user.email || '') ? '' : user.email,
       'Phone': user.phone,
-      'Location': user.location,
+      'Centre': user.location || '',
+      'Source': user.source === 'zenoti' ? 'Clinic (Zenoti)' : 'App',
       'Member Type': user.memberType,
-      'Date of Birth': user.dateOfBirth,
-      'Gender': user.gender,
+      'Zen Since': fmtDate(user.zenMembershipStartDate),
+      'Zen Expires': fmtDate(user.zenMembershipExpiryDate),
+      'Gender': user.gender || '',
+      'Date of Birth': fmtDate(user.dateOfBirth),
+      'Age': age(user.dateOfBirth),
       'Total Visits': user.totalVisits || 0,
       'Total Spent': user.totalSpent || 0,
-      'Registered On': new Date(user.createdAt).toLocaleDateString()
+      'App Opens': user.appOpenCount || 0,
+      'Drug Allergies': user.drugAllergies || '',
+      'Medical History': user.medicalHistory || '',
+      'Smoking': user.smoking ?? '',
+      'Drinking': user.drinking ?? '',
+      'Active': user.isActive === false ? 'No' : 'Yes',
+      'Verified': user.isVerified ? 'Yes' : 'No',
+      'Registered On': fmtDate(user.createdAt),
+      'Last Login': fmtDate(user.lastLogin),
     }));
 
-    res.status(200).json({
-      success: true,
-      data: formattedData
-    });
+    // `fields` (comma-separated column labels) trims the CSV to what staff picked.
+    const fields = String(req.query.fields || '').split(',').map((f) => f.trim()).filter(Boolean);
+    const rows = fields.length
+      ? formattedData.map((r) => Object.fromEntries(fields.filter((f) => f in r).map((f) => [f, r[f]])))
+      : formattedData;
+
+    res.status(200).json({ success: true, count: rows.length, data: rows });
   } catch (error) {
     console.error('❌ Export users failed:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to export users'
-    });
+    res.status(500).json({ success: false, message: 'Failed to export users' });
   }
 };

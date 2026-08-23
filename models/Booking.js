@@ -180,6 +180,20 @@ const bookingSchema = new mongoose.Schema({
   checkInCodeAt: { type: Date, default: null },
   checkOutCode: { type: String, default: null },
   checkOutCodeAt: { type: Date, default: null },
+  // When reception last pushed the code to the guest (guests without the app).
+  checkInCodeSentAt: { type: Date, default: null },
+  checkOutCodeSentAt: { type: Date, default: null },
+  visitCodeLog: [{
+    kind: { type: String, enum: ['checkin', 'checkout'] },
+    channels: [String],
+    failed: [String],
+    at: Date,
+    by: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+    byName: String,
+  }],
+  // Set when staff checked the guest in/out without a code (audited override).
+  manualCheckIn: { reason: String, by: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' }, byName: String, at: Date },
+  manualCheckOut: { reason: String, by: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' }, byName: String, at: Date },
 
   // Package linkage — set when this appointment was auto-created from a package
   // session (24h before its scheduled date). Such bookings are free (amount 0)
