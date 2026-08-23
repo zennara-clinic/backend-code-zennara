@@ -143,6 +143,24 @@ const appCustomizationSchema = new mongoose.Schema({
    * used to be a literal in the therapist screen; it lives here so the clinic
    * can change it without a deploy.
    */
+  /**
+   * Remote design system for the app. `colors` is a flat map of theme tokens
+   * (dot paths for text.*, e.g. "text.primary") to colour strings; empty means
+   * the bundled palette. `typography.fontScale` multiplies every type size
+   * (0.85–1.3). Applied by the app at launch and on refresh.
+   */
+  appearance: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {},
+  },
+  /**
+   * Copy overrides: key → text, keys from the app's constants/copy.ts registry
+   * (mirrored in the panel's editor). Empty string = use the bundled wording.
+   */
+  copy: {
+    type: mongoose.Schema.Types.Mixed,
+    default: {},
+  },
   membership: {
     discountPercent: { type: Number, default: 15, min: 0, max: 100 },
     priceInr: { type: Number, default: 110000 },
@@ -336,6 +354,8 @@ appCustomizationSchema.methods.updateSettings = async function(updates, adminId)
       // Handle root-level fields (appLogo, etc.)
       this[screen] = updates[screen];
     }
+    // Mixed fields (appearance, copy) don't track nested mutation on their own.
+    if (screen === 'appearance' || screen === 'copy') this.markModified(screen);
   });
 
   this.lastUpdatedBy = adminId;

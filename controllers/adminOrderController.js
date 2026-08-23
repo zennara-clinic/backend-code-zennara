@@ -3,6 +3,10 @@ const Product = require('../models/Product');
 const NotificationHelper = require('../utils/notificationHelper');
 const whatsappService = require('../services/whatsappService');
 const emailService = require('../utils/emailService');
+const {
+  restoreStockOnce,
+  initiateOnlineRefund,
+} = require('../services/orderLifecycleService');
 
 // @desc    Get all orders (Admin)
 // @route   GET /api/admin/product-orders
@@ -119,13 +123,42 @@ exports.updateOrderStatus = async (req, res) => {
     
     const validStatuses = [
       'Order Placed', 'Confirmed', 'Processing', 'Packed', 
-      'Shipped', 'Out for Delivery', 'Delivered', 'Cancelled', 'Returned'
+      'Shipped', 'Out for Delivery', 'Delivery Failed', 'Delivered',
+      'Cancelled', 'Return Requested', 'Returned'
     ];
     
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
         success: false,
         message: 'Invalid order status'
+      });
+    }
+
+    if (status === order.orderStatus) {
+      return res.json({ success: true, message: 'Order already has this status', data: order });
+    }
+    if (status === 'Delivery Failed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Use the failed-delivery action so the attempt and reason are recorded',
+      });
+    }
+    if (['Return Requested', 'Returned'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Use the return workflow to update this status',
+      });
+    }
+    if (['Delivered', 'Return Requested', 'Returned', 'Cancelled'].includes(order.orderStatus)) {
+      return res.status(409).json({
+        success: false,
+        message: `A ${order.orderStatus.toLowerCase()} order cannot move to ${status}`,
+      });
+    }
+    if (order.orderStatus === 'Delivery Failed' && status !== 'Cancelled') {
+      return res.status(409).json({
+        success: false,
+        message: 'Reassign this failed delivery before continuing fulfilment',
       });
     }
     
@@ -138,6 +171,13 @@ exports.updateOrderStatus = async (req, res) => {
     // Get current and new status indices
     const currentStatusIndex = statusSequence.indexOf(order.orderStatus);
     const newStatusIndex = statusSequence.indexOf(status);
+
+    if (status !== 'Cancelled' && currentStatusIndex !== -1 && newStatusIndex <= currentStatusIndex) {
+      return res.status(409).json({
+        success: false,
+        message: 'Fulfilment statuses can only move forward',
+      });
+    }
     
     // Store old status for notification (BEFORE changing it)
     const oldStatus = order.orderStatus;
@@ -176,24 +216,42 @@ exports.updateOrderStatus = async (req, res) => {
     // Handle specific status updates
     if (status === 'Delivered') {
       order.deliveredAt = new Date();
-      order.paymentStatus = 'Paid'; // Mark as paid when delivered (COD)
+      if (order.paymentMethod === 'COD') order.paymentStatus = 'Paid';
     }
     
     if (status === 'Cancelled' && !order.cancelledAt) {
       order.cancelledAt = new Date();
       order.cancelReason = note || 'Cancelled by admin';
       
-      // Restore stock
-      for (const item of order.items) {
-        const product = await Product.findById(item.productId);
-        if (product) {
-          product.stock += item.quantity;
-          await product.save();
-        }
-      }
     }
     
     await order.save();
+
+    let refundError = null;
+    if (status === 'Cancelled') {
+      await restoreStockOnce(order._id, 'Admin cancellation');
+      if (order.paymentStatus === 'Paid' && order.paymentMethod !== 'COD') {
+        try {
+          await initiateOnlineRefund(order._id, {
+            trigger: 'admin_cancellation',
+            actorId: req.admin?._id || req.user?._id,
+            notes: note || 'Automatic refund after admin cancellation',
+          });
+        } catch (error) {
+          refundError = error.message;
+          console.error('Automatic admin cancellation refund failed:', error.message);
+        }
+      }
+    }
+
+    const lifecycleState = await ProductOrder.findById(order._id)
+      .select('paymentStatus refundDetails stockRestoredAt stockRestorationReason');
+    if (lifecycleState) {
+      order.paymentStatus = lifecycleState.paymentStatus;
+      order.refundDetails = lifecycleState.refundDetails;
+      order.stockRestoredAt = lifecycleState.stockRestoredAt;
+      order.stockRestorationReason = lifecycleState.stockRestorationReason;
+    }
     
     // Populate before sending response
     await order.populate('userId', 'fullName email phone');
@@ -320,9 +378,14 @@ exports.updateOrderStatus = async (req, res) => {
     
     res.json({
       success: true,
-      message: 'Order status updated successfully',
+      message: refundError
+        ? 'Order cancelled and stock restored. The automatic refund needs attention.'
+        : status === 'Cancelled' && order.refundDetails?.status === 'Processing'
+          ? 'Order cancelled, stock restored, and refund initiated.'
+          : 'Order status updated successfully',
       data: order,
-      notificationSent: sendNotification
+      notificationSent: sendNotification,
+      refundRequiresAttention: Boolean(refundError)
     });
   } catch (error) {
     console.error('Update order status error:', error);
@@ -331,6 +394,117 @@ exports.updateOrderStatus = async (req, res) => {
       message: 'Failed to update order status',
       error: error.message
     });
+  }
+};
+
+// @desc    Mark an out-for-delivery attempt as failed
+// @route   PUT /api/admin/product-orders/:id/delivery-failed
+// @access  Private/Admin
+exports.markDeliveryFailed = async (req, res) => {
+  try {
+    const reason = String(req.body?.reason || '').trim();
+    const note = String(req.body?.note || '').trim();
+    if (reason.length < 4) {
+      return res.status(400).json({ success: false, message: 'A delivery failure reason is required' });
+    }
+
+    const order = await ProductOrder.findById(req.params.id);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (order.orderStatus !== 'Out for Delivery') {
+      return res.status(409).json({
+        success: false,
+        message: 'Only an order that is out for delivery can be marked failed',
+      });
+    }
+
+    const attempt = Math.max(1, Number(order.deliveryAttempt) || 1);
+    const now = new Date();
+    order.orderStatus = 'Delivery Failed';
+    order.deliveryAttempt = attempt;
+    order.deliveryFailedAt = now;
+    order.deliveryFailureReason = reason;
+    order.deliveryFailures.push({
+      attempt,
+      failedAt: now,
+      reason,
+      note,
+      deliveryPartner: order.deliveryPartner,
+      deliveryPartnerPhone: order.deliveryPartnerPhone,
+      courier: order.courier,
+      trackingId: order.trackingId,
+      markedBy: req.admin?._id || req.user?._id,
+    });
+    order.statusHistory.push({
+      status: 'Delivery Failed',
+      timestamp: now,
+      note: `Delivery attempt ${attempt} failed: ${reason}${note ? ` · ${note}` : ''}`,
+    });
+    await order.save();
+
+    return res.json({
+      success: true,
+      message: `Delivery attempt ${attempt} marked failed. Reassign it or cancel the order.`,
+      data: order,
+    });
+  } catch (error) {
+    console.error('Mark delivery failed error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to mark delivery attempt', error: error.message });
+  }
+};
+
+// @desc    Assign or reassign delivery and start a new attempt
+// @route   PUT /api/admin/product-orders/:id/assign-delivery
+// @access  Private/Admin
+exports.assignDelivery = async (req, res) => {
+  try {
+    const deliveryPartner = String(req.body?.deliveryPartner || '').trim();
+    const courier = String(req.body?.courier || '').trim();
+    if (!deliveryPartner && !courier) {
+      return res.status(400).json({ success: false, message: 'Enter a delivery partner or courier' });
+    }
+
+    const order = await ProductOrder.findById(req.params.id);
+    if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    if (!['Shipped', 'Delivery Failed'].includes(order.orderStatus)) {
+      return res.status(409).json({
+        success: false,
+        message: 'Delivery can be assigned after shipping or reassigned after a failed attempt',
+      });
+    }
+
+    const wasFailed = order.orderStatus === 'Delivery Failed';
+    const attempt = wasFailed
+      ? Math.max(1, Number(order.deliveryAttempt) || 1) + 1
+      : Math.max(1, Number(order.deliveryAttempt) || 1);
+    const now = new Date();
+    order.deliveryPartner = deliveryPartner || order.deliveryPartner;
+    order.deliveryPartnerPhone = String(req.body?.deliveryPartnerPhone || '').trim() || undefined;
+    order.courier = courier || order.courier;
+    order.trackingId = String(req.body?.trackingId || '').trim() || undefined;
+    order.expectedDeliveryTime = req.body?.expectedDeliveryTime
+      ? new Date(req.body.expectedDeliveryTime)
+      : undefined;
+    order.deliveryAttempt = attempt;
+    order.deliveryAssignedAt = now;
+    order.deliveryAssignedBy = req.admin?._id || req.user?._id;
+    order.deliveryFailedAt = undefined;
+    order.deliveryFailureReason = undefined;
+    order.orderStatus = 'Out for Delivery';
+    order.statusHistory.push({
+      status: 'Out for Delivery',
+      timestamp: now,
+      note: `${wasFailed ? 'Reassigned' : 'Assigned'} for delivery attempt ${attempt} to ${deliveryPartner || courier}`,
+    });
+    await order.save();
+
+    return res.json({
+      success: true,
+      message: `Delivery attempt ${attempt} assigned successfully`,
+      data: order,
+    });
+  } catch (error) {
+    console.error('Assign delivery error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to assign delivery', error: error.message });
   }
 };
 
@@ -350,6 +524,8 @@ exports.getOrderStats = async (req, res) => {
     });
     const deliveredOrders = await ProductOrder.countDocuments({ orderStatus: 'Delivered' });
     const cancelledOrders = await ProductOrder.countDocuments({ orderStatus: 'Cancelled' });
+    const failedDeliveryOrders = await ProductOrder.countDocuments({ orderStatus: 'Delivery Failed' });
+    const returnRequestedOrders = await ProductOrder.countDocuments({ orderStatus: 'Return Requested' });
     
     // Calculate total revenue
     const revenueResult = await ProductOrder.aggregate([
@@ -368,6 +544,8 @@ exports.getOrderStats = async (req, res) => {
         shippedOrders,
         deliveredOrders,
         cancelledOrders,
+        failedDeliveryOrders,
+        returnRequestedOrders,
         totalRevenue
       }
     });

@@ -1,7 +1,6 @@
 const ProductOrder = require('../models/ProductOrder');
-const Payment = require('../models/Payment');
 const User = require('../models/User');
-const razorpayService = require('../services/razorpayService');
+const { initiateOnlineRefund } = require('../services/orderLifecycleService');
 const whatsappService = require('../services/whatsappService');
 const emailService = require('../utils/emailService');
 
@@ -100,7 +99,7 @@ exports.initiateRefund = async (req, res) => {
     }
     
     // Check payment method and process accordingly
-    let refundResult;
+    let refundOrder = order;
     
     if (order.paymentMethod === 'COD') {
       console.log('Processing COD refund manually');
@@ -174,129 +173,45 @@ exports.initiateRefund = async (req, res) => {
       });
       
     } else {
-      console.log('Processing online payment refund via Razorpay');
-      
-      // Online Payment - Use Razorpay refund API
-      if (!order.razorpayPaymentId) {
-        return res.status(400).json({
-          success: false,
-          message: 'No payment ID found. Cannot process online refund.'
-        });
-      }
-      
       try {
-        // Acquire a database lock before the external API call. Two admin taps
-        // must never create two refunds for the same payment.
-        const lock = await ProductOrder.updateOne(
-          {
-            _id: order._id,
-            paymentStatus: { $ne: 'Refunded' },
-            'refundDetails.status': { $ne: 'Processing' },
-          },
-          {
-            $set: {
-              'refundDetails.status': 'Processing',
-              'refundDetails.amount': amountToRefund,
-              'refundDetails.method': 'Razorpay',
-              'refundDetails.refundInitiatedAt': new Date(),
-              'refundDetails.refundedBy': (req.admin?._id || req.user?._id),
-            },
-          }
-        );
-        if (lock.modifiedCount !== 1) {
-          return res.status(409).json({
-            success: false,
-            message: 'A refund is already being processed for this order',
-          });
-        }
-
-        // Call Razorpay refund API
-        refundResult = await razorpayService.refundPayment(
-          order.razorpayPaymentId,
-          amountToRefund
-        );
-        
-        console.log('Razorpay refund successful:', refundResult.id);
-        
-        // Update order with refund details
-        const refundCompleted = refundResult.status === 'processed';
-        order.refundDetails = {
-          method: 'Razorpay',
+        const result = await initiateOnlineRefund(order._id, {
           amount: amountToRefund,
-          status: refundCompleted ? 'Completed' : 'Processing',
-          razorpayRefundId: refundResult.id,
-          transactionId: refundResult.id,
-          refundInitiatedAt: new Date(),
-          refundCompletedAt: refundCompleted ? new Date() : undefined,
-          refundedBy: (req.admin?._id || req.user?._id),
-          notes: notes || 'Online payment refund processed via Razorpay',
-          retryCount: 0,
-          lastRetryAt: null
-        };
-
-        if (refundCompleted && amountToRefund >= Number(order.pricing.total)) {
-          order.paymentStatus = 'Refunded';
-          await Payment.findOneAndUpdate(
-            { razorpayPaymentId: order.razorpayPaymentId },
-            { status: 'refunded' }
-          );
-        }
-        
-        // Add to status history
-        order.statusHistory.push({
-          status: 'Refund Initiated',
-          timestamp: new Date(),
-          note: `Razorpay refund of Rs.${amountToRefund} initiated. Refund ID: ${refundResult.id}`,
-          initiatedBy: (req.admin?._id || req.user?._id)
+          actorId: req.admin?._id || req.user?._id,
+          trigger: 'manual',
+          notes: notes || 'Refund initiated by admin to the original payment method',
         });
-        
+        refundOrder = await ProductOrder.findById(result.order._id)
+          .populate('userId', 'fullName email phone refundBankDetails');
       } catch (error) {
-        console.error('Razorpay refund failed:', error.message);
-
-        // Once Razorpay has returned a refund ID, never unlock the row for a
-        // blind retry just because our local save failed; that could refund the
-        // customer twice. Leave it Processing for webhook reconciliation.
-        await ProductOrder.findByIdAndUpdate(order._id, {
-          $set: refundResult?.id
-            ? {
-                'refundDetails.status': 'Processing',
-                'refundDetails.razorpayRefundId': refundResult.id,
-                'refundDetails.transactionId': refundResult.id,
-                'refundDetails.failureReason': `Local reconciliation pending: ${error.message}`,
-              }
-            : {
-                'refundDetails.status': 'Failed',
-                'refundDetails.failureReason': error.message,
-              },
-        }).catch(() => {});
-        
-        return res.status(500).json({
+        return res.status(502).json({
           success: false,
-          message: refundResult?.id
-            ? 'Refund was accepted by Razorpay but local reconciliation is pending'
-            : 'Failed to process Razorpay refund',
+          message: 'Razorpay refund could not be confirmed. It is safe to retry from this order.',
           error: error.message,
           errorCode: 'RAZORPAY_REFUND_FAILED'
         });
       }
     }
-    
-    await order.save();
+
+    if (order.paymentMethod === 'COD') {
+      await order.save();
+      refundOrder = order;
+    }
     
     // Send notifications asynchronously (non-blocking)
     setImmediate(async () => {
       try {
-        const user = order.userId;
+        if (refundOrder.refundDetails?.status !== 'Completed') return;
+        const user = refundOrder.userId;
         const notificationData = {
-          customerName: order.shippingAddress.fullName,
-          orderNumber: order.orderNumber,
+          customerName: refundOrder.shippingAddress.fullName,
+          orderNumber: refundOrder.orderNumber,
           refundAmount: amountToRefund,
-          refundMethod: order.refundDetails.method,
+          refundMethod: refundOrder.refundDetails.method,
           refundDate: new Date().toLocaleDateString('en-IN', { 
             day: '2-digit', month: 'short', year: 'numeric' 
           }),
-          transactionId: order.refundDetails.transactionId || 'Will be updated soon',
-          estimatedDays: order.refundDetails.method === 'Razorpay' ? '5-7' : '2-3'
+          transactionId: refundOrder.refundDetails.transactionId || 'Will be updated soon',
+          estimatedDays: refundOrder.refundDetails.method === 'Razorpay' ? '5-7' : '2-3'
         };
         
         if (user) {
@@ -317,15 +232,15 @@ exports.initiateRefund = async (req, res) => {
     
     res.json({
       success: true,
-      message: `Refund initiated successfully via ${order.refundDetails.method}`,
+      message: `Refund initiated successfully via ${refundOrder.refundDetails.method}`,
       data: {
-        orderId: order._id,
-        orderNumber: order.orderNumber,
+        orderId: refundOrder._id,
+        orderNumber: refundOrder.orderNumber,
         refundAmount: amountToRefund,
-        refundMethod: order.refundDetails.method,
-        refundStatus: order.refundDetails.status,
-        transactionId: order.refundDetails.transactionId,
-        estimatedDays: order.refundDetails.method === 'Razorpay' ? '5-7' : '2-3'
+        refundMethod: refundOrder.refundDetails.method,
+        refundStatus: refundOrder.refundDetails.status,
+        transactionId: refundOrder.refundDetails.transactionId,
+        estimatedDays: refundOrder.refundDetails.method === 'Razorpay' ? '5-7' : '2-3'
       }
     });
     

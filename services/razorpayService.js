@@ -1,5 +1,6 @@
 const Razorpay = require('razorpay');
 const crypto = require('crypto');
+const axios = require('axios');
 
 let razorpay;
 
@@ -145,20 +146,52 @@ exports.capturePayment = async (paymentId, amount, currency = 'INR') => {
  * @param {Number} amount - Amount to refund in rupees (null for full refund)
  * @returns {Promise<Object>} Refund object
  */
-exports.refundPayment = async (paymentId, amount = null) => {
+exports.refundPayment = async (paymentId, amount = null, options = {}) => {
   try {
     if (!paymentId) throw new Error('Payment ID is required');
-    const options = {};
+    const payload = {};
     if (amount !== null && amount !== undefined) {
-      options.amount = toPaise(amount);
+      payload.amount = toPaise(amount);
     }
-    
-    const refund = await getRazorpay().payments.refund(paymentId, options);
+
+    if (options.notes && typeof options.notes === 'object') payload.notes = options.notes;
+    if (options.receipt) payload.receipt = String(options.receipt).slice(0, 40);
+
+    let refund;
+    if (options.idempotencyKey) {
+      getRazorpay(); // Validate credentials before making the direct idempotent request.
+      const idempotencyKey = String(options.idempotencyKey);
+      if (!/^[A-Za-z0-9_-]{10,}$/.test(idempotencyKey)) {
+        throw new Error('Refund idempotency key is invalid');
+      }
+
+      const response = await axios.post(
+        `https://api.razorpay.com/v1/payments/${encodeURIComponent(paymentId)}/refund`,
+        payload,
+        {
+          auth: {
+            username: process.env.RAZORPAY_KEY_ID,
+            password: process.env.RAZORPAY_KEY_SECRET,
+          },
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Refund-Idempotency': idempotencyKey,
+          },
+          timeout: 20000,
+        }
+      );
+      refund = response.data;
+    } else {
+      refund = await getRazorpay().payments.refund(paymentId, payload);
+    }
     console.log('✅ Payment refunded:', paymentId);
     return refund;
   } catch (error) {
     console.error('❌ Error refunding payment:', error);
-    throw new Error(`Failed to refund payment: ${error.message}`);
+    const detail = error.response?.data?.error?.description
+      || error.error?.description
+      || error.message;
+    throw new Error(`Failed to refund payment: ${detail}`);
   }
 };
 

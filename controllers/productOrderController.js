@@ -8,6 +8,10 @@ const emailService = require('../utils/emailService');
 const logger = require('../utils/logger');
 const { computeOrderPricing } = require('../utils/orderPricing');
 const { validateOwnership } = require('../middleware/securityMiddleware');
+const {
+  restoreStockOnce,
+  initiateOnlineRefund,
+} = require('../services/orderLifecycleService');
 
 // @desc    Create new product order
 // @route   POST /api/product-orders
@@ -588,44 +592,45 @@ exports.cancelOrder = async (req, res) => {
       });
     }
     
-    // Check if order can be cancelled (not delivered)
-    if (order.orderStatus === 'Delivered') {
+    const customerCancellable = ['Order Placed', 'Confirmed', 'Processing', 'Packed'];
+    if (order.orderStatus !== 'Cancelled' && !customerCancellable.includes(order.orderStatus)) {
       return res.status(400).json({
         success: false,
-        message: 'Cannot cancel delivered orders. Please request a return instead.'
+        message: order.orderStatus === 'Delivered'
+          ? 'Cannot cancel a delivered order. Please request a return instead.'
+          : 'This order has already shipped. Please contact the clinic for help.'
       });
     }
-    
-    if (order.orderStatus === 'Cancelled') {
-      return res.status(400).json({
-        success: false,
-        message: 'Order is already cancelled'
+
+    if (order.orderStatus !== 'Cancelled') {
+      order.orderStatus = 'Cancelled';
+      order.cancelReason = reason || 'Cancelled by customer';
+      order.cancelledAt = new Date();
+      order.statusHistory.push({
+        status: 'Cancelled',
+        timestamp: new Date(),
+        note: `Cancelled by customer: ${reason || 'No reason provided'}`
       });
+      await order.save();
     }
-    
-    // Update order status
-    order.orderStatus = 'Cancelled';
-    order.cancelReason = reason || 'Cancelled by customer';
-    order.cancelledAt = new Date();
-    
-    // Add to status history
-    order.statusHistory.push({
-      status: 'Cancelled',
-      timestamp: new Date(),
-      note: `Cancelled by customer: ${reason || 'No reason provided'}`
-    });
-    
-    // Restore stock for all items
-    const Product = require('../models/Product');
-    for (const item of order.items) {
-      const product = await Product.findById(item.productId);
-      if (product) {
-        product.stock += item.quantity;
-        await product.save();
+
+    await restoreStockOnce(order._id, 'Customer cancellation');
+
+    let refundError = null;
+    if (order.paymentStatus === 'Paid' && order.paymentMethod !== 'COD') {
+      try {
+        await initiateOnlineRefund(order._id, {
+          trigger: 'customer_cancellation',
+          actorId: req.user._id,
+          notes: 'Automatic refund after customer cancellation',
+        });
+      } catch (error) {
+        // The cancellation is still valid. The failed refund is visible to the
+        // admin and can be safely retried with the same Razorpay idempotency key.
+        refundError = error.message;
+        logger.error('Automatic cancellation refund failed', { orderId: order._id, error: error.message });
       }
     }
-    
-    await order.save();
     
     // Populate order details
     const populatedOrder = await ProductOrder.findById(order._id)
@@ -641,7 +646,8 @@ exports.cancelOrder = async (req, res) => {
         reason: reason || 'As per your request',
         cancelledAt: order.cancelledAt.toLocaleDateString('en-IN'),
         totalAmount: populatedOrder.pricing.total,
-        refundInfo: populatedOrder.paymentStatus === 'Paid'
+        refundInfo: populatedOrder.paymentStatus === 'Paid',
+        refundStatus: populatedOrder.refundDetails?.status
       };
       
       if (user) {
@@ -660,8 +666,15 @@ exports.cancelOrder = async (req, res) => {
     
     res.json({
       success: true,
-      message: 'Order cancelled successfully',
-      data: populatedOrder
+      message: refundError
+        ? 'Order cancelled. The automatic refund needs staff attention.'
+        : populatedOrder.refundDetails?.status === 'Processing'
+          ? 'Order cancelled and refund initiated to the original payment method.'
+          : populatedOrder.paymentStatus === 'Refunded'
+            ? 'Order cancelled and payment refunded.'
+            : 'Order cancelled successfully',
+      data: populatedOrder,
+      refundRequiresAttention: Boolean(refundError)
     });
   } catch (error) {
     console.error('Cancel order error:', error);
@@ -740,14 +753,17 @@ exports.returnOrder = async (req, res) => {
       });
     }
     
-    // Update order status
-    order.orderStatus = 'Returned';
+    // A request is not a completed return. Stock and money move only after an
+    // approved item is physically received by the clinic.
+    order.orderStatus = 'Return Requested';
     order.returnReason = reason || 'Returned by customer';
-    order.returnedAt = new Date();
+    order.returnRequestedAt = new Date();
+    order.returnApproved = false;
+    order.returnRejected = false;
     
     // Add to status history
     order.statusHistory.push({
-      status: 'Returned',
+      status: 'Return Requested',
       timestamp: new Date(),
       note: `Return requested by customer: ${reason || 'No reason provided'}`
     });
@@ -766,7 +782,7 @@ exports.returnOrder = async (req, res) => {
         customerName: populatedOrder.shippingAddress.fullName,
         orderNumber: populatedOrder.orderNumber,
         reason: reason || 'No reason provided',
-        returnDate: order.returnedAt.toLocaleDateString('en-IN')
+        returnDate: order.returnRequestedAt.toLocaleDateString('en-IN')
       };
       
       if (user) {
@@ -812,11 +828,15 @@ exports.approveReturn = async (req, res) => {
       });
     }
     
-    if (order.orderStatus !== 'Returned') {
+    if (!['Return Requested', 'Returned'].includes(order.orderStatus)) {
       return res.status(400).json({
         success: false,
-        message: 'Only returned orders can be approved'
+        message: 'Only a pending return request can be approved'
       });
+    }
+
+    if (order.returnApproved) {
+      return res.json({ success: true, message: 'Return request is already approved', data: order });
     }
     
     // Update order with approval
@@ -874,6 +894,84 @@ exports.approveReturn = async (req, res) => {
   }
 };
 
+// @desc    Mark an approved return as physically received and start its refund
+// @route   PUT /api/admin/product-orders/:id/complete-return
+// @access  Private (Admin)
+exports.completeReturn = async (req, res) => {
+  try {
+    const order = await ProductOrder.findById(req.params.id);
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+    if (!['Return Requested', 'Returned'].includes(order.orderStatus) || !order.returnApproved) {
+      return res.status(400).json({
+        success: false,
+        message: 'The return must be requested and approved before it can be received',
+      });
+    }
+
+    if (!order.returnedAt) {
+      order.orderStatus = 'Returned';
+      order.returnedAt = new Date();
+      order.statusHistory.push({
+        status: 'Returned',
+        timestamp: new Date(),
+        note: req.body?.note || 'Returned items received by the clinic',
+      });
+      await order.save();
+    }
+
+    await restoreStockOnce(order._id, 'Approved return received');
+
+    let refundError = null;
+    if (order.paymentStatus === 'Paid' && order.paymentMethod !== 'COD') {
+      try {
+        await initiateOnlineRefund(order._id, {
+          trigger: 'return_completed',
+          actorId: req.admin?._id || req.user?._id,
+          notes: 'Automatic refund after returned items were received',
+        });
+      } catch (error) {
+        refundError = error.message;
+        logger.error('Automatic return refund failed', { orderId: order._id, error: error.message });
+      }
+    } else if (order.paymentStatus === 'Paid' && order.paymentMethod === 'COD') {
+      await ProductOrder.findByIdAndUpdate(order._id, {
+        $set: {
+          'refundDetails.amount': Number(order.pricing.total),
+          'refundDetails.status': 'Pending',
+          'refundDetails.trigger': 'return_completed',
+          'refundDetails.notes': 'COD return received; manual payout method is required',
+        },
+      });
+    }
+
+    const populatedOrder = await ProductOrder.findById(order._id)
+      .populate('userId', 'fullName email phone')
+      .populate('items.productId');
+
+    return res.json({
+      success: true,
+      message: refundError
+        ? 'Return received and stock restored. The automatic refund needs staff attention.'
+        : populatedOrder.refundDetails?.status === 'Processing'
+          ? 'Return received, stock restored, and refund initiated.'
+          : populatedOrder.paymentMethod === 'COD' && populatedOrder.paymentStatus === 'Paid'
+            ? 'Return received and stock restored. Select a COD refund payout method.'
+            : 'Return received and stock restored.',
+      data: populatedOrder,
+      refundRequiresAttention: Boolean(refundError),
+    });
+  } catch (error) {
+    console.error('Complete return error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to complete return',
+      error: error.message,
+    });
+  }
+};
+
 // @desc    Reject return request (Admin)
 // @route   PUT /api/admin/product-orders/:id/reject-return
 // @access  Private (Admin)
@@ -897,10 +995,10 @@ exports.rejectReturn = async (req, res) => {
       });
     }
     
-    if (order.orderStatus !== 'Returned') {
+    if (order.orderStatus !== 'Return Requested') {
       return res.status(400).json({
         success: false,
-        message: 'Only returned orders can be rejected'
+        message: 'Only a pending return request can be rejected'
       });
     }
     

@@ -4,11 +4,14 @@ const {
   getAllOrders,
   getOrderById,
   updateOrderStatus,
+  markDeliveryFailed,
+  assignDelivery,
   getOrderStats,
   deleteOrder
 } = require('../controllers/adminOrderController');
 const {
   approveReturn,
+  completeReturn,
   rejectReturn
 } = require('../controllers/productOrderController');
 const {
@@ -31,6 +34,16 @@ router.put('/:id/status',
   auditLog('ORDER_STATUS_UPDATED', 'ORDER'),
   updateOrderStatus
 );
+router.put('/:id/delivery-failed',
+  requireRole('super_admin', 'admin'),
+  auditLog('DELIVERY_FAILED', 'ORDER'),
+  markDeliveryFailed
+);
+router.put('/:id/assign-delivery',
+  requireRole('super_admin', 'admin'),
+  auditLog('DELIVERY_ASSIGNED', 'ORDER'),
+  assignDelivery
+);
 router.put('/:id/approve-return',
   requireRole('super_admin', 'admin'),
   auditLog('RETURN_APPROVED', 'ORDER'),
@@ -40,6 +53,12 @@ router.put('/:id/reject-return',
   requireRole('super_admin', 'admin'),
   auditLog('RETURN_REJECTED', 'ORDER'),
   rejectReturn
+);
+router.put('/:id/complete-return',
+  requireRole('super_admin', 'admin'),
+  adminSensitiveOperationsLimiter,
+  auditLog('RETURN_COMPLETED', 'ORDER'),
+  completeReturn
 );
 router.delete('/:id',
   requireRole('super_admin', 'admin'),

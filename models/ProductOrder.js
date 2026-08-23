@@ -109,7 +109,11 @@ const productOrderSchema = new mongoose.Schema({
   },
   orderStatus: {
     type: String,
-    enum: ['Order Placed', 'Confirmed', 'Processing', 'Packed', 'Shipped', 'Out for Delivery', 'Delivered', 'Cancelled', 'Returned'],
+    enum: [
+      'Order Placed', 'Confirmed', 'Processing', 'Packed', 'Shipped',
+      'Out for Delivery', 'Delivery Failed', 'Delivered', 'Cancelled',
+      'Return Requested', 'Returned'
+    ],
     default: 'Order Placed'
   },
   statusHistory: [{
@@ -121,9 +125,35 @@ const productOrderSchema = new mongoose.Schema({
     note: String
   }],
   deliveryDate: Date,
+  trackingId: String,
+  courier: String,
+  estimatedDelivery: Date,
+  deliveryPartner: String,
+  deliveryPartnerPhone: String,
+  expectedDeliveryTime: Date,
+  deliveryAttempt: { type: Number, default: 0 },
+  deliveryAssignedAt: Date,
+  deliveryAssignedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Admin'
+  },
+  deliveryFailedAt: Date,
+  deliveryFailureReason: String,
+  deliveryFailures: [{
+    attempt: Number,
+    failedAt: { type: Date, default: Date.now },
+    reason: String,
+    note: String,
+    deliveryPartner: String,
+    deliveryPartnerPhone: String,
+    courier: String,
+    trackingId: String,
+    markedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' }
+  }],
   cancelReason: String,
   cancelledAt: Date,
   returnReason: String,
+  returnRequestedAt: Date,
   returnedAt: Date,
   returnApproved: {
     type: Boolean,
@@ -145,6 +175,8 @@ const productOrderSchema = new mongoose.Schema({
   },
   returnRejectionReason: String,
   deliveredAt: Date,
+  stockRestoredAt: Date,
+  stockRestorationReason: String,
   notes: String,
   // Refund Management
   refundDetails: {
@@ -179,7 +211,16 @@ const productOrderSchema = new mongoose.Schema({
       ref: 'Admin'
     },
     notes: String,
-    failureReason: String
+    failureReason: String,
+    idempotencyKey: String,
+    trigger: {
+      type: String,
+      enum: ['customer_cancellation', 'admin_cancellation', 'return_completed', 'manual'],
+      default: 'manual'
+    },
+    retryCount: { type: Number, default: 0 },
+    lastRetryAt: Date,
+    completedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' }
   },
   razorpayOrderId: String,
   razorpayPaymentId: String,
