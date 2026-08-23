@@ -75,6 +75,7 @@ exports.getChatsByBranch = async (req, res) => {
 
     const chats = await Chat.find(query)
       .populate('userId', 'fullName email phone location')
+      .populate('assignedAdmin', 'name email role')
       .populate('branchId', 'name address')
       .sort({ lastMessageTime: -1 })
       .limit(limit * 1)
@@ -449,14 +450,35 @@ exports.assignChat = async (req, res) => {
 
     const chat = await Chat.findByIdAndUpdate(
       chatId,
-      { assignedAdmin: adminId },
+      { assignedAdmin: adminId || null },
       { new: true }
-    ).populate('assignedAdmin', 'name email');
+    ).populate('assignedAdmin', 'name email role');
 
     if (!chat) {
       return res.status(404).json({
         success: false,
         message: 'Chat not found'
+      });
+    }
+
+    // A system line in the thread so the guest knows who they are talking to.
+    if (chat.assignedAdmin) {
+      const sys = await Message.create({
+        chatId: chat._id,
+        senderId: req.admin._id,
+        senderModel: 'Admin',
+        senderName: 'Zennara',
+        content: `${chat.assignedAdmin.name} has joined the conversation`,
+        messageType: 'system',
+        isDelivered: true,
+        deliveredAt: new Date()
+      });
+      if (req.io) req.io.to(String(chat._id)).emit('newMessage', sys);
+    }
+    if (req.io) {
+      req.io.to(`branch_${chat.branchId}`).emit('chatUpdate', {
+        chatId: chat._id,
+        assignedAdmin: chat.assignedAdmin
       });
     }
 
@@ -524,5 +546,23 @@ exports.deleteMessage = async (req, res) => {
       message: 'Error deleting message',
       error: error.message
     });
+  }
+};
+
+
+// @desc    Messages from the clinic the guest has not read yet (for the app badge)
+// @route   GET /api/chat/user/unread
+// @access  Private (User)
+exports.getUserUnread = async (req, res) => {
+  try {
+    const chats = await Chat.find({ userId: req.user._id }).select('_id').lean();
+    const ids = chats.map((c) => c._id);
+    const count = ids.length
+      ? await Message.countDocuments({ chatId: { $in: ids }, senderModel: 'Admin', messageType: 'text', isRead: false })
+      : 0;
+    res.status(200).json({ success: true, data: { unreadCount: count } });
+  } catch (error) {
+    console.error('Error counting unread:', error);
+    res.status(500).json({ success: false, message: 'Error counting unread messages' });
   }
 };

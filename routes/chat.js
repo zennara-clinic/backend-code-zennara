@@ -17,6 +17,7 @@ const { protect, protectAdmin, protectBoth } = require('../middleware/auth');
 // User routes
 router.post('/initiate', protect, initiateChat);
 router.get('/user', protect, getUserChats);
+router.get('/user/unread', protect, require('../controllers/chatController').getUserUnread);
 
 // Shared routes (both user and admin can access)
 router.get('/:chatId/messages', protectBoth, getChatMessages);
