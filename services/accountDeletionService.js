@@ -37,6 +37,7 @@ const PreConsultForm = require('../models/PreConsultForm');
 const PatientConsentForm = require('../models/PatientConsentForm');
 const ServiceCard = require('../models/ServiceCard');
 const DeletedAccountArchive = require('../models/DeletedAccountArchive');
+const { restoreStockOnce, initiateOnlineRefund } = require('./orderLifecycleService');
 
 /** Collections keyed by `userId` that are deleted outright. */
 const DELETED_BY_USER_ID = [
@@ -145,10 +146,39 @@ async function deleteAccount({ userId, deletedBy = 'user', reason = '', adminId 
     },
     { $set: { status: 'Cancelled', cancellationReason: 'Account deleted by user', cancelledAt: new Date() } }
   );
-  await ProductOrder.updateMany(
-    { userId, orderStatus: { $in: ['Order Placed', 'Confirmed', 'Processing'] } },
-    { $set: { orderStatus: 'Cancelled', cancellationReason: 'Account deleted by user', cancelledAt: new Date() } }
-  );
+  const openOrders = await ProductOrder.find({
+    userId,
+    orderStatus: { $in: ['Order Placed', 'Confirmed', 'Processing', 'Packed'] },
+  });
+  for (const order of openOrders) {
+    order.orderStatus = 'Cancelled';
+    order.cancelReason = 'Account deleted by user';
+    order.cancelledAt = new Date();
+    order.statusHistory.push({
+      status: 'Cancelled',
+      timestamp: new Date(),
+      note: 'Cancelled because the customer deleted their account',
+    });
+    await order.save();
+    await restoreStockOnce(order._id, 'Account deletion cancellation');
+    if (order.paymentStatus === 'Paid' && order.paymentMethod !== 'COD') {
+      await initiateOnlineRefund(order._id, {
+        trigger: 'customer_cancellation',
+        actorId: userId,
+        notes: 'Automatic refund after account deletion cancellation',
+      }).catch((error) => {
+        console.error(`Automatic refund failed during account deletion for ${order.orderNumber}:`, error.message);
+      });
+    }
+  }
+
+  // Account restoration must never resurrect an order that was cancelled (or
+  // undo its refund) during deletion. Refresh the financial snapshot with the
+  // post-cancellation truth before anonymising the live rows.
+  archive.snapshot.productorders = await ProductOrder.find({ userId }).lean();
+  archive.snapshot.payments = await Payment.find({ userId }).lean();
+  archive.markModified('snapshot');
+  await archive.save();
 
   await Booking.updateMany({ userId }, anonymiseBooking);
   await ProductOrder.updateMany({ userId }, anonymiseOrder);
@@ -220,12 +250,43 @@ async function restoreAccount({ archiveId, adminId = null }) {
   await insert('chats', snap.chats);
   await insert('messages', snap.messages);
 
-  // Financial records were anonymised in place — restore their original fields.
-  for (const [name] of ANONYMISED) {
-    for (const doc of snap[name] || []) {
-      const { _id, ...rest } = doc;
-      await db.collection(name).updateOne({ _id }, { $set: rest, $unset: { accountDeleted: '' } });
-    }
+  // Financial rows may keep changing after deletion (for example a Razorpay
+  // refund webhook can complete). Restore only the fields that deletion
+  // scrubbed; never overwrite current payment, refund or fulfilment state with
+  // an older archive snapshot.
+  for (const doc of snap.bookings || []) {
+    await db.collection('bookings').updateOne(
+      { _id: doc._id },
+      {
+        $set: {
+          fullName: doc.fullName,
+          email: doc.email,
+          mobileNumber: doc.mobileNumber,
+          notes: doc.notes,
+        },
+        $unset: { accountDeleted: '' },
+      }
+    );
+  }
+  for (const doc of snap.productorders || []) {
+    await db.collection('productorders').updateOne(
+      { _id: doc._id },
+      {
+        $set: {
+          'shippingAddress.fullName': doc.shippingAddress?.fullName,
+          'shippingAddress.phone': doc.shippingAddress?.phone,
+          'shippingAddress.addressLine1': doc.shippingAddress?.addressLine1,
+          'shippingAddress.addressLine2': doc.shippingAddress?.addressLine2,
+        },
+        $unset: { accountDeleted: '' },
+      }
+    );
+  }
+  for (const doc of snap.payments || []) {
+    await db.collection('payments').updateOne(
+      { _id: doc._id },
+      { $unset: { accountDeleted: '' } }
+    );
   }
 
   archive.restoredAt = new Date();

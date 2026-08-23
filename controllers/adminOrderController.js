@@ -143,6 +143,12 @@ exports.updateOrderStatus = async (req, res) => {
         message: 'Use the failed-delivery action so the attempt and reason are recorded',
       });
     }
+    if (status === 'Out for Delivery') {
+      return res.status(400).json({
+        success: false,
+        message: 'Assign a delivery partner so the delivery attempt is recorded',
+      });
+    }
     if (['Return Requested', 'Returned'].includes(status)) {
       return res.status(400).json({
         success: false,
@@ -245,12 +251,13 @@ exports.updateOrderStatus = async (req, res) => {
     }
 
     const lifecycleState = await ProductOrder.findById(order._id)
-      .select('paymentStatus refundDetails stockRestoredAt stockRestorationReason');
+      .select('paymentStatus refundDetails stockRestoredAt stockRestorationReason statusHistory');
     if (lifecycleState) {
       order.paymentStatus = lifecycleState.paymentStatus;
       order.refundDetails = lifecycleState.refundDetails;
       order.stockRestoredAt = lifecycleState.stockRestoredAt;
       order.stockRestorationReason = lifecycleState.stockRestorationReason;
+      order.statusHistory = lifecycleState.statusHistory;
     }
     
     // Populate before sending response
@@ -355,7 +362,7 @@ exports.updateOrderStatus = async (req, res) => {
             data.reason = order.cancelReason || 'Cancelled by admin';
             data.cancelledAt = order.cancelledAt.toLocaleDateString('en-IN');
             data.totalAmount = order.pricing.total;
-            data.refundInfo = order.paymentStatus === 'Paid';
+            data.refundInfo = ['Paid', 'Refunded'].includes(order.paymentStatus);
             if (user.phone) await whatsappService.sendOrderCancelled(user.phone, data);
             if (user.email) await emailService.sendOrderCancelledEmail(user.email, data.customerName, data);
             notificationsSent = true;
@@ -441,6 +448,12 @@ exports.markDeliveryFailed = async (req, res) => {
     });
     await order.save();
 
+    NotificationHelper.orderStatusChanged(
+      { _id: order._id, userId: order.userId, orderNumber: order.orderNumber },
+      'Out for Delivery',
+      'Delivery Failed'
+    ).catch((error) => console.error('Delivery failure notification failed:', error.message));
+
     return res.json({
       success: true,
       message: `Delivery attempt ${attempt} marked failed. Reassign it or cancel the order.`,
@@ -462,6 +475,12 @@ exports.assignDelivery = async (req, res) => {
     if (!deliveryPartner && !courier) {
       return res.status(400).json({ success: false, message: 'Enter a delivery partner or courier' });
     }
+    const expectedDeliveryTime = req.body?.expectedDeliveryTime
+      ? new Date(req.body.expectedDeliveryTime)
+      : undefined;
+    if (expectedDeliveryTime && Number.isNaN(expectedDeliveryTime.getTime())) {
+      return res.status(400).json({ success: false, message: 'Expected delivery time is invalid' });
+    }
 
     const order = await ProductOrder.findById(req.params.id);
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
@@ -481,9 +500,7 @@ exports.assignDelivery = async (req, res) => {
     order.deliveryPartnerPhone = String(req.body?.deliveryPartnerPhone || '').trim() || undefined;
     order.courier = courier || order.courier;
     order.trackingId = String(req.body?.trackingId || '').trim() || undefined;
-    order.expectedDeliveryTime = req.body?.expectedDeliveryTime
-      ? new Date(req.body.expectedDeliveryTime)
-      : undefined;
+    order.expectedDeliveryTime = expectedDeliveryTime;
     order.deliveryAttempt = attempt;
     order.deliveryAssignedAt = now;
     order.deliveryAssignedBy = req.admin?._id || req.user?._id;
@@ -496,6 +513,12 @@ exports.assignDelivery = async (req, res) => {
       note: `${wasFailed ? 'Reassigned' : 'Assigned'} for delivery attempt ${attempt} to ${deliveryPartner || courier}`,
     });
     await order.save();
+
+    NotificationHelper.orderStatusChanged(
+      { _id: order._id, userId: order.userId, orderNumber: order.orderNumber },
+      wasFailed ? 'Delivery Failed' : 'Shipped',
+      'Out for Delivery'
+    ).catch((error) => console.error('Delivery assignment notification failed:', error.message));
 
     return res.json({
       success: true,
@@ -529,7 +552,7 @@ exports.getOrderStats = async (req, res) => {
     
     // Calculate total revenue
     const revenueResult = await ProductOrder.aggregate([
-      { $match: { orderStatus: { $ne: 'Cancelled' } } },
+      { $match: { orderStatus: { $nin: ['Cancelled', 'Returned'] } } },
       { $group: { _id: null, total: { $sum: '$pricing.total' } } }
     ]);
     const totalRevenue = revenueResult.length > 0 ? revenueResult[0].total : 0;

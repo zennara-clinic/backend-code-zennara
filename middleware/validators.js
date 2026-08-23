@@ -281,6 +281,7 @@ exports.validateOrderStatus = [
       'Packed',
       'Shipped',
       'Out for Delivery',
+      'Delivery Failed',
       'Delivered',
       'Cancelled',
       'Return Requested',

@@ -206,6 +206,7 @@ const productOrderSchema = new mongoose.Schema({
     transactionProof: String, // URL to uploaded proof
     refundInitiatedAt: Date,
     refundCompletedAt: Date,
+    refundNotifiedAt: Date,
     refundedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Admin'

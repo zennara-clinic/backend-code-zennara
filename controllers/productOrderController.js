@@ -359,7 +359,11 @@ exports.updateOrderStatus = async (req, res) => {
       });
     }
 
-    const validStatuses = ['Order Placed', 'Confirmed', 'Processing', 'Packed', 'Shipped', 'Out for Delivery', 'Delivered', 'Cancelled', 'Returned'];
+    const validStatuses = [
+      'Order Placed', 'Confirmed', 'Processing', 'Packed', 'Shipped',
+      'Out for Delivery', 'Delivery Failed', 'Delivered', 'Cancelled',
+      'Return Requested', 'Returned'
+    ];
 
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
@@ -372,7 +376,10 @@ exports.updateOrderStatus = async (req, res) => {
     // able to self-advance an order (least of all to Delivered, which used to
     // force paymentStatus = 'Paid'). Cancellation and returns have their own
     // endpoints that also handle stock and refunds.
-    const STAFF_ONLY_STATUSES = ['Confirmed', 'Processing', 'Packed', 'Shipped', 'Out for Delivery', 'Delivered', 'Cancelled', 'Returned'];
+    const STAFF_ONLY_STATUSES = [
+      'Confirmed', 'Processing', 'Packed', 'Shipped', 'Out for Delivery',
+      'Delivery Failed', 'Delivered', 'Cancelled', 'Return Requested', 'Returned'
+    ];
     if (STAFF_ONLY_STATUSES.includes(status)) {
       return res.status(403).json({
         success: false,
@@ -646,7 +653,7 @@ exports.cancelOrder = async (req, res) => {
         reason: reason || 'As per your request',
         cancelledAt: order.cancelledAt.toLocaleDateString('en-IN'),
         totalAmount: populatedOrder.pricing.total,
-        refundInfo: populatedOrder.paymentStatus === 'Paid',
+        refundInfo: ['Paid', 'Refunded'].includes(populatedOrder.paymentStatus),
         refundStatus: populatedOrder.refundDetails?.status
       };
       
@@ -995,7 +1002,7 @@ exports.rejectReturn = async (req, res) => {
       });
     }
     
-    if (order.orderStatus !== 'Return Requested') {
+    if (!['Return Requested', 'Returned'].includes(order.orderStatus)) {
       return res.status(400).json({
         success: false,
         message: 'Only a pending return request can be rejected'

@@ -740,6 +740,11 @@ exports.handleWebhook = async (req, res) => {
         await handleRefundProcessed(payload.refund.entity);
         break;
 
+      case 'refund.created':
+        if (!payload.refund?.entity) return res.status(400).send('Missing refund entity');
+        await handleRefundCreated(payload.refund.entity);
+        break;
+
       case 'refund.failed':
         if (!payload.refund?.entity) return res.status(400).send('Missing refund entity');
         await handleRefundFailed(payload.refund.entity);
@@ -924,22 +929,28 @@ async function handleRefundProcessed(refundEntity) {
     return;
   }
 
+  const orderMatch = [
+    { 'refundDetails.razorpayRefundId': refundEntity.id },
+    { 'refundDetails.status': 'Processing' },
+  ];
+  if (refundEntity.notes?.order_id && mongoose.isValidObjectId(refundEntity.notes.order_id)) {
+    orderMatch.push({ _id: refundEntity.notes.order_id });
+  }
   const order = await ProductOrder.findOne({
     razorpayPaymentId: refundEntity.payment_id,
-    $or: [
-      { 'refundDetails.razorpayRefundId': refundEntity.id },
-      { 'refundDetails.status': 'Processing' },
-    ],
+    $or: orderMatch,
   });
   if (!order) {
     console.warn('⚠️ Processed refund for an unknown order:', refundEntity.id);
     return;
   }
 
+  const wasCompleted = order.refundDetails?.status === 'Completed';
   order.refundDetails.status = 'Completed';
   order.refundDetails.razorpayRefundId = refundEntity.id;
   order.refundDetails.refundCompletedAt = new Date();
   order.refundDetails.transactionId = refundEntity.id;
+  order.refundDetails.failureReason = undefined;
   if (Number(refundEntity.amount) >= Math.round(Number(order.pricing.total) * 100)) {
     order.paymentStatus = 'Refunded';
     await Payment.findOneAndUpdate(
@@ -947,7 +958,65 @@ async function handleRefundProcessed(refundEntity) {
       { status: 'refunded' }
     );
   }
+  if (!wasCompleted) {
+    order.statusHistory.push({
+      status: 'Refund Completed',
+      timestamp: new Date(),
+      note: `Razorpay confirmed refund ${refundEntity.id}`,
+    });
+  }
   await order.save();
+
+  const notificationClaim = await ProductOrder.updateOne(
+    { _id: order._id, 'refundDetails.refundNotifiedAt': { $exists: false } },
+    { $set: { 'refundDetails.refundNotifiedAt': new Date() } }
+  );
+  if (notificationClaim.modifiedCount === 1) {
+    setImmediate(async () => {
+      try {
+        const populated = await ProductOrder.findById(order._id).populate('userId', 'fullName email phone');
+        const user = populated?.userId;
+        if (!user) return;
+        const data = {
+          customerName: populated.shippingAddress.fullName,
+          orderNumber: populated.orderNumber,
+          refundAmount: Number(refundEntity.amount) / 100,
+          refundMethod: 'Razorpay',
+          refundDate: new Date().toLocaleDateString('en-IN'),
+          transactionId: refundEntity.id,
+          estimatedDays: '5-7',
+        };
+        if (user.phone) await require('../services/whatsappService').sendRefundProcessed(user.phone, data);
+        if (user.email) await require('../utils/emailService').sendRefundProcessedEmail(user.email, data.customerName, data);
+      } catch (error) {
+        console.error('Refund completion notification failed:', error.message);
+      }
+    });
+  }
+}
+
+async function handleRefundCreated(refundEntity) {
+  if (refundEntity.status === 'processed') return handleRefundProcessed(refundEntity);
+  if (refundEntity.status === 'failed') return handleRefundFailed(refundEntity);
+
+  const orderMatch = [
+    { 'refundDetails.razorpayRefundId': refundEntity.id },
+    { 'refundDetails.status': { $in: ['Processing', 'Failed'] } },
+  ];
+  if (refundEntity.notes?.order_id && mongoose.isValidObjectId(refundEntity.notes.order_id)) {
+    orderMatch.push({ _id: refundEntity.notes.order_id });
+  }
+  await ProductOrder.findOneAndUpdate(
+    { razorpayPaymentId: refundEntity.payment_id, $or: orderMatch },
+    {
+      $set: {
+        'refundDetails.status': 'Processing',
+        'refundDetails.razorpayRefundId': refundEntity.id,
+        'refundDetails.transactionId': refundEntity.id,
+        'refundDetails.failureReason': null,
+      },
+    }
+  );
 }
 
 async function handleRefundFailed(refundEntity) {
@@ -973,12 +1042,16 @@ async function handleRefundFailed(refundEntity) {
     return;
   }
 
+  const orderMatch = [
+    { 'refundDetails.razorpayRefundId': refundEntity.id },
+    { 'refundDetails.status': 'Processing' },
+  ];
+  if (refundEntity.notes?.order_id && mongoose.isValidObjectId(refundEntity.notes.order_id)) {
+    orderMatch.push({ _id: refundEntity.notes.order_id });
+  }
   const order = await ProductOrder.findOne({
     razorpayPaymentId: refundEntity.payment_id,
-    $or: [
-      { 'refundDetails.razorpayRefundId': refundEntity.id },
-      { 'refundDetails.status': 'Processing' },
-    ],
+    $or: orderMatch,
   });
   if (!order) {
     console.warn('⚠️ Failed refund for an unknown order:', refundEntity.id);
@@ -986,9 +1059,17 @@ async function handleRefundFailed(refundEntity) {
   }
 
   if (order.refundDetails?.status === 'Completed') return;
+  if (order.refundDetails?.status === 'Failed'
+      && order.refundDetails?.razorpayRefundId === refundEntity.id) return;
 
   order.refundDetails.status = 'Failed';
+  order.refundDetails.razorpayRefundId = refundEntity.id;
   order.refundDetails.failureReason = refundEntity.error_description || 'Razorpay refund failed';
+  order.statusHistory.push({
+    status: 'Refund Failed',
+    timestamp: new Date(),
+    note: `Razorpay refund ${refundEntity.id} failed: ${order.refundDetails.failureReason}`,
+  });
   await order.save();
 }
 

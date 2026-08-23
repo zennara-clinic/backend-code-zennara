@@ -69,6 +69,13 @@ exports.initiateRefund = async (req, res) => {
         message: 'Order has already been refunded'
       });
     }
+
+    if (order.paymentStatus !== 'Paid') {
+      return res.status(400).json({
+        success: false,
+        message: 'This order has no captured payment to refund'
+      });
+    }
     
     // Check if refund is already in progress
     if (order.refundDetails?.status === 'Processing') {

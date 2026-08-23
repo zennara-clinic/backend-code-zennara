@@ -70,7 +70,13 @@ async function initiateOnlineRefund(orderId, options = {}) {
   const order = await ProductOrder.findById(orderId);
   if (!order) throw new Error('Order not found');
 
-  const amount = options.amount == null ? Number(order.pricing.total) : Number(options.amount);
+  const requestedAmount = options.amount == null ? Number(order.pricing.total) : Number(options.amount);
+  const amount = order.refundDetails?.idempotencyKey && Number(order.refundDetails.amount) > 0
+    ? Number(order.refundDetails.amount)
+    : requestedAmount;
+  if (order.refundDetails?.idempotencyKey && Math.round(requestedAmount * 100) !== Math.round(amount * 100)) {
+    throw new Error('A retry must use the same refund amount as the original request');
+  }
   if (!Number.isFinite(amount) || amount <= 0 || amount > Number(order.pricing.total)) {
     throw new Error('Invalid refund amount');
   }
@@ -95,7 +101,12 @@ async function initiateOnlineRefund(orderId, options = {}) {
   const idempotencyKey = order.refundDetails?.idempotencyKey || refundKeyFor(order, amount);
   const now = new Date();
   const actorId = asId(options.actorId);
-  const trigger = options.trigger || 'manual';
+  const trigger = order.refundDetails?.idempotencyKey
+    ? (order.refundDetails.trigger || 'manual')
+    : (options.trigger || 'manual');
+  const refundNotes = order.refundDetails?.idempotencyKey
+    ? (order.refundDetails.notes || 'Refund initiated to the original payment method')
+    : (options.notes || 'Refund initiated to the original payment method');
 
   const locked = await ProductOrder.findOneAndUpdate(
     {
@@ -110,7 +121,7 @@ async function initiateOnlineRefund(orderId, options = {}) {
         'refundDetails.status': 'Processing',
         'refundDetails.refundInitiatedAt': now,
         'refundDetails.refundedBy': actorId,
-        'refundDetails.notes': options.notes || 'Refund initiated to the original payment method',
+        'refundDetails.notes': refundNotes,
         'refundDetails.failureReason': null,
         'refundDetails.idempotencyKey': idempotencyKey,
         'refundDetails.trigger': trigger,
@@ -137,7 +148,7 @@ async function initiateOnlineRefund(orderId, options = {}) {
       amount,
       {
         idempotencyKey,
-        receipt: `refund_${locked.orderNumber}`.slice(0, 40),
+        receipt: `r_${locked.orderNumber}_${Math.round(amount * 100)}`.slice(0, 40),
         notes: {
           order_id: String(locked._id),
           order_number: String(locked.orderNumber),
