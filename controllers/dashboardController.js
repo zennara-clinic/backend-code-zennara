@@ -69,7 +69,7 @@ exports.getDashboard = async (req, res) => {
       PackageAssignment.find({ ...pkgBranch, createdAt: { $gte: start, $lte: end } }).select('pricing payment status createdAt packageDetails packageId userId').lean(),
       PackageAssignment.find({ ...pkgBranch, createdAt: { $gte: prevStart, $lte: prevEnd }, 'payment.isReceived': true }).select('pricing').lean(),
       Payment.find({ orderType: 'ZenMembership', status: 'captured', createdAt: { $gte: start, $lte: end } }).select('amount method createdAt userId').lean(),
-      Payment.find({ orderType: 'ZenMembership', status: 'captured', createdAt: { $gte: prevStart, $lte: prevEnd } }).select('amount').lean(),
+      Payment.find({ orderType: 'ZenMembership', status: 'captured', createdAt: { $gte: prevStart, $lte: prevEnd } }).select('amount userId').lean(),
     ]);
 
     // Product orders have no branch; when scoped, attribute by the guest's home centre.
@@ -83,6 +83,32 @@ exports.getDashboard = async (req, res) => {
     }
     const paidOrders = ordersScoped.filter((o) => o.paymentStatus === 'Paid' && o.orderStatus !== 'Cancelled' && o.orderStatus !== 'Returned');
     const paidPackages = packages.filter((p) => p.payment && p.payment.isReceived);
+
+    /*
+     * Memberships are counted from the MEMBERSHIPS THEMSELVES, not only from
+     * Razorpay rows. A membership reaches a guest three ways:
+     *   - app purchase  → a captured Payment (amount known)
+     *   - clinic desk   → a captured Payment written by the admin grant (amount known)
+     *   - Zenoti / legacy grant → no payment row at all (amount often unknown)
+     * Counting payments alone reported "0 memberships, ₹0" while real members
+     * existed, so members whose membership STARTED in the window are counted
+     * too, priced from what the record knows and flagged when it knows nothing.
+     */
+    const membersStartedInRange = await User.find({
+      ...userBranch,
+      memberType: 'Zen Member',
+      zenMembershipStartDate: { $gte: start, $lte: end },
+    }).select('_id zenMembershipSource zenMembershipAmount zenMembershipPaymentStatus').lean();
+    const paidMemberIds = new Set(membershipsScoped.map((p) => String(p.userId)));
+    // A desk grant writes both a Payment and the user fields — count it once.
+    const membersWithoutPayment = membersStartedInRange.filter((u) => !paidMemberIds.has(String(u._id)));
+    const membershipAppRevenue = sum(membershipsScoped, (m) => m.amount)
+      + sum(membersWithoutPayment.filter((u) => u.zenMembershipSource !== 'zenoti'), (u) => u.zenMembershipAmount);
+    const membershipClinicRevenue = sum(membersWithoutPayment.filter((u) => u.zenMembershipSource === 'zenoti'), (u) => u.zenMembershipAmount);
+    const membershipCount = membershipsScoped.length + membersWithoutPayment.length;
+    // Zenoti's membership feed carries no price, and pre-2026 desk grants were
+    // recorded without one — surface how many so ₹0 is never read as "no sales".
+    const membershipsUnpriced = membersWithoutPayment.filter((u) => !(Number(u.zenMembershipAmount) > 0)).length;
 
     // ---- revenue by stream ------------------------------------------------
     const consultRev = sum(paidBookings.filter(isConsult), (x) => x.amount);
@@ -117,11 +143,21 @@ exports.getDashboard = async (req, res) => {
       { key: 'treatments', label: 'Treatments', revenue: round(treatRev), count: bookings.filter((x) => !isConsult(x)).length, app: round(treatRev - clinicTreatRev), clinic: round(clinicTreatRev) },
       { key: 'products', label: 'Products', revenue: round(productRev + clinicProductRev), count: ordersScoped.length + (zOrders[0]?.count || 0), app: round(productRev), clinic: round(clinicProductRev) },
       { key: 'packages', label: 'Packages', revenue: round(packageRev + clinicPackageRev), count: packages.length + (zPackages[0]?.count || 0), app: round(packageRev), clinic: round(clinicPackageRev) },
-      { key: 'memberships', label: 'Zen memberships', revenue: round(membershipRev), count: membershipsScoped.length, app: round(membershipRev), clinic: 0 },
+      { key: 'memberships', label: 'Zen memberships', revenue: round(membershipAppRevenue + membershipClinicRevenue), count: membershipCount, app: round(membershipAppRevenue), clinic: round(membershipClinicRevenue), unpriced: membershipsUnpriced },
     ];
     const totalRevenue = round(streams.reduce((n, s) => n + s.revenue, 0));
-    const prevRevenue = round(sum(prevPaidBookings, (x) => x.amount) + sum(prevOrders, (o) => o.pricing && o.pricing.total) + sum(prevPackages, (p) => p.pricing && p.pricing.finalAmount) + sum(prevMemberships, (m) => m.amount));
-    const growth = prevRevenue > 0 ? round(((totalRevenue - prevRevenue) / prevRevenue) * 100) : null;
+    const prevMembers = await User.find({
+      ...userBranch,
+      memberType: 'Zen Member',
+      zenMembershipStartDate: { $gte: prevStart, $lte: prevEnd },
+    }).select('_id zenMembershipAmount').lean();
+    const prevPaidMemberIds = new Set(prevMemberships.map((p) => String(p.userId)));
+    const prevRevenue = round(sum(prevPaidBookings, (x) => x.amount) + sum(prevOrders, (o) => o.pricing && o.pricing.total) + sum(prevPackages, (p) => p.pricing && p.pricing.finalAmount)
+      + sum(prevMemberships, (m) => m.amount)
+      + sum(prevMembers.filter((u) => !prevPaidMemberIds.has(String(u._id))), (u) => u.zenMembershipAmount));
+    // A previous window with nothing in it is "no comparable data", not a 0% drop.
+    const prevHasData = prevPaidBookings.length + prevOrders.length + prevPackages.length + prevMemberships.length + prevMembers.length > 0;
+    const growth = prevHasData && prevRevenue > 0 ? round(((totalRevenue - prevRevenue) / prevRevenue) * 100) : null;
 
     // ---- counts -----------------------------------------------------------
     const by = (arr, f) => arr.reduce((m, x) => { const k = f(x) || 'Other'; m[k] = (m[k] || 0) + 1; return m; }, {});
@@ -146,7 +182,7 @@ exports.getDashboard = async (req, res) => {
       openOrders: ordersScoped.filter((o) => !['Delivered', 'Cancelled', 'Returned'].includes(o.orderStatus)).length,
       packagesAssigned: packages.length, packagesPaid: paidPackages.length,
       packagesUnpaid: packages.filter((p) => !(p.payment && p.payment.isReceived)).length,
-      membershipsSold: membershipsScoped.length, activeZen, zenExpiring, newPatients, totalPatients,
+      membershipsSold: membershipCount, membershipsUnpriced, activeZen, zenExpiring, newPatients, totalPatients,
       bookingsBySource: by(bookings, (x) => x.source || 'app'),
       outstanding: round(sum(bookings.filter((x) => x.paymentStatus === 'pending' && !['Cancelled', 'No Show'].includes(x.status)), (x) => x.amount)
         + sum(packages.filter((p) => !(p.payment && p.payment.isReceived) && p.status === 'Active'), (p) => p.pricing && p.pricing.finalAmount)),
@@ -264,7 +300,7 @@ exports.getDashboard = async (req, res) => {
       success: true,
       data: {
         period: { startDate: dayKey(start), endDate: dayKey(end), days, branch: branchName || 'All centres' },
-        revenue: { total: totalRevenue, previous: prevRevenue, growthPercent: growth, streams },
+        revenue: { total: totalRevenue, previous: prevRevenue, previousHasData: prevHasData, growthPercent: growth, streams },
         counts, dermatologists, topServices, revenueByCentre,
         paymentMix: Object.entries(payMix).map(([method, amount]) => ({ method, amount })).sort((a, b) => b.amount - a.amount),
         daily: Object.values(series),

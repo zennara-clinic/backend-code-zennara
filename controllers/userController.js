@@ -574,16 +574,57 @@ exports.markMembershipPaid = async (req, res) => {
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ success: false, message: 'User not found' });
     if (user.memberType !== 'Zen Member') return res.status(400).json({ success: false, message: 'This guest is not a Zen member.' });
-    const { paymentMethod, transactionId } = req.body || {};
+
+    const { paymentMethod, transactionId, amount } = req.body || {};
     const Payment = require('../models/Payment');
+    const amt = Number(amount);
+    const hasAmount = Number.isFinite(amt) && amt >= 0;
+
     if (user.zenMembershipPaymentId) {
-      await Payment.updateOne({ _id: user.zenMembershipPaymentId }, { $set: { status: 'captured', method: paymentMethod || user.zenMembershipPaymentMethod, 'metadata.transactionId': transactionId || null, 'metadata.paidAt': new Date() } });
+      // Settling a "pay at clinic" grant that already has a payment row.
+      const set = {
+        status: 'captured',
+        method: paymentMethod || user.zenMembershipPaymentMethod,
+        'metadata.transactionId': transactionId || null,
+        'metadata.paidAt': new Date(),
+      };
+      if (hasAmount) set.amount = amt;
+      await Payment.updateOne({ _id: user.zenMembershipPaymentId }, { $set: set });
+    } else if (hasAmount) {
+      /*
+       * Recording the price of a membership that never had one — a Zenoti
+       * membership, or a desk grant from before amounts were captured. Writes
+       * a real payment row so the figure reaches revenue reporting instead of
+       * being guessed by the dashboard.
+       */
+      const payment = await Payment.create({
+        userId: user._id,
+        orderId: user._id,
+        orderType: 'ZenMembership',
+        razorpayOrderId: `ADMIN-BACKFILL-${user._id}-${Date.now()}`,
+        amount: amt,
+        currency: 'INR',
+        status: 'captured',
+        method: paymentMethod || 'Recorded at clinic',
+        // Dated to the membership itself so it lands in the right period.
+        createdAt: user.zenMembershipStartDate || new Date(),
+        metadata: {
+          membershipType: 'Zen Member', source: 'admin-backfill', membershipActivated: true,
+          recordedBy: req.admin ? req.admin.name : null, transactionId: transactionId || null,
+        },
+      });
+      user.zenMembershipPaymentId = payment._id;
+    } else {
+      return res.status(400).json({ success: false, message: 'Enter the amount that was charged for this membership.' });
     }
+
     user.zenMembershipPaymentStatus = 'paid';
     if (paymentMethod) user.zenMembershipPaymentMethod = paymentMethod;
+    if (hasAmount) user.zenMembershipAmount = amt;
     await user.save({ validateModifiedOnly: true });
-    res.json({ success: true, message: 'Membership marked as paid.', data: { zenMembershipPaymentStatus: 'paid' } });
+    res.json({ success: true, message: 'Membership payment recorded.', data: { zenMembershipPaymentStatus: 'paid', zenMembershipAmount: user.zenMembershipAmount } });
   } catch (error) {
+    console.error('Mark membership paid failed:', error);
     res.status(500).json({ success: false, message: 'Failed to update the membership payment.' });
   }
 };
