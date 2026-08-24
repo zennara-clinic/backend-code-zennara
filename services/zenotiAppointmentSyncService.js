@@ -122,6 +122,13 @@ async function upsertAppointment(appointment, { user = null, context = null } = 
         { zenotiInvoiceId: appointment.invoiceId },
         { zenotiAppointmentId: appointment.invoiceId },
       ],
+      // One invoice covers every service in a visit, so this fallback must
+      // never adopt a row already claimed by a DIFFERENT appointment — that
+      // made each service in a multi-service visit overwrite the previous
+      // one, leaving the guest with a single treatment instead of all of
+      // them. Only an unclaimed row (a legacy app booking, or one the old
+      // parser linked by invoice id) may be adopted.
+      zenotiAppointmentId: { $in: [null, appointment.id, appointment.invoiceId] },
     });
   }
   const isNew = !booking;
