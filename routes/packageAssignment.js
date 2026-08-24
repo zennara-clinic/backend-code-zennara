@@ -2,7 +2,11 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const packageAssignmentController = require('../controllers/packageAssignmentController');
-const { protectAdmin, protect } = require('../middleware/auth');
+const { protectAdmin, protect, requireRole } = require('../middleware/auth');
+// Packages are a commercial decision — the clinic assigns, prices, cancels and
+// refunds them. Clinical staff read them (a doctor sees a guest's course, a
+// therapist redeems sessions) but never create or change them.
+const MANAGE = requireRole('super_admin');
 
 // Configure multer for file uploads (using memory storage for S3 upload)
 const upload = multer({ 
@@ -38,33 +42,33 @@ router.get('/stats', protectAdmin, packageAssignmentController.getAssignmentStat
 router.get('/:id', protectAdmin, packageAssignmentController.getAssignmentById);
 
 // Create new assignment
-router.post('/', protectAdmin, packageAssignmentController.createAssignment);
+router.post('/', protectAdmin, MANAGE, packageAssignmentController.createAssignment);
 
 // Upload payment proof
-router.post('/:id/payment-proof', protectAdmin, upload.single('proof'), packageAssignmentController.uploadPaymentProof);
+router.post('/:id/payment-proof', protectAdmin, MANAGE, upload.single('proof'), packageAssignmentController.uploadPaymentProof);
 
 // Save service card before sending OTP
-router.post('/service-card', protectAdmin, packageAssignmentController.saveServiceCard);
+router.post('/service-card', protectAdmin, MANAGE, packageAssignmentController.saveServiceCard);
 
 // Send OTP for service completion
-router.post('/send-otp', protectAdmin, packageAssignmentController.sendServiceOtp);
+router.post('/send-otp', protectAdmin, MANAGE, packageAssignmentController.sendServiceOtp);
 
 // Verify OTP and complete service
-router.post('/verify-otp', protectAdmin, packageAssignmentController.verifyServiceOtp);
+router.post('/verify-otp', protectAdmin, MANAGE, packageAssignmentController.verifyServiceOtp);
 
 // Upload prescription for completed service
-router.post('/:id/prescription', protectAdmin, packageAssignmentController.uploadPrescription);
+router.post('/:id/prescription', protectAdmin, MANAGE, packageAssignmentController.uploadPrescription);
 
 // Send OTP for package cancellation
-router.post('/:id/cancel/send-otp', protectAdmin, packageAssignmentController.sendCancellationOtp);
+router.post('/:id/cancel/send-otp', protectAdmin, MANAGE, packageAssignmentController.sendCancellationOtp);
 
 // Verify OTP and cancel package
-router.post('/:id/cancel/verify-otp', protectAdmin, packageAssignmentController.verifyCancellationOtp);
+router.post('/:id/cancel/verify-otp', protectAdmin, MANAGE, packageAssignmentController.verifyCancellationOtp);
 
 // Update assignment
-router.put('/:id', protectAdmin, packageAssignmentController.updateAssignment);
+router.put('/:id', protectAdmin, MANAGE, packageAssignmentController.updateAssignment);
 
 // Delete assignment
-router.delete('/:id', protectAdmin, packageAssignmentController.deleteAssignment);
+router.delete('/:id', protectAdmin, MANAGE, packageAssignmentController.deleteAssignment);
 
 module.exports = router;
