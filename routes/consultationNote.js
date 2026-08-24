@@ -14,6 +14,6 @@ router.use(protectAdmin);
 router.get('/', getNotes);
 router.get('/booking/:bookingId', getNoteForBooking);
 router.post('/', auditLog('PRESCRIPTION_SAVED', 'CLINICAL'), saveNote);
-router.delete('/:id', requireRole('super_admin', 'admin'), deleteNote);
+router.delete('/:id', requireRole('super_admin'), deleteNote);
 
 module.exports = router;

@@ -15,10 +15,10 @@ router.use(protectAdmin);
 
 // Statistics route
 router.get('/stats', getVendorStats);
-router.get('/:id/bank-details', requireRole('super_admin', 'admin'), auditLog('VENDOR_UPDATED', 'VENDOR'), require('../controllers/vendorController').getVendorBankDetails);
+router.get('/:id/bank-details', requireRole('super_admin'), auditLog('VENDOR_UPDATED', 'VENDOR'), require('../controllers/vendorController').getVendorBankDetails);
 
 // CRUD routes
-const MANAGE = requireRole('super_admin', 'admin');
+const MANAGE = requireRole('super_admin');
 
 router.route('/')
   .get(getVendors)

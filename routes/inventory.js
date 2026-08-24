@@ -20,9 +20,9 @@ router.get('/statistics', getInventoryStatistics);
 
 // Ledger + session consumption (therapists may consume; only admins adjust/edit)
 router.get('/movements', inventoryController.getStockMovements);
-router.post('/consume', requireRole('super_admin', 'admin', 'therapist', 'receptionist'), inventoryController.consumeStock);
+router.post('/consume', requireRole('super_admin', 'therapist'), inventoryController.consumeStock);
 
-const MANAGE = requireRole('super_admin', 'admin');
+const MANAGE = requireRole('super_admin');
 
 // Bulk operations
 router.post('/bulk-update-stock', MANAGE, bulkUpdateStock);

@@ -22,7 +22,7 @@ router.get('/statistics', getProductStatistics);
 
 // Bulk operations
 router.patch('/bulk-update',
-  requireRole('super_admin', 'admin'),
+  requireRole('super_admin'),
   adminSensitiveOperationsLimiter,
   auditLog('BULK_UPDATE', 'PRODUCT'),
   bulkUpdateProducts
@@ -32,7 +32,7 @@ router.patch('/bulk-update',
 router.route('/')
   .get(getAllProducts)
   .post(
-    requireRole('super_admin', 'admin'),
+    requireRole('super_admin'),
     auditLog('PRODUCT_CREATED', 'PRODUCT'),
     createProduct
   );
@@ -40,12 +40,12 @@ router.route('/')
 router.route('/:id')
   .get(getProductById)
   .put(
-    requireRole('super_admin', 'admin'),
+    requireRole('super_admin'),
     auditLog('PRODUCT_UPDATED', 'PRODUCT'),
     updateProduct
   )
   .delete(
-    requireRole('super_admin', 'admin'),
+    requireRole('super_admin'),
     adminSensitiveOperationsLimiter,
     auditLog('PRODUCT_DELETED', 'PRODUCT'),
     deleteProduct
@@ -53,12 +53,12 @@ router.route('/:id')
 
 // Special operations
 router.patch('/:id/toggle-status',
-  requireRole('super_admin', 'admin'),
+  requireRole('super_admin'),
   auditLog('PRODUCT_STATUS_CHANGED', 'PRODUCT'),
   toggleProductStatus
 );
 router.patch('/:id/stock',
-  requireRole('super_admin', 'admin'),
+  requireRole('super_admin'),
   auditLog('STOCK_UPDATED', 'PRODUCT'),
   updateStock
 );

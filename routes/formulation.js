@@ -9,7 +9,7 @@ const {
   getFormulationStatistics
 } = require('../controllers/formulationController');
 const { protectAdmin, requireRole } = require('../middleware/auth');
-const MANAGE = requireRole('super_admin', 'admin');
+const MANAGE = requireRole('super_admin');
 
 // Mounted under /api/admin — staff only. /statistics must precede /:id.
 router.use(protectAdmin);

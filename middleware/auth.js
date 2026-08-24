@@ -171,7 +171,7 @@ exports.protectAdmin = async (req, res, next) => {
       // different things: `type` says the token belongs to a staff account,
       // `role` says what that account is allowed to do. Because the payload
       // carries the account's real role, any account that was not literally
-      // an 'admin' — super_admin, doctor, therapist, receptionist — was
+      // an 'admin' — super_admin, doctor, therapist — was
       // refused at the door and could never sign in. Per-role permissions are
       // enforced by requireRole() further down each route.
       const isAdminToken = decoded.type === 'admin' || !!decoded.adminId;

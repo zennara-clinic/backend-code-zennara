@@ -22,8 +22,8 @@ router.post('/', createRequest);
 router.patch('/:id/withdraw', withdrawRequest);
 
 // Deciding a request is an admin action — a doctor cannot approve their own.
-router.patch('/:id/approve', requireRole('super_admin', 'admin'), approveRequest);
-router.patch('/:id/reject', requireRole('super_admin', 'admin'), rejectRequest);
-router.delete('/override/:doctorId', requireRole('super_admin', 'admin'), clearOverride);
+router.patch('/:id/approve', requireRole('super_admin'), approveRequest);
+router.patch('/:id/reject', requireRole('super_admin'), rejectRequest);
+router.delete('/override/:doctorId', requireRole('super_admin'), clearOverride);
 
 module.exports = router;

@@ -24,10 +24,12 @@ const AdminSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    // 'therapist' backs the aesthetician floor panel, which signs in with the
-    // same admin OTP flow as everyone else.
-    enum: ['super_admin', 'admin', 'doctor', 'receptionist', 'therapist'],
-    default: 'admin'
+    // Three roles, three panels. 'super_admin' runs the clinic-wide admin
+    // panel; 'doctor' and 'therapist' back the dermatologist and floor panels
+    // and sign in through the same flow. Finer-grained admin permissions are a
+    // later change — until then every admin-panel login is a super admin.
+    enum: ['super_admin', 'doctor', 'therapist'],
+    default: 'super_admin'
   },
   
   // OTP for verification (hashed for security)
@@ -198,7 +200,7 @@ AdminSchema.methods.checkPassword = function(plain) {
 };
 
 // Static method to find or create admin
-AdminSchema.statics.findOrCreateAdmin = async function(email, role = 'admin') {
+AdminSchema.statics.findOrCreateAdmin = async function(email, role = 'super_admin') {
   let admin = await this.findOne({ email: email.toLowerCase() });
   
   if (!admin) {

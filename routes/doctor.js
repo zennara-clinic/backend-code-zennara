@@ -21,7 +21,7 @@ router.get('/me', protectAdmin, require('../controllers/doctorController').getMy
 router.put(
   '/tiers/:tierId',
   protectAdmin,
-  requireRole('super_admin', 'admin'),
+  requireRole('super_admin'),
   auditLog('SETTINGS_UPDATED', 'SETTINGS'),
   updateTier,
 );
@@ -30,7 +30,7 @@ router.put(
 router.post(
   '/',
   protectAdmin,
-  requireRole('super_admin', 'admin'),
+  requireRole('super_admin'),
   auditLog('DOCTOR_CREATED', 'DOCTOR'),
   createDoctor,
 );
@@ -39,21 +39,21 @@ router.put(
   protectAdmin,
   // Doctors may edit their own profile; the controller enforces ownership
   // and strips fee/tier for them.
-  requireRole('super_admin', 'admin', 'doctor'),
+  requireRole('super_admin', 'doctor'),
   auditLog('DOCTOR_UPDATED', 'DOCTOR'),
   updateDoctor,
 );
 router.patch(
   '/:id/toggle-status',
   protectAdmin,
-  requireRole('super_admin', 'admin'),
+  requireRole('super_admin'),
   auditLog('DOCTOR_STATUS_CHANGED', 'DOCTOR'),
   toggleDoctorStatus,
 );
 router.delete(
   '/:id',
   protectAdmin,
-  requireRole('super_admin', 'admin'),
+  requireRole('super_admin'),
   auditLog('DOCTOR_DELETED', 'DOCTOR'),
   deleteDoctor,
 );
@@ -61,8 +61,8 @@ router.delete(
 // Public single lookup — last so it does not shadow the routes above.
 const dc = require('../controllers/doctorController');
 router.get('/:id/stats', protectAdmin, dc.getDoctorStats);
-router.get('/:id/account', protectAdmin, requireRole('super_admin', 'admin'), dc.getDoctorAccount);
-router.put('/:id/account/password', protectAdmin, requireRole('super_admin', 'admin'), auditLog('STAFF_UPDATED', 'ADMIN'), dc.setDoctorPassword);
+router.get('/:id/account', protectAdmin, requireRole('super_admin'), dc.getDoctorAccount);
+router.put('/:id/account/password', protectAdmin, requireRole('super_admin'), auditLog('STAFF_UPDATED', 'ADMIN'), dc.setDoctorPassword);
 router.get('/:id', identifyAdmin, getDoctorById);
 
 module.exports = router;

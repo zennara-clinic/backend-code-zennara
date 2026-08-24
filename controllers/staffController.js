@@ -10,7 +10,7 @@ const AdminAuditLog = require('../models/AdminAuditLog');
  * when an account will not be able to sign in yet.
  */
 
-const ROLES = ['super_admin', 'admin', 'doctor', 'receptionist', 'therapist'];
+const ROLES = ['super_admin', 'doctor', 'therapist'];
 
 const authorizedEmails = () =>
   (process.env.ADMIN_EMAILS || '')
@@ -78,7 +78,7 @@ exports.getStaff = async (req, res) => {
 // @access  super_admin
 exports.createStaff = async (req, res) => {
   try {
-    const { email, name, role = 'receptionist', doctorId } = req.body;
+    const { email, name, role, doctorId } = req.body;
 
     if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
       return res.status(400).json({ success: false, message: 'A valid email is required' });
@@ -267,10 +267,8 @@ exports.getRoles = async (req, res) => {
   res.status(200).json({
     success: true,
     data: [
-      { id: 'super_admin', label: 'Super Admin', description: 'Full access, including staff and roles.' },
-      { id: 'admin', label: 'Admin', description: 'Everything except staff management and destructive settings.' },
-      { id: 'doctor', label: 'Doctor', description: 'Clinical panel — own day, patients, prescriptions.' },
-      { id: 'receptionist', label: 'Reception', description: 'Front desk — bookings, patients, chat.' },
+      { id: 'super_admin', label: 'Super Admin', description: 'The full admin panel — every clinic, every module.' },
+      { id: 'doctor', label: 'Dermatologist', description: 'Clinical panel — own day, patients, prescriptions.' },
       { id: 'therapist', label: 'Therapist', description: 'Floor panel — today’s guests, sessions, consumption.' },
     ],
   });

@@ -22,7 +22,7 @@ router.get('/', getStaff);
 // super_admin — so gating on super_admin alone would lock staff management out
 // entirely. The "you cannot remove the last active super admin" guard in the
 // controller still applies once one exists.
-const MANAGE_STAFF = requireRole('super_admin', 'admin');
+const MANAGE_STAFF = requireRole('super_admin');
 
 router.post('/', MANAGE_STAFF, auditLog('ADMIN_CREATED', 'ADMIN'), createStaff);
 router.put('/:id', MANAGE_STAFF, updateStaff);

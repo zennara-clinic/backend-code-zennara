@@ -15,7 +15,7 @@ const {
   getConsultationStats
 } = require('../controllers/consultationController');
 const { protectAdmin, identifyAdmin, requireRole } = require('../middleware/auth');
-const MANAGE = requireRole('super_admin', 'admin');
+const MANAGE = requireRole('super_admin');
 
 // Public routes
 router.get('/', identifyAdmin, getAllConsultations);

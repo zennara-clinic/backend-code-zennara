@@ -40,7 +40,7 @@ async function resolveDoctorForAdmin(req) {
 /** True when this login may edit the given doctor (admins always; doctors only themselves). */
 async function canEditDoctor(req, doctorDoc) {
   const role = req.admin?.role;
-  if (role === 'super_admin' || role === 'admin') return true;
+  if (role === 'super_admin') return true;
   if (role !== 'doctor' || !doctorDoc) return false;
   const mine = await resolveDoctorForAdmin(req);
   return !!mine && String(mine._id) === String(doctorDoc._id);

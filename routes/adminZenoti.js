@@ -11,11 +11,11 @@ router.use(protectAdmin);
 
 router.get('/overview', adminGuestOverview); // legacy by-phone/email lookup
 router.get('/status', z.getStatus);
-router.post('/import', requireRole('admin'), z.startImport);
-router.post('/crawl', requireRole('admin'), z.startCrawl);
-router.post('/appointments/sync', requireRole('admin'), z.syncAppointments);
+router.post('/import', requireRole('super_admin'), z.startImport);
+router.post('/crawl', requireRole('super_admin'), z.startCrawl);
+router.post('/appointments/sync', requireRole('super_admin'), z.syncAppointments);
 router.get('/practitioners', z.listPractitioners);
-router.post('/practitioners/sync', requireRole('admin'), z.syncPractitioners);
+router.post('/practitioners/sync', requireRole('super_admin'), z.syncPractitioners);
 
 router.get('/packages', z.listPackages);
 router.get('/appointments', z.listAppointments);
