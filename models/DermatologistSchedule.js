@@ -149,6 +149,15 @@ const dermatologistScheduleSchema = new mongoose.Schema(
       ref: 'Admin',
       default: null,
     },
+    /**
+     * True while this week is the automatic default copied from the assigned
+     * centres' opening hours. Cleared the first time anyone saves the
+     * schedule, so the panel can tell "pre-set for you" apart from "chosen".
+     */
+    seededFromBranchHours: {
+      type: Boolean,
+      default: false,
+    },
   },
   { timestamps: true },
 );

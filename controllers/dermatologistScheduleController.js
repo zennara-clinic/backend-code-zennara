@@ -132,6 +132,9 @@ exports.updateSchedule = async (req, res) => {
       doctorId,
       slotMinutes: SESSION_SLOT_MINUTES,
       updatedBy: req.admin?._id || null,
+      // Any manual save makes the week theirs, even if nothing changed from
+      // the centre-hours default.
+      seededFromBranchHours: false,
     };
     ['leadTimeHours', 'horizonDays', 'isActive'].forEach((k) => {
       if (req.body[k] !== undefined) update[k] = req.body[k];

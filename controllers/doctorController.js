@@ -32,6 +32,69 @@ async function syncAvailability(doctor, adminId = null) {
   );
 }
 
+/**
+ * First-time schedule: copy the assigned centres' opening days and hours as an
+ * editable default, so a newly assigned dermatologist is bookable immediately
+ * and only edits if their week differs from the centre's.
+ *
+ * Never touches an existing schedule document — once anything is saved (or
+ * seeded), the week belongs to the dermatologist/admin. With several centres,
+ * each open weekday spans the earliest open to the latest close across them;
+ * the slot engine already clamps to each centre's own hours at read time.
+ */
+async function ensureDefaultSchedule(doctor, adminId = null) {
+  try {
+    const centres = (doctor?.availableCentres || []).map((n) => String(n).trim()).filter(Boolean);
+    if (!centres.length) return null;
+
+    const DermatologistSchedule = require('../models/DermatologistSchedule');
+    const existing = await DermatologistSchedule.findOne({ doctorId: doctor.doctorId }).select('_id').lean();
+    if (existing) return null;
+
+    const branches = await Branch.find({ name: { $in: centres }, isActive: true })
+      .select('operatingHours').lean();
+    if (!branches.length) return null;
+
+    const DAY_KEYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const weekly = [];
+    for (let day = 0; day < 7; day += 1) {
+      let open = null;
+      let close = null;
+      for (const b of branches) {
+        const h = b.operatingHours && b.operatingHours[DAY_KEYS[day]];
+        if (!h || h.isOpen === false) continue;
+        const o = DermatologistSchedule.toMinutes(h.openTime || '10:00');
+        const c = DermatologistSchedule.toMinutes(h.closeTime || '19:00');
+        if (o === null || c === null || c <= o) continue;
+        open = open === null ? o : Math.min(open, o);
+        close = close === null ? c : Math.max(close, c);
+      }
+      if (open !== null && close !== null) {
+        weekly.push({
+          day,
+          branchId: null, // any of their centres — reads clamp per centre anyway
+          ranges: [{ start: DermatologistSchedule.toHHMM(open), end: DermatologistSchedule.toHHMM(close) }],
+        });
+      }
+    }
+    if (!weekly.length) return null;
+
+    return await DermatologistSchedule.create({
+      doctorId: doctor.doctorId,
+      weekly,
+      overrides: [],
+      isActive: true,
+      seededFromBranchHours: true,
+      updatedBy: adminId,
+    });
+  } catch (error) {
+    // A failed seed must never fail the profile save — the schedule page
+    // simply starts blank, exactly as before this existed.
+    console.error('ensureDefaultSchedule failed (non-blocking):', error.message);
+    return null;
+  }
+}
+
 const ALLOWED = [
   'name', 'photo', 'tier', 'level', 'designation', 'branch', 'availableCentres',
   'qualifications', 'experienceYears', 'experienceNote', 'expertise', 'achievements',
@@ -257,6 +320,7 @@ exports.createDoctor = async (req, res) => {
     const doctor = await Doctor.create({ ...body, doctorId });
     const account = await ensureDoctorLogin(doctor);
     await syncAvailability(doctor, req.admin?._id || null);
+    await ensureDefaultSchedule(doctor, req.admin?._id || null);
 
     // Creation with a password is one atomic onboarding: profile, login and
     // the credentials email in the same request, so a dermatologist can sign
@@ -361,6 +425,9 @@ exports.updateDoctor = async (req, res) => {
     Object.assign(doctor, update);
     await doctor.save();
     await syncAvailability(doctor, req.admin?._id || null);
+    // Assigning centres to a dermatologist who has no schedule yet pre-fills
+    // their week from those centres' opening hours (editable default).
+    await ensureDefaultSchedule(doctor, req.admin?._id || null);
     // Keep the login account's name/phone/email mirroring the profile for
     // self-edits too — the sidebar and staff lists read the Admin row.
     await ensureDoctorLogin(doctor);
@@ -508,6 +575,7 @@ async function ensureDoctorLogin(doctor) {
   return account;
 }
 exports.ensureDoctorLogin = ensureDoctorLogin;
+exports.ensureDefaultSchedule = ensureDefaultSchedule;
 
 // @desc    The dermatologist's login account (email, phone, password state)
 // @route   GET /api/doctors/:id/account
