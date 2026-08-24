@@ -13,7 +13,8 @@ const {
   assignChat,
   deleteMessage
 } = require('../controllers/chatController');
-const { protect, protectAdmin, protectBoth } = require('../middleware/auth');
+const { protect, protectAdmin, protectBoth, requireRole } = require('../middleware/auth');
+const MANAGE = requireRole('super_admin');
 const { receiveChatAttachment } = require('../middleware/chatAttachmentUpload');
 
 // User routes
@@ -29,9 +30,9 @@ router.put('/:chatId/read', protectBoth, markChatAsRead);
 router.delete('/messages/:messageId', protectBoth, deleteMessage);
 
 // Admin routes
-router.get('/admin/branch/:branchId', protectAdmin, getChatsByBranch);
-router.get('/admin/stats', protectAdmin, getChatStats);
-router.put('/admin/:chatId/close', protectAdmin, closeChat);
-router.put('/admin/:chatId/assign', protectAdmin, assignChat);
+router.get('/admin/branch/:branchId', protectAdmin, MANAGE, getChatsByBranch);
+router.get('/admin/stats', protectAdmin, MANAGE, getChatStats);
+router.put('/admin/:chatId/close', protectAdmin, MANAGE, closeChat);
+router.put('/admin/:chatId/assign', protectAdmin, MANAGE, assignChat);
 
 module.exports = router;

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const upload = require('../config/multer');
-const { protect, protectAdmin } = require('../middleware/auth');
+const { protect, protectAdmin, requireRole } = require('../middleware/auth');
 const {
   createBanner,
   getAllBanners,
@@ -15,8 +15,9 @@ const {
 
 router.get('/active', getActiveBanners);
 
-// Admin-only routes
+// Admin-only routes — App Studio is the super admin's, not floor/clinical staff's.
 router.use(protectAdmin);
+router.use(requireRole('super_admin'));
 
 router.post('/', upload.single('image'), createBanner);
 router.get('/', getAllBanners);

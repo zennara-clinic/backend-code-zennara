@@ -9,24 +9,25 @@ const {
   deleteCategory,
   syncCategoryCounts
 } = require('../controllers/categoryController');
-const { protectAdmin, auditLog } = require('../middleware/auth');
+const { protectAdmin, auditLog, requireRole } = require('../middleware/auth');
+const MANAGE = requireRole('super_admin');
 
 // Public routes — the mobile app browses categories.
 router.get('/', getAllCategories);
-router.patch('/reorder', protectAdmin, auditLog('CATALOGUE_UPDATED', 'CATALOGUE'), require('../controllers/categoryController').reorderCategories);
+router.patch('/reorder', protectAdmin, MANAGE, auditLog('CATALOGUE_UPDATED', 'CATALOGUE'), require('../controllers/categoryController').reorderCategories);
 router.get('/:id', getCategoryById);
 
 // Admin routes. These used to be open: anyone who knew the path could create,
 // rename or delete a service category.
-router.post('/', protectAdmin, auditLog('CATALOGUE_CREATED', 'CATALOGUE'), createCategory);
-router.put('/:id', protectAdmin, auditLog('CATALOGUE_UPDATED', 'CATALOGUE'), updateCategory);
+router.post('/', protectAdmin, MANAGE, auditLog('CATALOGUE_CREATED', 'CATALOGUE'), createCategory);
+router.put('/:id', protectAdmin, MANAGE, auditLog('CATALOGUE_UPDATED', 'CATALOGUE'), updateCategory);
 router.patch(
   '/:id/toggle-status',
   protectAdmin,
   auditLog('CATALOGUE_STATUS_CHANGED', 'CATALOGUE'),
   toggleCategoryStatus,
 );
-router.delete('/:id', protectAdmin, auditLog('CATALOGUE_DELETED', 'CATALOGUE'), deleteCategory);
-router.post('/sync-counts', protectAdmin, syncCategoryCounts);
+router.delete('/:id', protectAdmin, MANAGE, auditLog('CATALOGUE_DELETED', 'CATALOGUE'), deleteCategory);
+router.post('/sync-counts', protectAdmin, MANAGE, syncCategoryCounts);
 
 module.exports = router;

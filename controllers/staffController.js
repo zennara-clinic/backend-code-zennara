@@ -27,6 +27,9 @@ const shape = (admin, allowList) => ({
   role: admin.role,
   phone: admin.phone || null,
   branchId: admin.branchId || null,
+  branchIds: (admin.branchIds && admin.branchIds.length)
+    ? admin.branchIds
+    : (admin.branchId ? [admin.branchId] : []),
   isActive: admin.isActive,
   isVerified: admin.isVerified,
   lastLogin: admin.lastLogin,
@@ -84,7 +87,7 @@ exports.getStaff = async (req, res) => {
 // @access  super_admin
 exports.createStaff = async (req, res) => {
   try {
-    const { email, name, role, doctorId, phone, branchId, password } = req.body;
+    const { email, name, role, doctorId, phone, branchId, branchIds, password } = req.body;
 
     if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
       return res.status(400).json({ success: false, message: 'A valid email is required' });
@@ -107,7 +110,8 @@ exports.createStaff = async (req, res) => {
       role,
       doctorId: role === 'doctor' && doctorId ? doctorId : null,
       phone: phone ? String(phone).trim() : null,
-      branchId: branchId || null,
+      branchId: branchId || (Array.isArray(branchIds) && branchIds[0]) || null,
+      branchIds: Array.isArray(branchIds) ? branchIds.filter(Boolean) : (branchId ? [branchId] : []),
       isActive: true,
     });
 
@@ -181,12 +185,16 @@ exports.updateStaff = async (req, res) => {
     }
 
     const previousRole = admin.role;
-    const { phone, branchId } = req.body;
+    const { phone, branchId, branchIds } = req.body;
     if (name !== undefined) admin.name = name;
     if (role !== undefined) admin.role = role;
     if (doctorId !== undefined) admin.doctorId = doctorId || null;
     if (phone !== undefined) admin.phone = String(phone).trim() || null;
     if (branchId !== undefined) admin.branchId = branchId || null;
+    if (branchIds !== undefined) {
+      admin.branchIds = Array.isArray(branchIds) ? branchIds.filter(Boolean) : [];
+      admin.branchId = admin.branchIds[0] || null;
+    }
     await admin.save();
 
     if (role && role !== previousRole) {
@@ -244,6 +252,13 @@ exports.toggleStaffStatus = async (req, res) => {
     admin.isActive = !admin.isActive;
     await admin.save();
 
+    // Deactivation is an immediate lockout, not a suggestion.
+    if (!admin.isActive) {
+      await require('../models/Token').updateMany(
+        { userId: admin._id, isActive: true }, { $set: { isActive: false } },
+      ).catch(() => undefined);
+    }
+
     return res.status(200).json({
       success: true,
       message: `Staff account ${admin.isActive ? 'activated' : 'deactivated'}`,
@@ -283,6 +298,9 @@ exports.deleteStaff = async (req, res) => {
       }
     }
 
+    await require('../models/Token').updateMany(
+      { userId: admin._id, isActive: true }, { $set: { isActive: false } },
+    ).catch(() => undefined);
     await Admin.deleteOne({ _id: admin._id });
 
     return res.status(200).json({ success: true, message: 'Staff account deleted' });
@@ -312,6 +330,10 @@ exports.setStaffPassword = async (req, res) => {
     admin.setPassword(String(password));
     admin.isActive = true;
     await admin.save({ validateModifiedOnly: true });
+    // The old password is dead — so is every session that used it.
+    await require('../models/Token').updateMany(
+      { userId: admin._id, isActive: true }, { $set: { isActive: false } },
+    ).catch(() => undefined);
 
     let emailed = false;
     try {

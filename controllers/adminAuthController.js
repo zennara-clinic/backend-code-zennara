@@ -480,6 +480,7 @@ exports.getAdminProfile = async (req, res) => {
         role: admin.role,
         phone: admin.phone || null,
         branchId: admin.branchId || null,
+        branchIds: (admin.branchIds && admin.branchIds.length) ? admin.branchIds : (admin.branchId ? [admin.branchId] : []),
         isActive: admin.isActive,
         isVerified: admin.isVerified,
         lastLogin: admin.lastLogin,
@@ -623,7 +624,7 @@ exports.adminPasswordLogin = async (req, res) => {
     res.status(200).json({
       success: true,
       message: 'Login successful',
-      data: { token, expiresAt, admin: { _id: admin._id, id: admin._id, email: admin.email, name: admin.name, role: admin.role, phone: admin.phone || null, branchId: admin.branchId || null, isActive: admin.isActive, isVerified: admin.isVerified } },
+      data: { token, expiresAt, admin: { _id: admin._id, id: admin._id, email: admin.email, name: admin.name, role: admin.role, phone: admin.phone || null, branchId: admin.branchId || null, branchIds: (admin.branchIds && admin.branchIds.length) ? admin.branchIds : (admin.branchId ? [admin.branchId] : []), isActive: admin.isActive, isVerified: admin.isVerified } },
     });
   } catch (error) {
     console.error('❌ Admin password login failed:', error);
@@ -740,6 +741,13 @@ exports.updateMyPassword = async (req, res) => {
 
     admin.setPassword(String(newPassword));
     await admin.save({ validateModifiedOnly: true });
+
+    // Every other session dies with the old password; this one stays signed in.
+    const currentToken = req.headers.authorization?.split(' ')[1] || null;
+    await Token.updateMany(
+      { userId: admin._id, isActive: true, ...(currentToken ? { token: { $ne: currentToken } } : {}) },
+      { $set: { isActive: false } },
+    ).catch(() => undefined);
 
     await AdminAuditLog.logAction({
       adminId: admin._id,

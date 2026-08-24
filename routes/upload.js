@@ -1,7 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const upload = require('../config/multer');
-const { protectAdmin } = require('../middleware/auth');
+const { protectAdmin, requireRole } = require('../middleware/auth');
+const MANAGE = requireRole('super_admin');
 const {
   uploadMedia,
   deleteMedia,
@@ -11,10 +12,10 @@ const {
 } = require('../controllers/uploadController');
 
 // Get all media
-router.get('/media/all', protectAdmin, getAllMedia);
+router.get('/media/all', protectAdmin, MANAGE, getAllMedia);
 
 // Get storage stats
-router.get('/stats', protectAdmin, getStorageStats);
+router.get('/stats', protectAdmin, MANAGE, getStorageStats);
 
 // Upload media files (multiple)
 router.post('/media', protectAdmin, upload.array('media', 10), uploadMedia);
@@ -23,6 +24,6 @@ router.post('/media', protectAdmin, upload.array('media', 10), uploadMedia);
 router.post('/media-url', protectAdmin, addMediaUrl);
 
 // Delete media
-router.delete('/media/:publicId', protectAdmin, deleteMedia);
+router.delete('/media/:publicId', protectAdmin, MANAGE, deleteMedia);
 
 module.exports = router;

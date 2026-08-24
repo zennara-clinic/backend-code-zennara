@@ -182,6 +182,27 @@ exports.protectAdmin = async (req, res, next) => {
         });
       }
 
+      // The JWT alone is not the session — the Token row is. Without this
+      // check, sign-out and password resets could never actually end a
+      // session: a copied bearer token would keep working until the JWT
+      // expired on its own.
+      const tokenDoc = await Token.findOne({ token, isActive: true });
+      if (!tokenDoc) {
+        return res.status(401).json({
+          success: false,
+          message: 'Session expired. Please login again.',
+          code: 'SESSION_EXPIRED'
+        });
+      }
+      if (!tokenDoc.isValid()) {
+        await tokenDoc.revoke();
+        return res.status(401).json({
+          success: false,
+          message: 'Session expired. Please login again.',
+          code: 'SESSION_EXPIRED'
+        });
+      }
+
       // Check if admin account still exists and is active
       const admin = await Admin.findById(decoded.adminId);
       

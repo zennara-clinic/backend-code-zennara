@@ -488,13 +488,19 @@ exports.deleteDoctor = async (req, res) => {
     const DermatologistSchedule = require('../models/DermatologistSchedule');
     await DermatologistSchedule.deleteOne({ doctorId: doctor.doctorId });
     const Admin = require('../models/Admin');
-    await Admin.deleteOne({
+    const orphan = await Admin.findOne({
       role: 'doctor',
       $or: [
         { doctorId: doctor._id },
         ...(doctor.email ? [{ email: String(doctor.email).toLowerCase() }] : []),
       ],
-    });
+    }).select('_id').lean();
+    if (orphan) {
+      await require('../models/Token').updateMany(
+        { userId: orphan._id, isActive: true }, { $set: { isActive: false } },
+      ).catch(() => undefined);
+      await Admin.deleteOne({ _id: orphan._id });
+    }
 
     return res.status(200).json({ success: true, message: 'Doctor deleted successfully' });
   } catch (error) {
@@ -593,6 +599,11 @@ exports.setDoctorPassword = async (req, res) => {
     withHash.setPassword(password);
     withHash.isActive = true;
     await withHash.save({ validateModifiedOnly: true });
+    // An admin-driven reset must end the doctor's existing sessions — the old
+    // password is dead, and so is anything signed in with it.
+    await require('../models/Token').updateMany(
+      { userId: withHash._id, isActive: true }, { $set: { isActive: false } },
+    ).catch(() => undefined);
 
     // Tell the dermatologist — a password they never learn is a locked door.
     let emailed = false;

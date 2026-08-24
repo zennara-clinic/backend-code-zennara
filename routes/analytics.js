@@ -14,10 +14,12 @@ const {
   getServiceAnalytics,
   getInventoryAnalytics
 } = require('../controllers/analyticsController');
-const { protectAdmin } = require('../middleware/auth');
+const { protectAdmin, requireRole } = require('../middleware/auth');
 
 // All routes are admin-protected
 router.use(protectAdmin);
+// Clinic-wide numbers belong to the admin panel, not clinical/floor logins.
+router.use(requireRole('super_admin'));
 
 // One-call clinic dashboard (revenue per stream, counts, dermatologist board).
 router.get('/dashboard', require('../controllers/dashboardController').getDashboard);

@@ -11,7 +11,8 @@ const {
   getAvailableCoupons,
   applyCoupon
 } = require('../controllers/couponController');
-const { protectAdmin, protect } = require('../middleware/auth');
+const { protectAdmin, protect, requireRole } = require('../middleware/auth');
+const MANAGE = requireRole('super_admin');
 
 // Public routes
 router.get('/available', getAvailableCoupons);
@@ -22,16 +23,16 @@ router.post('/apply', protect, applyCoupon);
 
 // Admin routes - require admin authentication
 // Statistics route (must be before /:id)
-router.get('/statistics', protectAdmin, getCouponStatistics);
+router.get('/statistics', protectAdmin, MANAGE, getCouponStatistics);
 
 // CRUD routes
 router.route('/')
-  .get(protectAdmin, getAllCoupons)
-  .post(protectAdmin, createCoupon);
+  .get(protectAdmin, MANAGE, getAllCoupons)
+  .post(protectAdmin, MANAGE, createCoupon);
 
 router.route('/:id')
-  .get(protectAdmin, getCouponById)
-  .put(protectAdmin, updateCoupon)
-  .delete(protectAdmin, deleteCoupon);
+  .get(protectAdmin, MANAGE, getCouponById)
+  .put(protectAdmin, MANAGE, updateCoupon)
+  .delete(protectAdmin, MANAGE, deleteCoupon);
 
 module.exports = router;

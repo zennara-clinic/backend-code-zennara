@@ -6,15 +6,16 @@ const {
   createAuditLog,
   getSuspicious,
 } = require('../../controllers/auditLogController');
-const { protectAdmin } = require('../../middleware/auth');
+const { protectAdmin, requireRole } = require('../../middleware/auth');
+const READ = requireRole('super_admin');
 
 router.use(protectAdmin);
 
 // Static paths first so they are not read as an entry id.
-router.get('/actions', getAuditFilters);
-router.get('/suspicious', getSuspicious);
+router.get('/actions', READ, getAuditFilters);
+router.get('/suspicious', READ, getSuspicious);
 
-router.get('/', getAuditLogs);
+router.get('/', READ, getAuditLogs);
 router.post('/', createAuditLog);
 
 module.exports = router;

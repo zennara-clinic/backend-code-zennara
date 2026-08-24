@@ -28,6 +28,11 @@ const AdminSchema = new mongoose.Schema({
     ref: 'Branch',
     default: null
   },
+  /** Centres a therapist works at (like a dermatologist's availableCentres). */
+  branchIds: [{
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Branch'
+  }],
   role: {
     type: String,
     // Three roles, three panels. 'super_admin' runs the clinic-wide admin

@@ -18,35 +18,36 @@ const {
 } = require('../controllers/notificationController');
 
 // Auth middleware
-const { protectAdmin, protect } = require('../middleware/auth');
+const { protectAdmin, protect, requireRole } = require('../middleware/auth');
+const MANAGE = requireRole('super_admin');
 
 // ==================== ADMIN ROUTES ====================
 // Get all notifications with filters (admin)
-router.get('/admin', protectAdmin, getAllNotifications);
+router.get('/admin', protectAdmin, MANAGE, getAllNotifications);
 
 // Get recent notifications (for popup - admin)
-router.get('/admin/recent', protectAdmin, getRecentNotifications);
+router.get('/admin/recent', protectAdmin, MANAGE, getRecentNotifications);
 
 // Get unread count (admin)
-router.get('/admin/unread-count', protectAdmin, getUnreadCount);
+router.get('/admin/unread-count', protectAdmin, MANAGE, getUnreadCount);
 
 // Get notification statistics (admin)
-router.get('/admin/stats', protectAdmin, getNotificationStats);
+router.get('/admin/stats', protectAdmin, MANAGE, getNotificationStats);
 
 // Get specific notification (admin)
-router.get('/admin/:id', protectAdmin, getNotificationById);
+router.get('/admin/:id', protectAdmin, MANAGE, getNotificationById);
 
 // Mark notification as read (admin)
-router.patch('/admin/:id/read', protectAdmin, markAsRead);
+router.patch('/admin/:id/read', protectAdmin, MANAGE, markAsRead);
 
 // Mark all notifications as read (admin)
-router.patch('/admin/mark-all-read', protectAdmin, markAllAsRead);
+router.patch('/admin/mark-all-read', protectAdmin, MANAGE, markAllAsRead);
 
 // Delete notification (admin)
-router.delete('/admin/:id', protectAdmin, deleteNotification);
+router.delete('/admin/:id', protectAdmin, MANAGE, deleteNotification);
 
 // Delete all read notifications (admin)
-router.delete('/admin/read/all', protectAdmin, deleteAllRead);
+router.delete('/admin/read/all', protectAdmin, MANAGE, deleteAllRead);
 
 // ==================== USER ROUTES ====================
 // Get user's notifications
