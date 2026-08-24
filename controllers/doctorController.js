@@ -222,6 +222,19 @@ exports.createDoctor = async (req, res) => {
     if (password && !body.email) {
       return res.status(400).json({ success: false, message: 'A work email is required to create the panel login' });
     }
+    if (body.email) {
+      const AdminModel = require('../models/Admin');
+      const clashAccount = await AdminModel.findOne({
+        email: String(body.email).toLowerCase(),
+        $or: [{ role: { $ne: 'doctor' } }, { doctorId: { $ne: null } }],
+      }).lean();
+      if (clashAccount) {
+        return res.status(400).json({
+          success: false,
+          message: 'This email already belongs to another staff login. Use a different work email.',
+        });
+      }
+    }
 
     const doctorId = (req.body.doctorId && Doctor.slugify(req.body.doctorId))
       || Doctor.slugify(body.name);
@@ -329,6 +342,20 @@ exports.updateDoctor = async (req, res) => {
       Object.keys(update).forEach((k) => {
         if (!SELF_EDITABLE.includes(k)) delete update[k];
       });
+    }
+
+    if (update.email && String(update.email).toLowerCase() !== String(doctor.email || '').toLowerCase()) {
+      const AdminModel = require('../models/Admin');
+      const clashAccount = await AdminModel.findOne({
+        email: String(update.email).toLowerCase(),
+        $or: [{ role: { $ne: 'doctor' } }, { doctorId: { $nin: [null, doctor._id] } }],
+      }).lean();
+      if (clashAccount) {
+        return res.status(400).json({
+          success: false,
+          message: 'This email already belongs to another staff login. Use a different work email.',
+        });
+      }
     }
 
     Object.assign(doctor, update);
@@ -457,7 +484,17 @@ async function ensureDoctorLogin(doctor) {
   if (!doctor || !doctor.email) return null;
   const email = String(doctor.email).toLowerCase();
   let account = await Admin.findOne({ doctorId: doctor._id });
-  if (!account) account = await Admin.findOne({ email });
+  // Adopt by email ONLY when it is an unclaimed doctor-role account. Matching
+  // a super-admin or therapist here would relink and overwrite THEIR login —
+  // and hand this dermatologist that panel's access when a password is set.
+  if (!account) {
+    const byEmail = await Admin.findOne({ email });
+    if (byEmail) {
+      const claimedElsewhere = byEmail.doctorId && String(byEmail.doctorId) !== String(doctor._id);
+      if (byEmail.role !== 'doctor' || claimedElsewhere) return null;
+      account = byEmail;
+    }
+  }
   if (!account) {
     account = await Admin.create({ email, name: doctor.name, role: 'doctor', doctorId: doctor._id, phone: doctor.phone || null, isActive: doctor.isActive !== false });
     return account;
@@ -497,7 +534,12 @@ exports.setDoctorPassword = async (req, res) => {
     const doctor = await Doctor.findById(req.params.id);
     if (!doctor) return res.status(404).json({ success: false, message: 'Doctor not found' });
     const account = await ensureDoctorLogin(doctor);
-    if (!account) return res.status(400).json({ success: false, message: 'Give the dermatologist an email first.' });
+    if (!account) {
+      return res.status(400).json({
+        success: false,
+        message: 'No login could be linked — give the dermatologist an email first, and make sure it is not another staff account\u2019s address.',
+      });
+    }
     const withHash = await Admin.findById(account._id).select('+passwordHash');
     const isReset = !!withHash.passwordHash;
     withHash.setPassword(password);

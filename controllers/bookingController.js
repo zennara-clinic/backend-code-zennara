@@ -516,6 +516,11 @@ exports.rescheduleBooking = async (req, res) => {
     booking.preferredTimeSlots = newTimeSlots;
     booking.confirmedDate = undefined;
     booking.confirmedTime = undefined;
+    // The diary reads slotTime against preferredDate — left as the OLD time it
+    // would block the wrong slot on the NEW date. While the request is pending
+    // the new preferred times hold the diary; declining restores the original
+    // hold through confirmedTime.
+    if (booking.slotTime) booking.slotTime = null;
     booking.status = 'Rescheduled';
     booking.rescheduleRejected = false;
     booking.rescheduledAt = new Date();
@@ -2089,6 +2094,25 @@ exports.createBookingAdmin = async (req, res) => {
       });
     }
 
+    // Reception booking a dermatologist onto a held slot is the same clash the
+    // app is protected against. Only a genuine double-booking blocks; other
+    // diary states (lead time, leave) stay overridable at the front desk.
+    if (specialistId && confirmNow && slots[0]) {
+      const { isSlotBookable } = require('../utils/dermatologistSlots');
+      const { clinicDateKey } = require('../utils/bookingTime');
+      const key = clinicDateKey(new Date(preferredDate));
+      const check = key
+        ? await isSlotBookable(specialistId, key, slots[0], { branchId: branch._id })
+        : { ok: true };
+      if (!check.ok && check.reason === 'already-booked') {
+        return res.status(409).json({
+          success: false,
+          code: 'DERMATOLOGIST_SLOT_UNAVAILABLE',
+          message: 'Another guest already holds that time with this dermatologist. Pick a different slot.',
+        });
+      }
+    }
+
     const booking = new Booking({
       userId: user._id,
       consultationId,
@@ -2099,6 +2123,7 @@ exports.createBookingAdmin = async (req, res) => {
       preferredLocation,
       preferredDate: new Date(preferredDate),
       preferredTimeSlots: slots,
+      slotTime: specialistId && confirmNow ? slots[0] : undefined,
       specialistId: specialistId || undefined,
       specialistName: specialistName || undefined,
       specialistTier: specialistTier || undefined,
