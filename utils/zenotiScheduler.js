@@ -46,6 +46,14 @@ function startZenotiScheduler() {
     appointmentSync.syncRecentAppointments({ trigger: 'schedule' }).catch(() => {});
   });
 
+  // Booking-horizon pass: day +6 → +62 in seven-day chunks, every 15 minutes.
+  // Keeps far-out Zenoti reservations blocking the app's consultation slots
+  // (the near window above only reaches six days ahead; the slot engine offers
+  // up to the dermatologist's horizon, 60 days by default).
+  cron.schedule('*/15 * * * *', () => {
+    appointmentSync.syncUpcomingAppointments({ trigger: 'schedule' }).catch(() => {});
+  });
+
   // On boot, resume whichever part of the initial import is incomplete. A
   // restart must not leave thousands of roster-only patients waiting for tiny
   // five-minute batches before their histories appear in the panel.
@@ -57,6 +65,9 @@ function startZenotiScheduler() {
       // The appointment book is the operational priority and takes only one
       // request per clinic. Do it before a potentially long history backlog.
       await appointmentSync.syncRecentAppointments({ trigger: 'boot' });
+      // Then the horizon, so far-out Zenoti bookings block slots immediately
+      // after a deploy rather than waiting for the first 15-minute pass.
+      await appointmentSync.syncUpcomingAppointments({ trigger: 'boot' });
       const [linked, mirrored] = await Promise.all([
         User.countDocuments({ zenotiGuestId: { $exists: true, $ne: null } }),
         ZenotiGuestData.countDocuments({ syncedAt: { $ne: null } }),

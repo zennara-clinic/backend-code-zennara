@@ -260,19 +260,15 @@ async function syncUserAppointments(user, appointments) {
 }
 
 /**
- * Reconcile yesterday through the next five days for every live clinic. Zenoti
- * caps this endpoint at seven days, and the scheduler calls it every 2 minutes.
+ * Reconcile one clinic-date window for every live clinic. Zenoti caps the
+ * appointments endpoint at seven days per call, so callers keep windows ≤7d.
  */
-async function syncRecentAppointments({ trigger = 'schedule' } = {}) {
-  if (!zenoti.isConfigured() || appointmentSyncRunning) return null;
-  appointmentSyncRunning = true;
+async function reconcileWindow(from, to, { trigger = 'schedule', mode = 'incremental' } = {}) {
   const tally = { total: 0, processed: 0, created: 0, updated: 0, skipped: 0, failed: 0 };
   let run = null;
   try {
-    run = await ZenotiSyncRun.create({ type: 'appointments', trigger, mode: 'incremental' });
+    run = await ZenotiSyncRun.create({ type: 'appointments', trigger, mode });
     const context = await lookupContext();
-    const from = clinicDay(Date.now() - 24 * 60 * 60 * 1000);
-    const to = clinicDay(Date.now() + 6 * 24 * 60 * 60 * 1000);
     const clinics = Object.entries(CENTERS).filter(([, value]) => value.isClinic);
     const centerResults = await Promise.allSettled(clinics.map(([centerId]) =>
       zenoti.getCenterAppointments(centerId, { from, to, includeCancelled: true })
@@ -318,15 +314,57 @@ async function syncRecentAppointments({ trigger = 'schedule' } = {}) {
     return tally;
   } catch (error) {
     if (run) await run.updateOne({ ...tally, status: 'failed', error: error.message, finishedAt: new Date() });
-    logger.error('Zenoti appointment reconciliation failed', { error: error.message });
+    logger.error('Zenoti appointment reconciliation failed', { from, to, error: error.message });
     return tally;
+  }
+}
+
+/**
+ * The operational near window: yesterday through the next six days, every two
+ * minutes. This is what keeps today's diary, check-ins and reception live.
+ */
+async function syncRecentAppointments({ trigger = 'schedule' } = {}) {
+  if (!zenoti.isConfigured() || appointmentSyncRunning) return null;
+  appointmentSyncRunning = true;
+  try {
+    const from = clinicDay(Date.now() - 24 * 60 * 60 * 1000);
+    const to = clinicDay(Date.now() + 6 * 24 * 60 * 60 * 1000);
+    return await reconcileWindow(from, to, { trigger, mode: 'incremental' });
   } finally {
     appointmentSyncRunning = false;
   }
 }
 
+/**
+ * The booking-horizon window: day +6 through day +62, in seven-day chunks.
+ *
+ * The slot engine treats mirrored Zenoti appointments as ordinary Bookings, so
+ * a Zenoti-side reservation only blocks an app slot once it has been mirrored.
+ * The near window stops at six days out while the default dermatologist
+ * booking horizon is 60 days — without this pass, a Zenoti booking ten days
+ * ahead would leave its slot showing as free in the app. Runs on a slower
+ * cadence (the far diary changes slowly) and never blocks the near window.
+ */
+let horizonSyncRunning = false;
+async function syncUpcomingAppointments({ trigger = 'schedule' } = {}) {
+  if (!zenoti.isConfigured() || horizonSyncRunning) return null;
+  horizonSyncRunning = true;
+  const totals = { total: 0, processed: 0, created: 0, updated: 0, skipped: 0, failed: 0 };
+  try {
+    for (let offset = 6; offset < 62; offset += 7) {
+      const from = clinicDay(Date.now() + offset * 24 * 60 * 60 * 1000);
+      const to = clinicDay(Date.now() + Math.min(offset + 7, 62) * 24 * 60 * 60 * 1000);
+      const tally = await reconcileWindow(from, to, { trigger, mode: 'horizon' });
+      if (tally) Object.keys(totals).forEach((k) => { totals[k] += tally[k] || 0; });
+    }
+    return totals;
+  } finally {
+    horizonSyncRunning = false;
+  }
+}
+
 function isAppointmentSyncRunning() {
-  return appointmentSyncRunning;
+  return appointmentSyncRunning || horizonSyncRunning;
 }
 
 module.exports = {
@@ -334,5 +372,6 @@ module.exports = {
   upsertAppointment,
   syncUserAppointments,
   syncRecentAppointments,
+  syncUpcomingAppointments,
   isAppointmentSyncRunning,
 };

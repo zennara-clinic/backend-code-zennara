@@ -277,20 +277,32 @@ exports.updateDoctor = async (req, res) => {
     // app's deep links all point at it.
     const update = pickBody(req.body);
 
-    // A doctor may edit their own profile, but never their own price. Fees move
-    // only through an admin-approved request (/api/doctor-fee-requests), so the
-    // rule is enforced here rather than trusting the client to omit the field.
+    // Ownership split (clinic decision, 2026-08-25):
+    //   the dermatologist owns their storefront — what guests read on the app
+    //   card (display name, photo, experience, qualifications, expertise,
+    //   achievements) plus their contact phone;
+    //   the clinic owns money and placement — consultation fee/tier,
+    //   designation (it follows the tier), centre assignment, visibility and
+    //   ordering. Fees move only through an admin-approved request
+    //   (/api/doctor-fee-requests). Email changes go through
+    //   /admin/auth/me/contact so they always require the current password.
+    // Enforced here rather than trusting either panel to omit fields.
     if (req.admin?.role === 'doctor') {
-      // Dermatologists own their profile copy (qualifications, expertise,
-      // experience, centres, photo, designation); the clinic owns identity,
-      // pricing and visibility.
-      ['fee', 'tier', 'level', 'isActive', 'displayOrder', 'email', 'phone', 'name'].forEach((k) => delete update[k]);
+      const SELF_EDITABLE = [
+        'name', 'photo', 'experienceYears', 'experienceNote',
+        'qualifications', 'expertise', 'achievements', 'phone',
+      ];
+      Object.keys(update).forEach((k) => {
+        if (!SELF_EDITABLE.includes(k)) delete update[k];
+      });
     }
 
     Object.assign(doctor, update);
     await doctor.save();
     await syncAvailability(doctor, req.admin?._id || null);
-    if (req.admin?.role !== 'doctor') await ensureDoctorLogin(doctor);
+    // Keep the login account's name/phone/email mirroring the profile for
+    // self-edits too — the sidebar and staff lists read the Admin row.
+    await ensureDoctorLogin(doctor);
 
     return res.status(200).json({
       success: true,
