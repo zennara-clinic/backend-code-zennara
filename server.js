@@ -67,12 +67,12 @@ app.set('trust proxy', trustProxy);
 
 /* ------------------------------ Allowed origins ------------------------------ */
 /*
- * There is one clinic panel now — the unified panel in `Panels/`. The legacy
- * admin panel's deployed origin used to be hard-coded here; it is no longer
- * trusted. Set PANEL_ORIGINS in the environment to wherever the unified panel
- * is deployed (comma-separated for staging plus production), for example:
+ * The clinic panel is split into three apps in `Panels/` — admin (5173),
+ * dermatologist (5174) and therapist (5175). Set PANEL_ORIGINS in the
+ * environment to wherever the panels are deployed (comma-separated for all
+ * three, plus staging), for example:
  *
- *   PANEL_ORIGINS=https://panel.zennara.in,https://staging-panel.zennara.in
+ *   PANEL_ORIGINS=https://panel.zennara.in,https://derm.zennara.in,https://therapist.zennara.in
  *
  * Local development ports and the Expo dev server are always allowed.
  */
@@ -82,7 +82,9 @@ const PANEL_ORIGINS = (process.env.PANEL_ORIGINS || '')
   .filter(Boolean);
 
 const DEV_ORIGINS = [
-  'http://localhost:5173',   // unified panel (Vite)
+  'http://localhost:5173',   // admin panel (Vite)
+  'http://localhost:5174',   // dermatologist panel (Vite)
+  'http://localhost:5175',   // therapist panel (Vite)
   'http://localhost:8081',   // Expo Metro
   'http://localhost:19006',  // Expo web
   'http://localhost:19000',  // Expo alternative
