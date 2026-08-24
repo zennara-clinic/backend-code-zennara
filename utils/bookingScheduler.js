@@ -113,6 +113,15 @@ function isTimePassed(bookingTime, currentTime) {
 }
 
 /** "10:00 AM" from a Date; a date with no set time defaults to a 10 AM slot. */
+/** "HH:mm" in clinic time — the diary keys slots on this, not on a label. */
+function toHHMM(date) {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(new Date(date));
+  const get = (t) => parts.find((x) => x.type === t)?.value ?? '00';
+  return `${get('hour')}:${get('minute')}`;
+}
+
 function formatSlotTime(date) {
   const h = date.getHours();
   const m = date.getMinutes();
@@ -195,6 +204,15 @@ const createDuePackageBookings = async () => {
             amount: 0,
             paymentStatus: 'paid',
             status: 'Confirmed',
+            // The dermatologist the clinic picked for THIS session. slotTime is
+            // set alongside so the session actually holds the diary slot —
+            // without it the doctor would still look free at that hour.
+            ...(session.specialistId || session.specialistName ? {
+              specialistId: session.specialistId || null,
+              specialistName: session.specialistName || null,
+              specialistTier: session.specialistTier || null,
+              slotTime: toHHMM(when),
+            } : {}),
             isPackageIncluded: true,
             packageAssignmentId: assignment._id,
             packageSessionId: session._id

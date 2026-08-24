@@ -118,6 +118,12 @@ const packageAssignmentSchema = new mongoose.Schema({
       type: String,            // so the displayed slot never depends on server timezone.
       default: ''
     },
+    // Who runs this session. A course can move between dermatologists, so the
+    // choice is per session rather than per assignment. Copied onto the
+    // Booking the scheduler creates, so the diary and the app agree.
+    specialistId: { type: String, default: null },   // Doctor.doctorId slug
+    specialistName: { type: String, default: null },
+    specialistTier: { type: String, default: null },
     status: {
       type: String,
       enum: ['Scheduled', 'Booked', 'Completed', 'Cancelled'],
