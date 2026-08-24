@@ -45,6 +45,7 @@ router.put('/admin/:id/checkout', protectAdmin, auditLog('BOOKING_CHECKED_OUT', 
 router.post('/admin/:id/visit-code', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.sendVisitCodeAdmin);
 router.get('/admin/:id/visit-code', protectAdmin, requireRole('super_admin'), auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.revealVisitCodeAdmin);
 router.put('/admin/:id/dermatologist', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.setDermatologistAdmin);
+router.put('/admin/:id/therapist', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.setTherapistAdmin);
 router.put('/admin/:id/verify-checkin', protectAdmin, auditLog('BOOKING_CHECKED_IN', 'BOOKING'), verifyCheckInCode);
 router.put('/admin/:id/verify-checkout', protectAdmin, auditLog('BOOKING_CHECKED_OUT', 'BOOKING'), verifyCheckOutCode);
 router.put('/admin/:id/no-show', protectAdmin, auditLog('BOOKING_NO_SHOW', 'BOOKING'), markNoShow);

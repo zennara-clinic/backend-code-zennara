@@ -1637,6 +1637,34 @@ exports.setDermatologistAdmin = async (req, res) => {
   }
 };
 
+// @desc    Assign (or clear) the therapist who will run this session
+// @route   PUT /api/bookings/admin/:id/therapist
+// @access  Staff (audited)
+exports.setTherapistAdmin = async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
+
+    const { therapistAdminId, clear } = req.body || {};
+    if (clear) {
+      booking.assignedTherapistId = null;
+      booking.assignedTherapistName = null;
+    } else if (therapistAdminId) {
+      const Admin = require('../models/Admin');
+      const therapist = await Admin.findOne({ _id: therapistAdminId, role: 'therapist', isActive: true }).lean();
+      if (!therapist) return res.status(400).json({ success: false, message: 'Pick an active therapist from the list.' });
+      booking.assignedTherapistId = therapist._id;
+      booking.assignedTherapistName = therapist.name;
+    } else {
+      return res.status(400).json({ success: false, message: 'Pick a therapist, or clear the assignment.' });
+    }
+    await booking.save();
+    return res.json({ success: true, data: booking });
+  } catch (error) {
+    return res.status(error.status || 500).json({ success: false, message: error.message || 'Failed to assign the therapist' });
+  }
+};
+
 // @desc    Get / generate the guest's current visit code
 // @route   GET /api/bookings/:id/visit-code
 // @access  Private (owner)

@@ -120,6 +120,9 @@ const bookingSchema = new mongoose.Schema({
   // Floor assignment — who is delivering the session and where.
   therapistId: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', default: null, index: true },
   therapistName: { type: String, trim: true, default: '' },
+  /** Which therapist reception assigned this session to (their Admin login). */
+  assignedTherapistId: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', default: null },
+  assignedTherapistName: { type: String, trim: true, default: null },
   room: { type: String, trim: true, default: '' },
 
   /**
