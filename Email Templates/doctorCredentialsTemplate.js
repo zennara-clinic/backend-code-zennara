@@ -7,12 +7,12 @@
  * one place they learn their credentials.
  */
 
-const getDoctorCredentialsTemplate = (name, { email, password, panelUrl = '', mode = 'created' } = {}) => {
+const getDoctorCredentialsTemplate = (name, { email, password, panelUrl = '', mode = 'created', panel = 'Dermatologist' } = {}) => {
   const created = mode !== 'reset';
   const title = created ? 'Your Zennara panel login' : 'Your panel password was reset';
   const intro = created
-    ? 'The clinic has created your Dermatologist panel account. You can sign in with the details below.'
-    : 'The clinic has reset your Dermatologist panel password. Use the new details below the next time you sign in.';
+    ? `The clinic has created your ${panel} panel account. You can sign in with the details below.`
+    : `The clinic has reset your ${panel} panel password. Use the new details below the next time you sign in.`;
 
   return `
     <!DOCTYPE html>
@@ -69,17 +69,16 @@ const getDoctorCredentialsTemplate = (name, { email, password, panelUrl = '', mo
           <p>Zennara — Skin · Aesthetics · Wellness</p>
         </div>
         <div class="body">
-          <p>Dear ${name || 'Doctor'},</p>
+          <p>Dear ${name || 'there'},</p>
           <p>${intro}</p>
           <div class="creds">
             <span class="row"><span class="label">Sign-in email</span><span class="value">${email}</span></span>
             <span class="row"><span class="label">Password</span><span class="value">${password}</span></span>
           </div>
-          ${panelUrl ? `<a class="btn" href="${panelUrl}">Open the Dermatologist panel</a><br/>` : ''}
+          ${panelUrl ? `<a class="btn" href="${panelUrl}">Open the ${panel} panel</a><br/>` : ''}
           <p class="note">
-            Sign-in is by email and password only — no codes are emailed to dermatologist accounts.
-            You can change this password any time from <strong>My profile → Account &amp; security</strong>
-            inside the panel. If you did not expect this email, contact the clinic admin immediately.
+            Sign-in is by email and password only — no codes are emailed for this account.
+            You can change this password any time from inside the panel. If you did not expect this email, contact the clinic admin immediately.
           </p>
         </div>
         <div class="footer">This is an automated message from the Zennara clinic panel.</div>

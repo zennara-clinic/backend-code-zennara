@@ -22,6 +22,12 @@ const AdminSchema = new mongoose.Schema({
     ref: 'Doctor',
     default: null
   },
+  /** Home centre for floor staff (therapists) — pins their panel to it. */
+  branchId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Branch',
+    default: null
+  },
   role: {
     type: String,
     // Three roles, three panels. 'super_admin' runs the clinic-wide admin

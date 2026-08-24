@@ -470,19 +470,17 @@ exports.sendCheckInSuccessful = async (email, fullName, appointmentData, branch 
  * resets the password. Set DOCTOR_PANEL_URL in the environment to include a
  * sign-in button.
  */
-exports.sendDoctorCredentials = async (email, name, { password, mode = 'created' } = {}) => {
+exports.sendDoctorCredentials = async (email, name, { password, mode = 'created', panel = 'Dermatologist' } = {}) => {
   const { getDoctorCredentialsTemplate } = require('../Email Templates/doctorCredentialsTemplate');
-  const htmlContent = getDoctorCredentialsTemplate(name, {
-    email,
-    password,
-    mode,
-    panelUrl: process.env.DOCTOR_PANEL_URL || '',
-  });
+  const panelUrl = panel === 'Therapist'
+    ? (process.env.THERAPIST_PANEL_URL || '')
+    : (process.env.DOCTOR_PANEL_URL || '');
+  const htmlContent = getDoctorCredentialsTemplate(name, { email, password, mode, panel, panelUrl });
   const subject = mode === 'reset'
-    ? 'Zennara Dermatologist Panel — your password was reset'
-    : 'Zennara Dermatologist Panel — your login details';
+    ? `Zennara ${panel} Panel — your password was reset`
+    : `Zennara ${panel} Panel — your login details`;
   const response = await sendEmail(email, subject, htmlContent);
-  console.log(`✅ Doctor credentials email sent (${mode})`);
+  console.log(`✅ ${panel} credentials email sent (${mode})`);
   return response;
 };
 

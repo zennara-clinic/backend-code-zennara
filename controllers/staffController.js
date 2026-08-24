@@ -18,18 +18,24 @@ const authorizedEmails = () =>
     .map((e) => e.trim().toLowerCase())
     .filter(Boolean);
 
+const PANEL_LABEL = { doctor: 'Dermatologist', therapist: 'Therapist' };
+
 const shape = (admin, allowList) => ({
   _id: admin._id,
   email: admin.email,
   name: admin.name,
   role: admin.role,
+  phone: admin.phone || null,
+  branchId: admin.branchId || null,
   isActive: admin.isActive,
   isVerified: admin.isVerified,
   lastLogin: admin.lastLogin,
   createdAt: admin.createdAt,
   doctorId: admin.doctorId || null,
-  /** False when the address is missing from ADMIN_EMAILS — login would fail. */
-  canSignIn: allowList.includes(String(admin.email).toLowerCase()),
+  hasPassword: !!admin.passwordHash,
+  passwordSetAt: admin.passwordSetAt || null,
+  /** Doctors/therapists sign in with their password; others via the env list too. */
+  canSignIn: allowList.includes(String(admin.email).toLowerCase()) || !!admin.passwordHash || admin.role === 'super_admin',
 });
 
 // @desc    List staff accounts
@@ -47,7 +53,7 @@ exports.getStaff = async (req, res) => {
       filter.$or = [{ email: rx }, { name: rx }];
     }
 
-    const admins = await Admin.find(filter).sort({ role: 1, name: 1 }).lean();
+    const admins = await Admin.find(filter).select('+passwordHash').sort({ role: 1, name: 1 }).lean();
     const allowList = authorizedEmails();
 
     return res.status(200).json({
@@ -78,13 +84,16 @@ exports.getStaff = async (req, res) => {
 // @access  super_admin
 exports.createStaff = async (req, res) => {
   try {
-    const { email, name, role, doctorId } = req.body;
+    const { email, name, role, doctorId, phone, branchId, password } = req.body;
 
     if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
       return res.status(400).json({ success: false, message: 'A valid email is required' });
     }
     if (!ROLES.includes(role)) {
       return res.status(400).json({ success: false, message: `Role must be one of: ${ROLES.join(', ')}` });
+    }
+    if (password && String(password).length < 8) {
+      return res.status(400).json({ success: false, message: 'The password must be at least 8 characters' });
     }
 
     const existing = await Admin.findOne({ email: email.toLowerCase() });
@@ -97,17 +106,41 @@ exports.createStaff = async (req, res) => {
       name: name || email.split('@')[0],
       role,
       doctorId: role === 'doctor' && doctorId ? doctorId : null,
+      phone: phone ? String(phone).trim() : null,
+      branchId: branchId || null,
       isActive: true,
     });
 
+    // Same atomic onboarding as dermatologists: password set in the same
+    // request and the credentials emailed, so they can sign in immediately.
+    let credentialsEmailed = false;
+    if (password) {
+      const withHash = await Admin.findById(admin._id).select('+passwordHash');
+      withHash.setPassword(String(password));
+      await withHash.save({ validateModifiedOnly: true });
+      admin.passwordHash = withHash.passwordHash;
+      try {
+        await require('../utils/emailService').sendDoctorCredentials(admin.email, admin.name, {
+          password: String(password),
+          mode: 'created',
+          panel: PANEL_LABEL[role] || 'Zennara',
+        });
+        credentialsEmailed = true;
+      } catch (err) {
+        console.error('❌ Staff credentials email failed (login still created):', err.message);
+      }
+    }
+
     const allowList = authorizedEmails();
-    const canSignIn = allowList.includes(admin.email);
 
     return res.status(201).json({
       success: true,
-      message: canSignIn
-        ? 'Staff account created'
-        : `Staff account created. Add ${admin.email} to ADMIN_EMAILS on the server before they can sign in.`,
+      message: password
+        ? (credentialsEmailed
+            ? `Account created — login details emailed to ${admin.email}`
+            : 'Account created and password set, but the credentials email failed. Share the password with them directly.')
+        : 'Staff account created',
+      credentialsEmailed,
       data: shape(admin, allowList),
     });
   } catch (error) {
@@ -148,9 +181,12 @@ exports.updateStaff = async (req, res) => {
     }
 
     const previousRole = admin.role;
+    const { phone, branchId } = req.body;
     if (name !== undefined) admin.name = name;
     if (role !== undefined) admin.role = role;
     if (doctorId !== undefined) admin.doctorId = doctorId || null;
+    if (phone !== undefined) admin.phone = String(phone).trim() || null;
+    if (branchId !== undefined) admin.branchId = branchId || null;
     await admin.save();
 
     if (role && role !== previousRole) {
@@ -257,6 +293,48 @@ exports.deleteStaff = async (req, res) => {
       message: 'Failed to delete staff account',
       error: error.message,
     });
+  }
+};
+
+// @desc    Set / reset a staff member's password (credentials are emailed)
+// @route   PUT /api/admin/staff/:id/password
+// @access  super_admin
+exports.setStaffPassword = async (req, res) => {
+  try {
+    const { password } = req.body || {};
+    if (!password || String(password).length < 8) {
+      return res.status(400).json({ success: false, message: 'Password must be at least 8 characters.' });
+    }
+    const admin = await Admin.findById(req.params.id).select('+passwordHash');
+    if (!admin) return res.status(404).json({ success: false, message: 'Staff account not found' });
+
+    const isReset = !!admin.passwordHash;
+    admin.setPassword(String(password));
+    admin.isActive = true;
+    await admin.save({ validateModifiedOnly: true });
+
+    let emailed = false;
+    try {
+      await require('../utils/emailService').sendDoctorCredentials(admin.email, admin.name, {
+        password: String(password),
+        mode: isReset ? 'reset' : 'created',
+        panel: PANEL_LABEL[admin.role] || 'Zennara',
+      });
+      emailed = true;
+    } catch (err) {
+      console.error('❌ Staff credentials email failed (password still set):', err.message);
+    }
+
+    return res.status(200).json({
+      success: true,
+      credentialsEmailed: emailed,
+      message: emailed
+        ? `Password ${isReset ? 'reset' : 'set'} — details emailed to ${admin.email}.`
+        : `Password ${isReset ? 'reset' : 'set'}. The email could not be sent — share it with them directly.`,
+    });
+  } catch (error) {
+    console.error('Set staff password error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to set the password' });
   }
 };
 

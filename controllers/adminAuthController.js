@@ -59,11 +59,12 @@ exports.adminLogin = async (req, res) => {
 
     const admin = staffLogin;
 
-    // Dermatologists sign in with a password only — no emailed codes.
-    if (admin.role === 'doctor') {
+    // Dermatologists and therapists sign in with a password only — no codes.
+    if (admin.role === 'doctor' || admin.role === 'therapist') {
+      const label = admin.role === 'doctor' ? 'Dermatologist' : 'Therapist';
       return res.status(400).json({
         success: false,
-        message: 'Dermatologist accounts sign in with a password. Ask the clinic admin to set or reset yours.'
+        message: `${label} accounts sign in with a password. Ask the clinic admin to set or reset yours.`
       });
     }
 
@@ -166,11 +167,12 @@ exports.adminVerifyOTP = async (req, res) => {
       });
     }
 
-    // Dermatologists sign in with a password only — no emailed codes.
-    if (admin.role === 'doctor') {
+    // Dermatologists and therapists sign in with a password only — no codes.
+    if (admin.role === 'doctor' || admin.role === 'therapist') {
+      const label = admin.role === 'doctor' ? 'Dermatologist' : 'Therapist';
       return res.status(400).json({
         success: false,
-        message: 'Dermatologist accounts sign in with a password. Ask the clinic admin to set or reset yours.'
+        message: `${label} accounts sign in with a password. Ask the clinic admin to set or reset yours.`
       });
     }
 
@@ -367,11 +369,12 @@ exports.adminResendOTP = async (req, res) => {
       });
     }
 
-    // Dermatologists sign in with a password only — no emailed codes.
-    if (admin.role === 'doctor') {
+    // Dermatologists and therapists sign in with a password only — no codes.
+    if (admin.role === 'doctor' || admin.role === 'therapist') {
+      const label = admin.role === 'doctor' ? 'Dermatologist' : 'Therapist';
       return res.status(400).json({
         success: false,
-        message: 'Dermatologist accounts sign in with a password. Ask the clinic admin to set or reset yours.'
+        message: `${label} accounts sign in with a password. Ask the clinic admin to set or reset yours.`
       });
     }
 
@@ -476,6 +479,7 @@ exports.getAdminProfile = async (req, res) => {
         name: admin.name,
         role: admin.role,
         phone: admin.phone || null,
+        branchId: admin.branchId || null,
         isActive: admin.isActive,
         isVerified: admin.isVerified,
         lastLogin: admin.lastLogin,
@@ -619,7 +623,7 @@ exports.adminPasswordLogin = async (req, res) => {
     res.status(200).json({
       success: true,
       message: 'Login successful',
-      data: { token, expiresAt, admin: { _id: admin._id, id: admin._id, email: admin.email, name: admin.name, role: admin.role, isActive: admin.isActive, isVerified: admin.isVerified } },
+      data: { token, expiresAt, admin: { _id: admin._id, id: admin._id, email: admin.email, name: admin.name, role: admin.role, phone: admin.phone || null, branchId: admin.branchId || null, isActive: admin.isActive, isVerified: admin.isVerified } },
     });
   } catch (error) {
     console.error('❌ Admin password login failed:', error);
