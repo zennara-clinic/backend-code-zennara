@@ -465,6 +465,27 @@ exports.sendCheckInSuccessful = async (email, fullName, appointmentData, branch 
 // ========================================
 
 // Send Admin OTP Email
+/**
+ * Dermatologist panel credentials — sent when the admin creates the login or
+ * resets the password. Set DOCTOR_PANEL_URL in the environment to include a
+ * sign-in button.
+ */
+exports.sendDoctorCredentials = async (email, name, { password, mode = 'created' } = {}) => {
+  const { getDoctorCredentialsTemplate } = require('../Email Templates/doctorCredentialsTemplate');
+  const htmlContent = getDoctorCredentialsTemplate(name, {
+    email,
+    password,
+    mode,
+    panelUrl: process.env.DOCTOR_PANEL_URL || '',
+  });
+  const subject = mode === 'reset'
+    ? 'Zennara Dermatologist Panel — your password was reset'
+    : 'Zennara Dermatologist Panel — your login details';
+  const response = await sendEmail(email, subject, htmlContent);
+  console.log(`✅ Doctor credentials email sent (${mode})`);
+  return response;
+};
+
 exports.sendAdminOTP = async (email, adminName, otp) => {
   try {
     const htmlContent = getAdminOTPEmailTemplate(adminName, otp);
