@@ -153,7 +153,7 @@ async function clampToBranch(ranges, branchId, key) {
 }
 
 /** Starts already held by a live booking, as minutes from midnight. */
-async function bookedTimes(doctorId, key) {
+async function bookedTimes(doctorId, key, { excludeBookingId = null } = {}) {
   const day = fromKey(key);
   const next = new Date(day);
   next.setDate(next.getDate() + 1);
@@ -162,6 +162,9 @@ async function bookedTimes(doctorId, key) {
     specialistId: doctorId,
     preferredDate: { $gte: day, $lt: next },
     status: { $in: LIVE_STATUSES },
+    // A reschedule re-checks the target slot; the booking being moved must not
+    // count itself as the conflict.
+    ...(excludeBookingId ? { _id: { $ne: excludeBookingId } } : {}),
   })
     .select('slotTime confirmedTime preferredTimeSlots')
     .lean();
@@ -195,11 +198,19 @@ function overlapsHeldSession(taken, start, duration = SESSION_SLOT_MINUTES) {
  * `branchId` narrows to the ranges sat at that centre; passing nothing returns
  * the whole day.
  */
-async function slotsForDate(doctorId, key, { branchId = null, now = new Date() } = {}) {
+async function slotsForDate(doctorId, key, { branchId = null, now = new Date(), excludeBookingId = null } = {}) {
   const schedule = await DermatologistSchedule.findOne({ doctorId }).lean();
 
   if (!schedule) return { date: key, configured: false, slots: [], reason: 'not-configured' };
   if (!schedule.isActive) return { date: key, configured: true, slots: [], reason: 'inactive' };
+
+  // An unlisted (or deleted) dermatologist is not bookable, even by a client
+  // that still holds their id — the roster check alone cannot guarantee that.
+  const DoctorModel = require('../models/Doctor');
+  const who = await DoctorModel.findOne({ doctorId }).select('isActive').lean();
+  if (!who || who.isActive === false) {
+    return { date: key, configured: true, slots: [], reason: 'doctor-inactive' };
+  }
 
   const todayKey = dateKey(now);
   const horizonEnd = fromKey(addDaysToKey(todayKey, schedule.horizonDays ?? 60));
@@ -238,7 +249,7 @@ async function slotsForDate(doctorId, key, { branchId = null, now = new Date() }
   // platform policy is authoritative, so reads become hourly immediately.
   const slotMinutes = SESSION_SLOT_MINUTES;
   const earliest = new Date(now.getTime() + (schedule.leadTimeHours ?? 0) * 3600 * 1000);
-  const taken = await bookedTimes(doctorId, key);
+  const taken = await bookedTimes(doctorId, key, { excludeBookingId });
 
   // A Set, because two weekly rows at different centres can overlap and would
   // otherwise offer the same time twice.
@@ -283,6 +294,18 @@ async function availabilityRange(doctorId, fromKeyStr, toKeyStr, { branchId = nu
 
   const from = fromKey(fromKeyStr);
   const to = fromKey(toKeyStr);
+
+  // Same gate as slotsForDate: an unlisted dermatologist paints a fully closed
+  // calendar rather than a bookable one.
+  const DoctorModel = require('../models/Doctor');
+  const who = await DoctorModel.findOne({ doctorId }).select('isActive').lean();
+  if (!who || who.isActive === false) {
+    const days = [];
+    for (let d = new Date(from); d <= to; d.setUTCDate(d.getUTCDate() + 1)) {
+      days.push({ date: dateKey(d), open: false, total: 0, free: 0 });
+    }
+    return { configured: true, slotMinutes: SESSION_SLOT_MINUTES, days };
+  }
   const next = new Date(to);
   next.setDate(next.getDate() + 1);
 
@@ -363,8 +386,8 @@ async function availabilityRange(doctorId, fromKeyStr, toKeyStr, { branchId = nu
  * The picker's answer is already stale by the time a payment returns — someone
  * else may have taken the slot while the patient was in the Razorpay sheet.
  */
-async function isSlotBookable(doctorId, key, time, { branchId = null, now = new Date() } = {}) {
-  const { slots, configured, reason } = await slotsForDate(doctorId, key, { branchId, now });
+async function isSlotBookable(doctorId, key, time, { branchId = null, now = new Date(), excludeBookingId = null } = {}) {
+  const { slots, configured, reason } = await slotsForDate(doctorId, key, { branchId, now, excludeBookingId });
   if (!configured) return { ok: false, reason: reason || 'not-configured' };
 
   const slot = slots.find((s) => s.time === time);

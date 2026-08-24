@@ -194,6 +194,12 @@ exports.updateBranch = async (req, res) => {
       }
     }
 
+    // Doctors reference centres by NAME (availableCentres, branch). A rename
+    // must follow into those documents or every doctor at this centre silently
+    // unlinks — from the app's centre filter, the any-mode roster and the
+    // availability sync.
+    const before = await Branch.findById(id).select('name').lean();
+
     const branch = await Branch.findByIdAndUpdate(
       id,
       updateData,
@@ -205,6 +211,18 @@ exports.updateBranch = async (req, res) => {
         success: false,
         message: 'Branch not found'
       });
+    }
+
+    if (before && updateData.name && before.name !== branch.name) {
+      const Doctor = require('../models/Doctor');
+      await Promise.all([
+        Doctor.updateMany(
+          { availableCentres: before.name },
+          { $set: { 'availableCentres.$[el]': branch.name } },
+          { arrayFilters: [{ el: before.name }] }
+        ),
+        Doctor.updateMany({ branch: before.name }, { $set: { branch: branch.name } }),
+      ]);
     }
 
     res.status(200).json({

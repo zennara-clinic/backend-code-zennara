@@ -1032,9 +1032,33 @@ exports.confirmBooking = async (req, res) => {
       });
     }
 
+    // Confirming a dermatologist consultation onto a time another guest holds
+    // would double-book the diary. Same guard as reschedule: only a genuine
+    // clash blocks; leave/hours problems remain a staff judgement call.
+    if (booking.specialistId && confirmedTime) {
+      const { isSlotBookable } = require('../utils/dermatologistSlots');
+      const { clinicDateKey } = require('../utils/bookingTime');
+      const key = clinicDateKey(new Date(confirmedDate || booking.preferredDate));
+      const check = key
+        ? await isSlotBookable(booking.specialistId, key, confirmedTime, {
+            branchId: booking.branchId || null,
+            excludeBookingId: booking._id,
+          })
+        : { ok: true };
+      if (!check.ok && check.reason === 'already-booked') {
+        return res.status(409).json({
+          success: false,
+          code: 'DERMATOLOGIST_SLOT_UNAVAILABLE',
+          message: 'Another guest already holds that time with this dermatologist. Pick a different slot.',
+        });
+      }
+    }
+
     booking.status = 'Confirmed';
     booking.confirmedDate = new Date(confirmedDate);
     booking.confirmedTime = confirmedTime;
+    // Keep the diary's primary field in step for calendar-booked consults.
+    if (booking.slotTime) booking.slotTime = confirmedTime || booking.slotTime;
 
     await booking.save();
 
@@ -2192,6 +2216,29 @@ exports.rescheduleBookingAdmin = async (req, res) => {
       return res.status(400).json({ success: false, message: 'A new date is required' });
     }
 
+    // Moving a dermatologist consultation must not land on a slot another
+    // guest already holds. Excluding this booking lets it keep (or reclaim)
+    // its own time; other diary problems (leave, outside hours) stay a staff
+    // judgement call rather than a hard block.
+    if (booking.specialistId && confirmedTime) {
+      const { isSlotBookable } = require('../utils/dermatologistSlots');
+      const { clinicDateKey } = require('../utils/bookingTime');
+      const key = clinicDateKey(new Date(preferredDate));
+      const check = key
+        ? await isSlotBookable(booking.specialistId, key, confirmedTime, {
+            branchId: booking.branchId || null,
+            excludeBookingId: booking._id,
+          })
+        : { ok: true };
+      if (!check.ok && check.reason === 'already-booked') {
+        return res.status(409).json({
+          success: false,
+          code: 'DERMATOLOGIST_SLOT_UNAVAILABLE',
+          message: 'Another guest already holds that time with this dermatologist. Pick a different slot.',
+        });
+      }
+    }
+
     booking.rescheduledFrom = {
       date: booking.confirmedDate || booking.preferredDate,
       time: booking.confirmedTime || booking.preferredTimeSlots?.[0],
@@ -2210,6 +2257,9 @@ exports.rescheduleBookingAdmin = async (req, res) => {
       booking.confirmedDate = undefined;
       booking.confirmedTime = undefined;
     }
+    // The diary reads slotTime first — a stale value would keep holding the
+    // old time while leaving the new one visibly free.
+    if (booking.slotTime) booking.slotTime = confirmedTime || null;
     if (reason) {
       booking.adminNotes = `${booking.adminNotes ? `${booking.adminNotes}\n` : ''}Rescheduled: ${reason}`;
     }

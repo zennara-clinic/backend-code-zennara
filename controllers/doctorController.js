@@ -408,6 +408,19 @@ exports.deleteDoctor = async (req, res) => {
 
     await Doctor.deleteOne({ _id: doctor._id });
     await DermatologistAvailability.deleteOne({ doctorId: doctor.doctorId });
+    // Nothing may survive a hard delete: an orphaned schedule would be adopted
+    // by a future doctor with the same name (same slug), and an orphaned login
+    // could still sign in to a panel with no profile behind it.
+    const DermatologistSchedule = require('../models/DermatologistSchedule');
+    await DermatologistSchedule.deleteOne({ doctorId: doctor.doctorId });
+    const Admin = require('../models/Admin');
+    await Admin.deleteOne({
+      role: 'doctor',
+      $or: [
+        { doctorId: doctor._id },
+        ...(doctor.email ? [{ email: String(doctor.email).toLowerCase() }] : []),
+      ],
+    });
 
     return res.status(200).json({ success: true, message: 'Doctor deleted successfully' });
   } catch (error) {
