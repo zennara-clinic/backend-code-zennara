@@ -69,6 +69,10 @@ const consultationNoteSchema = new mongoose.Schema(
 
     prescription: { type: [prescriptionItemSchema], default: [] },
 
+    /** When (and where) the signed prescription was emailed to the guest. */
+    prescriptionEmailedAt: { type: Date, default: null },
+    prescriptionEmailedTo: { type: String, default: null },
+
     /** Services or packages assigned out of this consultation. */
     assignedServices: [
       {

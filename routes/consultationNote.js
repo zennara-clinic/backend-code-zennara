@@ -14,6 +14,7 @@ router.use(protectAdmin);
 router.get('/', getNotes);
 router.get('/booking/:bookingId', getNoteForBooking);
 router.post('/', auditLog('PRESCRIPTION_SAVED', 'CLINICAL'), saveNote);
+router.post('/:id/send', auditLog('PRESCRIPTION_SAVED', 'CLINICAL'), require('../controllers/consultationNoteController').sendPrescription);
 router.delete('/:id', requireRole('super_admin'), deleteNote);
 
 module.exports = router;

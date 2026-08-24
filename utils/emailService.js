@@ -1,4 +1,4 @@
-const { SESClient, SendEmailCommand } = require('@aws-sdk/client-ses');
+const { SESClient, SendEmailCommand, SendRawEmailCommand } = require('@aws-sdk/client-ses');
 const getOTPEmailTemplate = require('../Email Templates/otpEmailTemplate');
 const getWelcomeEmailTemplate = require('../Email Templates/welcomeEmailTemplate');
 const getAppointmentBookingConfirmationTemplate = require('../Email Templates/appointmentBookingConfirmation');
@@ -96,6 +96,55 @@ const sendEmail = async (to, subject, htmlContent) => {
     console.error('AWS SES Error:', error);
     throw error;
   }
+};
+
+/**
+ * Send an email with one HTML file attached. SendEmailCommand cannot carry
+ * attachments, so this builds the MIME message by hand for SendRawEmail.
+ */
+const sendEmailWithAttachment = async (to, subject, htmlBody, { filename, content }) => {
+  if (!isAWSConfigured || !sesClient) {
+    throw new Error('AWS SES client not initialized. Check your credentials in .env file');
+  }
+  const boundary = `zennara-${Date.now().toString(36)}`;
+  const raw = [
+    `From: ${process.env.FROM_NAME} <${process.env.FROM_EMAIL}>`,
+    `To: ${to}`,
+    `Subject: ${subject}`,
+    'MIME-Version: 1.0',
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    '',
+    `--${boundary}`,
+    'Content-Type: text/html; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    Buffer.from(htmlBody, 'utf8').toString('base64'),
+    '',
+    `--${boundary}`,
+    `Content-Type: text/html; charset=UTF-8; name="${filename}"`,
+    `Content-Disposition: attachment; filename="${filename}"`,
+    'Content-Transfer-Encoding: base64',
+    '',
+    Buffer.from(content, 'utf8').toString('base64'),
+    '',
+    `--${boundary}--`,
+    '',
+  ].join('\r\n');
+  return sesClient.send(new SendRawEmailCommand({
+    Source: `${process.env.FROM_NAME} <${process.env.FROM_EMAIL}>`,
+    Destinations: [to],
+    RawMessage: { Data: Buffer.from(raw) },
+  }));
+};
+
+/** The signed prescription — in the body AND attached as a downloadable file. */
+exports.sendPrescriptionEmail = async (email, patientName, { docHtml, doctorName, location }) => {
+  const { getPrescriptionEmailBody } = require('../Email Templates/prescriptionEmailTemplate');
+  const body = getPrescriptionEmailBody({ patientName, doctorName, location, docHtml });
+  const filename = `prescription-${String(patientName || 'guest').toLowerCase().replace(/[^a-z0-9]+/g, '-')}.html`;
+  const response = await sendEmailWithAttachment(email, 'Zennara — your prescription', body, { filename, content: docHtml });
+  console.log('✅ Prescription email sent');
+  return response;
 };
 
 // Send OTP Email
