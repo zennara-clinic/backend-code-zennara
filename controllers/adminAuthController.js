@@ -59,6 +59,14 @@ exports.adminLogin = async (req, res) => {
 
     const admin = staffLogin;
 
+    // Dermatologists sign in with a password only — no emailed codes.
+    if (admin.role === 'doctor') {
+      return res.status(400).json({
+        success: false,
+        message: 'Dermatologist accounts sign in with a password. Ask the clinic admin to set or reset yours.'
+      });
+    }
+
     // Check if account is locked
     const rateLimitCheck = admin.canRequestOTP();
     if (!rateLimitCheck.allowed) {
@@ -155,6 +163,14 @@ exports.adminVerifyOTP = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'Admin not found'
+      });
+    }
+
+    // Dermatologists sign in with a password only — no emailed codes.
+    if (admin.role === 'doctor') {
+      return res.status(400).json({
+        success: false,
+        message: 'Dermatologist accounts sign in with a password. Ask the clinic admin to set or reset yours.'
       });
     }
 
@@ -351,6 +367,14 @@ exports.adminResendOTP = async (req, res) => {
       });
     }
 
+    // Dermatologists sign in with a password only — no emailed codes.
+    if (admin.role === 'doctor') {
+      return res.status(400).json({
+        success: false,
+        message: 'Dermatologist accounts sign in with a password. Ask the clinic admin to set or reset yours.'
+      });
+    }
+
     // Check rate limiting
     const rateLimitCheck = admin.canRequestOTP();
     if (!rateLimitCheck.allowed) {
@@ -430,7 +454,7 @@ exports.adminLogout = async (req, res) => {
 exports.getAdminProfile = async (req, res) => {
   try {
     const admin = await Admin.findById(req.admin._id)
-      .select('-otp -otpExpiry')
+      .select('-otp -otpExpiry +passwordHash')
       .lean();
 
     if (!admin) {
@@ -451,10 +475,12 @@ exports.getAdminProfile = async (req, res) => {
         email: admin.email,
         name: admin.name,
         role: admin.role,
+        phone: admin.phone || null,
         isActive: admin.isActive,
         isVerified: admin.isVerified,
         lastLogin: admin.lastLogin,
-        createdAt: admin.createdAt
+        createdAt: admin.createdAt,
+        hasPassword: !!admin.passwordHash
       }
     });
   } catch (error) {
@@ -598,5 +624,133 @@ exports.adminPasswordLogin = async (req, res) => {
   } catch (error) {
     console.error('❌ Admin password login failed:', error);
     res.status(500).json({ success: false, message: 'Login failed. Please try again.' });
+  }
+};
+
+/**
+ * Self-service account settings for the signed-in staff member.
+ *
+ * A dermatologist (or any staff login) can change their own email, phone and
+ * password from their panel; the clinic admin can always do the same for them
+ * from the admin panel (via /api/doctors/:id/account). Email and password
+ * changes require the current password when one is set, so a walked-away
+ * unlocked panel cannot silently take over the account.
+ */
+
+// @desc    Change my login email / phone
+// @route   PUT /api/admin/auth/me/contact
+exports.updateMyContact = async (req, res) => {
+  try {
+    const { email, phone, currentPassword } = req.body || {};
+    const admin = await Admin.findById(req.admin._id).select('+passwordHash');
+    if (!admin) return res.status(404).json({ success: false, message: 'Account not found' });
+
+    const nextEmail = email !== undefined ? String(email).toLowerCase().trim() : undefined;
+    const emailChanging = nextEmail !== undefined && nextEmail !== admin.email;
+
+    if (emailChanging) {
+      if (!/^\S+@\S+\.\S+$/.test(nextEmail)) {
+        return res.status(400).json({ success: false, message: 'Enter a valid email address' });
+      }
+      // Changing the sign-in address needs the current password when one exists.
+      if (admin.passwordHash && !admin.checkPassword(currentPassword)) {
+        return res.status(401).json({ success: false, message: 'Enter your current password to change the email' });
+      }
+      const taken = await Admin.findOne({ email: nextEmail, _id: { $ne: admin._id } });
+      if (taken) return res.status(400).json({ success: false, message: 'Another account already uses this email' });
+    }
+
+    const previousEmail = admin.email;
+    if (emailChanging) admin.email = nextEmail;
+    if (phone !== undefined) admin.phone = String(phone).trim() || null;
+    await admin.save({ validateModifiedOnly: true });
+
+    // Keep the Doctor profile in sync — ensureDoctorLogin copies the profile's
+    // email/phone onto this account, so a one-sided change would be reverted.
+    if (admin.role === 'doctor') {
+      try {
+        const Doctor = require('../models/Doctor');
+        const doctor = admin.doctorId
+          ? await Doctor.findById(admin.doctorId)
+          : await Doctor.findOne({ email: previousEmail });
+        if (doctor) {
+          if (emailChanging) doctor.email = admin.email;
+          if (phone !== undefined) doctor.phone = admin.phone;
+          await doctor.save({ validateModifiedOnly: true });
+        }
+      } catch (syncError) {
+        console.error('⚠️ Doctor profile sync failed (account already updated):', syncError.message);
+      }
+    }
+
+    await AdminAuditLog.logAction({
+      adminId: admin._id,
+      adminEmail: admin.email,
+      action: 'STAFF_UPDATED',
+      resource: 'ADMIN',
+      resourceId: String(admin._id),
+      details: {
+        self: true,
+        ...(emailChanging ? { emailFrom: previousEmail, emailTo: admin.email } : {}),
+        ...(phone !== undefined ? { phone: admin.phone } : {}),
+      },
+      ipAddress: req.adminIp || req.ip,
+      userAgent: req.adminUserAgent || req.get('user-agent'),
+    }).catch(() => undefined);
+
+    return res.status(200).json({
+      success: true,
+      message: emailChanging ? `Saved — you now sign in as ${admin.email}` : 'Saved',
+      data: {
+        _id: admin._id,
+        id: admin._id,
+        email: admin.email,
+        name: admin.name,
+        role: admin.role,
+        phone: admin.phone || null,
+        isActive: admin.isActive,
+        isVerified: admin.isVerified,
+      },
+    });
+  } catch (error) {
+    console.error('❌ Update my contact failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not save your details. Please try again.' });
+  }
+};
+
+// @desc    Change my password
+// @route   PUT /api/admin/auth/me/password
+exports.updateMyPassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    if (!newPassword || String(newPassword).length < 8) {
+      return res.status(400).json({ success: false, message: 'The new password must be at least 8 characters' });
+    }
+
+    const admin = await Admin.findById(req.admin._id).select('+passwordHash');
+    if (!admin) return res.status(404).json({ success: false, message: 'Account not found' });
+
+    if (admin.passwordHash && !admin.checkPassword(currentPassword)) {
+      return res.status(401).json({ success: false, message: 'Your current password is incorrect' });
+    }
+
+    admin.setPassword(String(newPassword));
+    await admin.save({ validateModifiedOnly: true });
+
+    await AdminAuditLog.logAction({
+      adminId: admin._id,
+      adminEmail: admin.email,
+      action: 'STAFF_UPDATED',
+      resource: 'ADMIN',
+      resourceId: String(admin._id),
+      details: { self: true, passwordChanged: true },
+      ipAddress: req.adminIp || req.ip,
+      userAgent: req.adminUserAgent || req.get('user-agent'),
+    }).catch(() => undefined);
+
+    return res.status(200).json({ success: true, message: 'Password changed' });
+  } catch (error) {
+    console.error('❌ Update my password failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not change the password. Please try again.' });
   }
 };

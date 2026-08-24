@@ -22,4 +22,9 @@ router.post('/check-email', adminLoginLimiter, checkAuthorizedEmail);
 router.post('/logout', protectAdmin, adminLogout);
 router.get('/me', protectAdmin, getAdminProfile);
 
+// Self-service account settings — any signed-in staff member, their own row only.
+const { updateMyContact, updateMyPassword } = require('../controllers/adminAuthController');
+router.put('/me/contact', protectAdmin, updateMyContact);
+router.put('/me/password', protectAdmin, updateMyPassword);
+
 module.exports = router;
