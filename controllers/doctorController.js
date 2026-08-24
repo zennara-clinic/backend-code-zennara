@@ -55,28 +55,8 @@ async function ensureDefaultSchedule(doctor, adminId = null) {
       .select('operatingHours').lean();
     if (!branches.length) return null;
 
-    const DAY_KEYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-    const weekly = [];
-    for (let day = 0; day < 7; day += 1) {
-      let open = null;
-      let close = null;
-      for (const b of branches) {
-        const h = b.operatingHours && b.operatingHours[DAY_KEYS[day]];
-        if (!h || h.isOpen === false) continue;
-        const o = DermatologistSchedule.toMinutes(h.openTime || '10:00');
-        const c = DermatologistSchedule.toMinutes(h.closeTime || '19:00');
-        if (o === null || c === null || c <= o) continue;
-        open = open === null ? o : Math.min(open, o);
-        close = close === null ? c : Math.max(close, c);
-      }
-      if (open !== null && close !== null) {
-        weekly.push({
-          day,
-          branchId: null, // any of their centres — reads clamp per centre anyway
-          ranges: [{ start: DermatologistSchedule.toHHMM(open), end: DermatologistSchedule.toHHMM(close) }],
-        });
-      }
-    }
+    const { defaultWeeklyFromBranches } = require('../utils/branchDefaultWeek');
+    const weekly = defaultWeeklyFromBranches(branches);
     if (!weekly.length) return null;
 
     return await DermatologistSchedule.create({

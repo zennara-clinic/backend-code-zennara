@@ -166,6 +166,39 @@ exports.updateSchedule = async (req, res) => {
 };
 
 /**
+ * GET /api/dermatologists/:doctorId/schedule/default — panel.
+ *
+ * The automatic week copied from the assigned centres' opening hours, computed
+ * fresh — the "Reset to centre hours" action loads this into the editor for
+ * review; nothing is saved until the person publishes.
+ */
+exports.getDefaultWeek = async (req, res) => {
+  try {
+    const { doctorId } = req.params;
+    const doctor = await Doctor.findOne({ doctorId }).select('doctorId availableCentres').lean();
+    if (!doctor) return fail(res, 404, 'Dermatologist not found');
+
+    const centres = (doctor.availableCentres || []).map((n) => String(n).trim()).filter(Boolean);
+    if (!centres.length) {
+      return res.json({ success: true, data: { weekly: [], centres: [] } });
+    }
+
+    const Branch = require('../models/Branch');
+    const branches = await Branch.find({ name: { $in: centres }, isActive: true })
+      .select('name operatingHours').lean();
+    const { defaultWeeklyFromBranches } = require('../utils/branchDefaultWeek');
+
+    return res.json({
+      success: true,
+      data: { weekly: defaultWeeklyFromBranches(branches), centres: branches.map((b) => b.name) },
+    });
+  } catch (error) {
+    console.error('getDefaultWeek error:', error);
+    return fail(res, 500, 'Could not compute the centre-hours default');
+  }
+};
+
+/**
  * GET /api/dermatologists/:doctorId/availability?from=&to=&branchId= — app
  * and panel. Day-level states for painting a calendar.
  */

@@ -3,6 +3,7 @@ const router = express.Router();
 const {
   getSchedule,
   updateSchedule,
+  getDefaultWeek,
   getAvailability,
   getSlots,
   getAnyAvailability,
@@ -34,6 +35,7 @@ router.get('/:doctorId/slots', getSlots);
  * dermatologist the row belongs to.
  */
 router.get('/:doctorId/schedule', protectAdmin, getSchedule);
+router.get('/:doctorId/schedule/default', protectAdmin, getDefaultWeek);
 router.put(
   '/:doctorId/schedule',
   protectAdmin,
