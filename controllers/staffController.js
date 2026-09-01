@@ -13,6 +13,19 @@ const AdminAuditLog = require('../models/AdminAuditLog');
 const ROLES = ['super_admin', 'doctor', 'therapist', 'staff'];
 const { sanitizePermissions } = require('../config/permissions');
 
+/**
+ * How each account signs in.
+ *
+ * Admin-panel accounts (`super_admin`, `staff`) use email + a one-time code
+ * emailed to that address — they have no password, and none can be set for
+ * them. The dermatologist and floor panels use email + password, set here or
+ * from the Dermatologists / Therapists pages. `PASSWORD_ROLES` is the same list
+ * the login endpoints enforce (see controllers/adminAuthController.js).
+ */
+const PASSWORD_ROLES = ['doctor', 'therapist'];
+const usesPassword = (role) => PASSWORD_ROLES.includes(role);
+const PANEL_OF = (role) => (role === 'doctor' ? 'Dermatologist' : role === 'therapist' ? 'Therapist' : 'Admin');
+
 const authorizedEmails = () =>
   (process.env.ADMIN_EMAILS || '')
     .split(',')
@@ -20,6 +33,40 @@ const authorizedEmails = () =>
     .filter(Boolean);
 
 const PANEL_LABEL = { doctor: 'Dermatologist', therapist: 'Therapist', staff: 'Zennara' };
+
+/**
+ * Which staff roles a caller may see or change through these endpoints.
+ *
+ * The Therapists page is staff management too — it just manages one role, and
+ * carries its own permission (`therapists.view` / `.manage` / `.password`)
+ * rather than the blanket `staff.*` that unlocks every account including super
+ * admins. Rather than duplicate the CRUD, the routes accept either permission
+ * and this narrows the caller to the rows they were actually granted.
+ *
+ * Returns null when every role is in scope (super admin, or a `staff.*` holder),
+ * or an array of the roles they may touch — empty meaning none.
+ */
+const SCOPED_BY_PERMISSION = { therapist: 'therapists', doctor: 'dermatologists' };
+
+function rolesInScope(admin, verb) {
+  if (!admin) return [];
+  const held = admin.permissions instanceof Set ? admin.permissions : new Set();
+  if (admin.isSuperAdmin || held.has(`staff.${verb}`)) return null;
+  return Object.entries(SCOPED_BY_PERMISSION)
+    .filter(([, area]) => held.has(`${area}.${verb}`))
+    .map(([role]) => role);
+}
+
+/** 403 unless `role` is inside the caller's scope. Returns true when it answered. */
+function refuseOutOfScope(req, res, role, verb) {
+  const scope = rolesInScope(req.admin, verb);
+  if (scope === null || scope.includes(role)) return false;
+  res.status(403).json({
+    success: false,
+    message: 'You do not have permission to manage this kind of account.',
+  });
+  return true;
+}
 
 const shape = (admin, allowList) => ({
   _id: admin._id,
@@ -41,8 +88,18 @@ const shape = (admin, allowList) => ({
   permissions: sanitizePermissions(admin.permissions),
   hasPassword: !!admin.passwordHash,
   passwordSetAt: admin.passwordSetAt || null,
-  /** Doctors/therapists/staff sign in with their password; super admins via the env list too. */
-  canSignIn: allowList.includes(String(admin.email).toLowerCase()) || !!admin.passwordHash || admin.role === 'super_admin',
+  /** How this account gets in — the panel labels the row with it. */
+  loginMethod: usesPassword(admin.role) ? 'password' : 'otp',
+  /*
+   * Whether sign-in will actually work today. Admin-panel accounts sign in with
+   * an emailed code and `Admin.resolveLogin` accepts any active staff row, so
+   * being active is enough — the ADMIN_EMAILS allow-list is only the bootstrap
+   * for the first super admin, reported separately below. Clinical accounts
+   * additionally need a password set.
+   */
+  canSignIn: admin.isActive !== false
+    && (usesPassword(admin.role) ? !!admin.passwordHash : true),
+  onAllowList: allowList.includes(String(admin.email).toLowerCase()),
 });
 
 // @desc    List staff accounts
@@ -54,6 +111,22 @@ exports.getStaff = async (req, res) => {
 
     const filter = {};
     if (role) filter.role = role;
+
+    // A caller who only holds `therapists.view` sees therapist rows, whatever
+    // they asked for — the Therapists page and the Staff page share this route.
+    const scope = rolesInScope(req.admin, 'view');
+    if (scope !== null) {
+      const visible = role ? scope.filter((r) => r === role) : scope;
+      if (!visible.length) {
+        return res.status(200).json({
+          success: true,
+          count: 0,
+          data: [],
+          stats: { total: 0, active: 0, byRole: ROLES.reduce((a, r) => ({ ...a, [r]: 0 }), {}) },
+        });
+      }
+      filter.role = { $in: visible };
+    }
     if (isActive !== undefined) filter.isActive = isActive === 'true';
     if (search) {
       const rx = new RegExp(String(search).trim(), 'i');
@@ -98,6 +171,15 @@ exports.createStaff = async (req, res) => {
     }
     if (!ROLES.includes(role)) {
       return res.status(400).json({ success: false, message: `Role must be one of: ${ROLES.join(', ')}` });
+    }
+    if (refuseOutOfScope(req, res, role, 'manage')) return;
+    // Admin-panel accounts have no password — they sign in with an emailed code.
+    // Accepting one here would create a second, unusable way in.
+    if (password && !usesPassword(role)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Admin panel accounts sign in with a one-time code emailed to them — they do not get a password.',
+      });
     }
     if (password && String(password).length < 8) {
       return res.status(400).json({ success: false, message: 'The password must be at least 8 characters' });
@@ -152,7 +234,9 @@ exports.createStaff = async (req, res) => {
         ? (credentialsEmailed
             ? `Account created — login details emailed to ${admin.email}`
             : 'Account created and password set, but the credentials email failed. Share the password with them directly.')
-        : 'Staff account created',
+        : (usesPassword(role)
+            ? `Account created — set their password from the ${PANEL_OF(role)}s page so they can sign in.`
+            : `Account created — they sign in at the admin panel with ${admin.email} and the code emailed at sign-in.`),
       credentialsEmailed,
       data: shape(admin, allowList),
     });
@@ -172,7 +256,7 @@ exports.createStaff = async (req, res) => {
 exports.updateStaff = async (req, res) => {
   try {
     const { name, role, doctorId } = req.body;
-    const admin = await Admin.findById(req.params.id);
+    const admin = await Admin.findById(req.params.id).select('+passwordHash +passwordPlain');
 
     if (!admin) {
       return res.status(404).json({ success: false, message: 'Staff account not found' });
@@ -181,6 +265,8 @@ exports.updateStaff = async (req, res) => {
     if (role && !ROLES.includes(role)) {
       return res.status(400).json({ success: false, message: `Role must be one of: ${ROLES.join(', ')}` });
     }
+    if (refuseOutOfScope(req, res, admin.role, 'manage')) return;
+    if (role && refuseOutOfScope(req, res, role, 'manage')) return;
 
     // Removing the last super admin would lock everyone out of role management.
     if (role && admin.role === 'super_admin' && role !== 'super_admin') {
@@ -214,6 +300,16 @@ exports.updateStaff = async (req, res) => {
     } else {
       admin.customRoleId = null;
       admin.permissions = [];
+    }
+    // Moving an account onto an admin-panel role retires its password, so the
+    // clinical panels cannot still be entered with the old credentials.
+    if (!usesPassword(effectiveRole) && admin.passwordHash) {
+      admin.passwordHash = null;
+      admin.passwordPlain = null;
+      admin.passwordSetAt = null;
+      await require('../models/Token').updateMany(
+        { userId: admin._id, isActive: true }, { $set: { isActive: false } },
+      ).catch(() => undefined);
     }
     await admin.save();
 
@@ -254,6 +350,7 @@ exports.toggleStaffStatus = async (req, res) => {
     if (!admin) {
       return res.status(404).json({ success: false, message: 'Staff account not found' });
     }
+    if (refuseOutOfScope(req, res, admin.role, 'manage')) return;
 
     if (String(admin._id) === String(req.admin._id)) {
       return res.status(400).json({ success: false, message: 'You cannot deactivate your own account' });
@@ -303,6 +400,7 @@ exports.deleteStaff = async (req, res) => {
     if (!admin) {
       return res.status(404).json({ success: false, message: 'Staff account not found' });
     }
+    if (refuseOutOfScope(req, res, admin.role, 'manage')) return;
 
     if (String(admin._id) === String(req.admin._id)) {
       return res.status(400).json({ success: false, message: 'You cannot delete your own account' });
@@ -345,6 +443,13 @@ exports.setStaffPassword = async (req, res) => {
     }
     const admin = await Admin.findById(req.params.id).select('+passwordHash');
     if (!admin) return res.status(404).json({ success: false, message: 'Staff account not found' });
+    if (refuseOutOfScope(req, res, admin.role, 'password')) return;
+    if (!usesPassword(admin.role)) {
+      return res.status(400).json({
+        success: false,
+        message: 'This is an admin panel account — it signs in with a one-time code emailed to it, so there is no password to set.',
+      });
+    }
 
     const isReset = !!admin.passwordHash;
     admin.setPassword(String(password));
@@ -387,6 +492,7 @@ exports.revealStaffPassword = async (req, res) => {
   try {
     const admin = await Admin.findById(req.params.id).select('+passwordHash +passwordPlain');
     if (!admin) return res.status(404).json({ success: false, message: 'Staff account not found' });
+    if (refuseOutOfScope(req, res, admin.role, 'password')) return;
     return res.status(200).json({
       success: true,
       data: {
@@ -410,9 +516,10 @@ exports.getRoles = async (req, res) => {
   res.status(200).json({
     success: true,
     data: [
-      { id: 'super_admin', label: 'Super Admin', description: 'The full admin panel — every clinic, every module.' },
-      { id: 'doctor', label: 'Dermatologist', description: 'Clinical panel — own day, patients, prescriptions.' },
-      { id: 'therapist', label: 'Therapist', description: 'Floor panel — today’s guests, sessions, consumption.' },
+      { id: 'super_admin', label: 'Super Admin', description: 'The full admin panel — every clinic, every module. Signs in with an emailed code.' },
+      { id: 'staff', label: 'Staff', description: 'Admin panel, limited to an assigned role. Signs in with an emailed code.' },
+      { id: 'doctor', label: 'Dermatologist', description: 'Clinical panel — own day, patients, prescriptions. Signs in with a password.' },
+      { id: 'therapist', label: 'Therapist', description: 'Floor panel — today’s guests, sessions, consumption. Signs in with a password.' },
     ],
   });
 };

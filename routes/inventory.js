@@ -9,7 +9,7 @@ const {
   getInventoryStatistics,
   bulkUpdateStock
 } = require('../controllers/inventoryController');
-const { protectAdmin, requireRole, requirePermission } = require('../middleware/auth');
+const { protectAdmin, requirePermission } = require('../middleware/auth');
 const inventoryController = require('../controllers/inventoryController');
 
 // Apply admin authentication middleware to all routes
@@ -20,7 +20,7 @@ router.get('/statistics', getInventoryStatistics);
 
 // Ledger + session consumption (therapists may consume; only admins adjust/edit)
 router.get('/movements', inventoryController.getStockMovements);
-router.post('/consume', requireRole('super_admin', 'therapist'), inventoryController.consumeStock);
+router.post('/consume', requirePermission('inventory.manage'), inventoryController.consumeStock);
 
 const MANAGE = requirePermission('inventory.manage');
 

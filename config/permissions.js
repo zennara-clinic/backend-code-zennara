@@ -34,6 +34,7 @@ const GROUPS = [
       { key: 'overview.view', label: 'Overview dashboard' },
       { key: 'today.view', label: "Today's schedule" },
       { key: 'analytics.view', label: 'Analytics & reports' },
+      { key: 'notifications.manage', label: 'Delete clinic notifications' },
     ],
   },
   {
@@ -137,6 +138,40 @@ const GROUPS = [
   },
 ];
 
+/**
+ * Baseline permissions the built-in non-admin roles implicitly hold.
+ *
+ * `doctor` and `therapist` accounts are never given a custom role — their
+ * access is the panel they sign into. But the dermatologist and floor panels
+ * call the same REST endpoints as the admin panel, and those endpoints are now
+ * gated with requirePermission(). Without a baseline their permission set is
+ * empty, so every gated call their own panel makes answers 403. These lists are
+ * exactly what those panels need — nothing wider — and they are unioned in by
+ * middleware/auth.js `computeEffectivePermissions`.
+ *
+ * They are deliberately NOT part of the catalog: the role editor only assigns
+ * permissions to admin-panel `staff` accounts, and these are not assignable.
+ */
+const ROLE_BASELINES = {
+  doctor: [
+    // Their day, their patients, and the consult room.
+    'bookings.view', 'bookings.manage',
+    'patients.view', 'patients.manage',
+    'consultationNotes.view', 'consultationNotes.manage',
+    'services.view', 'packages.view', 'branches.view',
+  ],
+  therapist: [
+    // The floor: today's guests, check-in/out, and stock consumed in session.
+    'bookings.view', 'bookings.manage',
+    'patients.view',
+    'inventory.view', 'inventory.manage',
+    'services.view', 'packages.view', 'branches.view',
+  ],
+};
+
+/** The implicit permissions a built-in role carries (empty for everyone else). */
+const baselinePermissions = (role) => ROLE_BASELINES[String(role || '')] || [];
+
 // Flat list of every valid permission key, and a fast membership set.
 const ALL_PERMISSIONS = GROUPS.flatMap((g) => g.permissions.map((p) => p.key));
 const PERMISSION_SET = new Set(ALL_PERMISSIONS);
@@ -160,6 +195,8 @@ const isValidPermission = (key) => PERMISSION_SET.has(String(key || '').trim());
 
 module.exports = {
   GROUPS,
+  ROLE_BASELINES,
+  baselinePermissions,
   ALL_PERMISSIONS,
   PERMISSION_SET,
   sanitizePermissions,

@@ -9,7 +9,7 @@ const {
   withdrawRequest,
   clearOverride,
 } = require('../controllers/doctorFeeRequestController');
-const { protectAdmin, requireRole } = require('../middleware/auth');
+const { protectAdmin, requirePermission } = require('../middleware/auth');
 
 router.use(protectAdmin);
 
@@ -22,8 +22,11 @@ router.post('/', createRequest);
 router.patch('/:id/withdraw', withdrawRequest);
 
 // Deciding a request is an admin action — a doctor cannot approve their own.
-router.patch('/:id/approve', requireRole('super_admin'), approveRequest);
-router.patch('/:id/reject', requireRole('super_admin'), rejectRequest);
-router.delete('/override/:doctorId', requireRole('super_admin'), clearOverride);
+// `dermatologists.manage` is deliberately absent from the doctor baseline, so
+// this still cannot be self-approved by the dermatologist who raised it.
+const DECIDE = requirePermission('dermatologists.manage');
+router.patch('/:id/approve', DECIDE, approveRequest);
+router.patch('/:id/reject', DECIDE, rejectRequest);
+router.delete('/override/:doctorId', DECIDE, clearOverride);
 
 module.exports = router;

@@ -26,7 +26,7 @@ const {
   verifyCheckOutCode,
   rejectReschedule
 } = require('../controllers/bookingController');
-const { protect, protectAdmin, auditLog, requireRole } = require('../middleware/auth');
+const { protect, protectAdmin, auditLog, requirePermission } = require('../middleware/auth');
 const { manualCleanup } = require('../utils/bookingScheduler');
 
 // Public routes
@@ -43,7 +43,7 @@ router.put('/admin/:id/checkin', protectAdmin, auditLog('BOOKING_CHECKED_IN', 'B
 router.put('/admin/:id/checkout', protectAdmin, auditLog('BOOKING_CHECKED_OUT', 'BOOKING'), checkOutBookingAdmin);
 // OTP-gated check-in/out: staff enter the code the guest reads to them.
 router.post('/admin/:id/visit-code', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.sendVisitCodeAdmin);
-router.get('/admin/:id/visit-code', protectAdmin, requireRole('super_admin'), auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.revealVisitCodeAdmin);
+router.get('/admin/:id/visit-code', protectAdmin, requirePermission('bookings.manage'), auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.revealVisitCodeAdmin);
 router.put('/admin/:id/dermatologist', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.setDermatologistAdmin);
 router.put('/admin/:id/therapist', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.setTherapistAdmin);
 router.put('/admin/:id/verify-checkin', protectAdmin, auditLog('BOOKING_CHECKED_IN', 'BOOKING'), verifyCheckInCode);

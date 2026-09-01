@@ -10,7 +10,7 @@ const {
   toggleDoctorStatus,
   deleteDoctor,
 } = require('../controllers/doctorController');
-const { protectAdmin, requireRole, requirePermission, auditLog, identifyAdmin } = require('../middleware/auth');
+const { protectAdmin, requireAccess, requirePermission, auditLog, identifyAdmin } = require('../middleware/auth');
 
 // Public — the mobile app reads the team and the tier fees.
 router.get('/', identifyAdmin, getAllDoctors);
@@ -38,8 +38,8 @@ router.put(
   '/:id',
   protectAdmin,
   // Doctors may edit their own profile; the controller enforces ownership
-  // and strips fee/tier for them.
-  requireRole('super_admin', 'doctor'),
+  // and strips fee/tier for them. Admin-panel staff need the manage permission.
+  requireAccess({ permissions: 'dermatologists.manage', roles: 'doctor' }),
   auditLog('DOCTOR_UPDATED', 'DOCTOR'),
   updateDoctor,
 );

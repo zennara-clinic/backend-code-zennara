@@ -8,8 +8,9 @@ const {
   deleteFormulation,
   getFormulationStatistics
 } = require('../controllers/formulationController');
-const { protectAdmin, requireRole } = require('../middleware/auth');
-const MANAGE = requireRole('super_admin');
+const { protectAdmin, requirePermission } = require('../middleware/auth');
+// Formulations sit on the Brands & formulations page and share its permission.
+const MANAGE = requirePermission('brands.manage');
 
 // Mounted under /api/admin — staff only. /statistics must precede /:id.
 router.use(protectAdmin);

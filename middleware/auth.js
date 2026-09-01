@@ -4,16 +4,20 @@ const User = require('../models/User');
 const Admin = require('../models/Admin');
 const AdminAuditLog = require('../models/AdminAuditLog');
 const Role = require('../models/Role');
-const { sanitizePermissions } = require('../config/permissions');
+const { sanitizePermissions, baselinePermissions } = require('../config/permissions');
 
 /**
  * Resolve a staff account's effective permission set.
  *
  * super_admin implicitly holds everything, so callers should short-circuit on
  * `isSuperAdmin` rather than enumerating. For everyone else the set is the union
- * of their assigned role's permissions and any direct grants on the account,
- * with stale keys dropped. doctor/therapist accounts have no admin-panel role,
- * so their set is empty here — their own panels gate them separately.
+ * of three things: the baseline their built-in role carries, their assigned
+ * custom role's permissions, and any direct grants on the account — with stale
+ * keys dropped.
+ *
+ * The baseline matters for doctor/therapist accounts. They never get a custom
+ * role, but the dermatologist and floor panels call the same gated endpoints as
+ * the admin panel, so an empty set would 403 them out of their own panel.
  *
  * Returns { isSuperAdmin, permissions: Set<string>, roleKey, roleName }.
  */
@@ -22,7 +26,8 @@ async function computeEffectivePermissions(admin) {
   if (admin.role === 'super_admin') {
     return { isSuperAdmin: true, permissions: new Set(), roleKey: 'super_admin', roleName: 'Super admin' };
   }
-  const perms = new Set(sanitizePermissions(admin.permissions));
+  const perms = new Set(sanitizePermissions(baselinePermissions(admin.role)));
+  for (const p of sanitizePermissions(admin.permissions)) perms.add(p);
   let roleKey = null;
   let roleName = null;
   if (admin.customRoleId) {
@@ -400,6 +405,60 @@ exports.requirePermission = (...needed) => {
       next();
     } catch (error) {
       console.error('❌ Permission verification error:', error);
+      res.status(500).json({ success: false, message: 'Permission verification failed' });
+    }
+  };
+};
+
+/**
+ * Role-OR-permission gate, for the handful of endpoints that serve two kinds of
+ * caller: an admin-panel account acting on the permission, and a built-in role
+ * acting on itself (a dermatologist editing their own profile, say, where the
+ * controller then enforces ownership). Pass `{ permissions, roles }`; the caller
+ * passes if they are a super_admin, hold ANY listed permission, or sit in ANY
+ * listed role. Denials are audited exactly like requirePermission.
+ */
+exports.requireAccess = ({ permissions = [], roles = [] } = {}) => {
+  const needPerms = [].concat(permissions).map((p) => String(p).trim()).filter(Boolean);
+  const needRoles = [].concat(roles).map((r) => String(r).trim()).filter(Boolean);
+  return async (req, res, next) => {
+    try {
+      if (!req.admin) {
+        return res.status(401).json({ success: false, message: 'Admin authentication required' });
+      }
+      const perms = req.admin.permissions instanceof Set ? req.admin.permissions : new Set();
+      const allowed = req.admin.isSuperAdmin
+        || needRoles.includes(req.admin.role)
+        || needPerms.some((p) => perms.has(p));
+      if (!allowed) {
+        await AdminAuditLog.logAction({
+          adminId: req.admin._id,
+          adminEmail: req.admin.email,
+          action: 'PERMISSION_DENIED',
+          resource: 'SECURITY',
+          details: {
+            required: needPerms,
+            requiredRoles: needRoles,
+            held: Array.from(perms),
+            role: req.admin.role,
+            roleKey: req.admin.roleKey || null,
+            endpoint: req.originalUrl,
+            method: req.method,
+          },
+          ipAddress: req.adminIp || req.ip,
+          userAgent: req.adminUserAgent,
+          status: 'FAILED',
+          errorMessage: `Missing permission (${needPerms.join(' or ') || 'n/a'})`,
+        }).catch(() => undefined);
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to perform this action.',
+          requiredPermission: needPerms,
+        });
+      }
+      next();
+    } catch (error) {
+      console.error('❌ Access verification error:', error);
       res.status(500).json({ success: false, message: 'Permission verification failed' });
     }
   };

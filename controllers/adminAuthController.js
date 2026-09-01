@@ -6,6 +6,16 @@ const { sendAdminOTP } = require('../utils/emailService');
 const { computeEffectivePermissions } = require('../middleware/auth');
 
 /**
+ * Which roles sign in with a password.
+ *
+ * The clinic's rule: the admin panel is email + emailed code only (super admins
+ * and `staff`), the dermatologist and floor panels are email + password. Both
+ * login endpoints enforce this from the same list so they cannot drift.
+ */
+const PASSWORD_ROLES = ['doctor', 'therapist'];
+exports.PASSWORD_ROLES = PASSWORD_ROLES;
+
+/**
  * Shared shape for the logged-in admin, with RBAC fields the panel gates on.
  * `permissions` is the flattened effective set (empty for super_admin, who is
  * flagged with `isSuperAdmin` and treated as holding everything client-side).
@@ -90,7 +100,7 @@ exports.adminLogin = async (req, res) => {
     const admin = staffLogin;
 
     // Dermatologists and therapists sign in with a password only — no codes.
-    if (admin.role === 'doctor' || admin.role === 'therapist') {
+    if (PASSWORD_ROLES.includes(admin.role)) {
       const label = admin.role === 'doctor' ? 'Dermatologist' : 'Therapist';
       return res.status(400).json({
         success: false,
@@ -198,7 +208,7 @@ exports.adminVerifyOTP = async (req, res) => {
     }
 
     // Dermatologists and therapists sign in with a password only — no codes.
-    if (admin.role === 'doctor' || admin.role === 'therapist') {
+    if (PASSWORD_ROLES.includes(admin.role)) {
       const label = admin.role === 'doctor' ? 'Dermatologist' : 'Therapist';
       return res.status(400).json({
         success: false,
@@ -392,7 +402,7 @@ exports.adminResendOTP = async (req, res) => {
     }
 
     // Dermatologists and therapists sign in with a password only — no codes.
-    if (admin.role === 'doctor' || admin.role === 'therapist') {
+    if (PASSWORD_ROLES.includes(admin.role)) {
       const label = admin.role === 'doctor' ? 'Dermatologist' : 'Therapist';
       return res.status(400).json({
         success: false,
@@ -614,15 +624,26 @@ async function issueAdminSession(req, admin) {
     return { token, expiresAt };
 }
 
-// @desc    Password login for staff (dermatologists, therapists) who were given one
+// @desc    Password login for the clinical panels (dermatologists, therapists)
 // @route   POST /api/admin/auth/login-password
+//
+// Passwords belong to the dermatologist and floor panels only. Admin-panel
+// accounts — super admins and granular `staff` — sign in with an emailed
+// one-time code and have no password at all, so this refuses them by role
+// rather than leaving two ways into the same panel.
 exports.adminPasswordLogin = async (req, res) => {
   try {
     const { email, password } = req.body || {};
     if (!email || !password) return res.status(400).json({ success: false, message: 'Email and password are required' });
     const admin = await Admin.findOne({ email: String(email).toLowerCase().trim() }).select('+passwordHash +passwordPlain');
     if (!admin || admin.isActive === false) return res.status(403).json({ success: false, message: 'This email is not authorised for the panel.' });
-    if (!admin.passwordHash) return res.status(400).json({ success: false, message: 'No password is set for this account — sign in with the emailed code, or ask an admin to set one.' });
+    if (!PASSWORD_ROLES.includes(admin.role)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Admin panel accounts sign in with a one-time code emailed to this address, not a password.',
+      });
+    }
+    if (!admin.passwordHash) return res.status(400).json({ success: false, message: 'No password is set for this account — ask the clinic admin to set one.' });
     const lock = admin.canRequestOTP ? admin.canRequestOTP() : { allowed: true };
     if (!lock.allowed) return res.status(429).json({ success: false, message: lock.reason });
     if (!admin.checkPassword(password)) {

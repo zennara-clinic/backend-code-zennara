@@ -18,36 +18,42 @@ const {
 } = require('../controllers/notificationController');
 
 // Auth middleware
-const { protectAdmin, protect, requireRole } = require('../middleware/auth');
-const MANAGE = requireRole('super_admin');
+const { protectAdmin, protect, requirePermission } = require('../middleware/auth');
+/*
+ * The bell is ambient clinic activity, not a privileged module: every staff
+ * account that can open a panel sees it, so reading and marking read need no
+ * permission beyond being signed in. Only deleting notifications — which
+ * removes the record for everyone — is gated.
+ */
+const DELETE = requirePermission('notifications.manage');
 
 // ==================== ADMIN ROUTES ====================
 // Get all notifications with filters (admin)
-router.get('/admin', protectAdmin, MANAGE, getAllNotifications);
+router.get('/admin', protectAdmin, getAllNotifications);
 
 // Get recent notifications (for popup - admin)
-router.get('/admin/recent', protectAdmin, MANAGE, getRecentNotifications);
+router.get('/admin/recent', protectAdmin, getRecentNotifications);
 
 // Get unread count (admin)
-router.get('/admin/unread-count', protectAdmin, MANAGE, getUnreadCount);
+router.get('/admin/unread-count', protectAdmin, getUnreadCount);
 
 // Get notification statistics (admin)
-router.get('/admin/stats', protectAdmin, MANAGE, getNotificationStats);
+router.get('/admin/stats', protectAdmin, getNotificationStats);
 
 // Get specific notification (admin)
-router.get('/admin/:id', protectAdmin, MANAGE, getNotificationById);
+router.get('/admin/:id', protectAdmin, getNotificationById);
 
 // Mark notification as read (admin)
-router.patch('/admin/:id/read', protectAdmin, MANAGE, markAsRead);
+router.patch('/admin/:id/read', protectAdmin, markAsRead);
 
 // Mark all notifications as read (admin)
-router.patch('/admin/mark-all-read', protectAdmin, MANAGE, markAllAsRead);
+router.patch('/admin/mark-all-read', protectAdmin, markAllAsRead);
 
 // Delete notification (admin)
-router.delete('/admin/:id', protectAdmin, MANAGE, deleteNotification);
+router.delete('/admin/:id', protectAdmin, DELETE, deleteNotification);
 
 // Delete all read notifications (admin)
-router.delete('/admin/read/all', protectAdmin, MANAGE, deleteAllRead);
+router.delete('/admin/read/all', protectAdmin, DELETE, deleteAllRead);
 
 // ==================== USER ROUTES ====================
 // Get user's notifications

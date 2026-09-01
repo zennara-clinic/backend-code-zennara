@@ -13,6 +13,8 @@ const {
 } = require('../controllers/couponController');
 const { protectAdmin, protect, requireRole, requirePermission } = require('../middleware/auth');
 const MANAGE = requirePermission('coupons.manage');
+// Opening the Coupons page is a read; only editing needs `coupons.manage`.
+const VIEW = requirePermission('coupons.view', 'coupons.manage');
 
 // Public routes
 router.get('/available', getAvailableCoupons);
@@ -23,15 +25,15 @@ router.post('/apply', protect, applyCoupon);
 
 // Admin routes - require admin authentication
 // Statistics route (must be before /:id)
-router.get('/statistics', protectAdmin, MANAGE, getCouponStatistics);
+router.get('/statistics', protectAdmin, VIEW, getCouponStatistics);
 
 // CRUD routes
 router.route('/')
-  .get(protectAdmin, MANAGE, getAllCoupons)
+  .get(protectAdmin, VIEW, getAllCoupons)
   .post(protectAdmin, MANAGE, createCoupon);
 
 router.route('/:id')
-  .get(protectAdmin, MANAGE, getCouponById)
+  .get(protectAdmin, VIEW, getCouponById)
   .put(protectAdmin, MANAGE, updateCoupon)
   .delete(protectAdmin, MANAGE, deleteCoupon);
 

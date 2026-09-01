@@ -5,8 +5,13 @@ const { protectAdmin, requirePermission, auditLog } = require('../../middleware/
 
 router.use(protectAdmin);
 
-// Reading the catalog and role list needs the view permission (super_admin passes).
-const VIEW = requirePermission('roles.view');
+/*
+ * Reading roles is not only the Roles tab: the Staff tab renders each account's
+ * role chip and its permission matrix, so anyone who may see or edit staff must
+ * be able to read the role list and the catalog. Changing a role still needs
+ * `roles.manage`. super_admin passes everything.
+ */
+const VIEW = requirePermission('roles.view', 'staff.view', 'staff.manage');
 const MANAGE = requirePermission('roles.manage');
 
 router.get('/catalog', VIEW, getCatalog);

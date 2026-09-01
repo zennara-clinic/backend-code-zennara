@@ -15,6 +15,8 @@ const {
 } = require('../controllers/chatController');
 const { protect, protectAdmin, protectBoth, requireRole, requirePermission } = require('../middleware/auth');
 const MANAGE = requirePermission('chat.manage');
+// Opening the inbox and its counters is a read; replying/closing is a change.
+const VIEW = requirePermission('chat.view', 'chat.manage');
 const { receiveChatAttachment } = require('../middleware/chatAttachmentUpload');
 
 // User routes
@@ -30,8 +32,8 @@ router.put('/:chatId/read', protectBoth, markChatAsRead);
 router.delete('/messages/:messageId', protectBoth, deleteMessage);
 
 // Admin routes
-router.get('/admin/branch/:branchId', protectAdmin, MANAGE, getChatsByBranch);
-router.get('/admin/stats', protectAdmin, MANAGE, getChatStats);
+router.get('/admin/branch/:branchId', protectAdmin, VIEW, getChatsByBranch);
+router.get('/admin/stats', protectAdmin, VIEW, getChatStats);
 router.put('/admin/:chatId/close', protectAdmin, MANAGE, closeChat);
 router.put('/admin/:chatId/assign', protectAdmin, MANAGE, assignChat);
 
