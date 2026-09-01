@@ -8,6 +8,7 @@ const {
   deleteStaff,
   getRoles,
   setStaffPassword,
+  revealStaffPassword,
 } = require('../../controllers/staffController');
 const { protectAdmin, requireRole, auditLog } = require('../../middleware/auth');
 
@@ -28,6 +29,8 @@ const MANAGE_STAFF = requireRole('super_admin');
 router.post('/', MANAGE_STAFF, auditLog('ADMIN_CREATED', 'ADMIN'), createStaff);
 router.put('/:id', MANAGE_STAFF, updateStaff);
 router.put('/:id/password', MANAGE_STAFF, auditLog('STAFF_UPDATED', 'ADMIN'), setStaffPassword);
+// Reading a password is sensitive enough to audit like a change.
+router.get('/:id/password', MANAGE_STAFF, auditLog('STAFF_UPDATED', 'ADMIN'), revealStaffPassword);
 router.patch(
   '/:id/toggle-status',
   MANAGE_STAFF,

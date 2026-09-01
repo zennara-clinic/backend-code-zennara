@@ -360,6 +360,29 @@ exports.setStaffPassword = async (req, res) => {
   }
 };
 
+// @desc    Reveal a staff member's current panel password (audited)
+// @route   GET /api/admin/staff/:id/password
+// @access  super_admin
+exports.revealStaffPassword = async (req, res) => {
+  try {
+    const admin = await Admin.findById(req.params.id).select('+passwordHash +passwordPlain');
+    if (!admin) return res.status(404).json({ success: false, message: 'Staff account not found' });
+    return res.status(200).json({
+      success: true,
+      data: {
+        hasPassword: !!admin.passwordHash,
+        // Passwords set before the plaintext copy existed cannot be shown —
+        // only reset. The panel explains that when password is null.
+        password: admin.passwordHash ? (admin.passwordPlain || null) : null,
+        passwordSetAt: admin.passwordSetAt || null,
+      },
+    });
+  } catch (error) {
+    console.error('Reveal staff password error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to look up the password' });
+  }
+};
+
 // @desc    The roles the panel can assign
 // @route   GET /api/admin/staff/roles
 // @access  Admin

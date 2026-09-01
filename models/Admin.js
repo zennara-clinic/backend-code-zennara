@@ -60,6 +60,13 @@ const AdminSchema = new mongoose.Schema({
   // Account status
   /** Optional password login (set by an admin from Staff & roles / the dermatologist page). */
   passwordHash: { type: String, default: null, select: false },
+  /**
+   * Plaintext copy of the password so super admins can look it up from the
+   * panel (clinic requirement). Never selected by default and only exposed
+   * through the audited reveal endpoints. Passwords set before this field
+   * existed have no copy and can only be reset.
+   */
+  passwordPlain: { type: String, default: null, select: false },
   passwordSetAt: { type: Date, default: null },
   phone: { type: String, default: null, trim: true },
   isActive: {
@@ -204,6 +211,7 @@ AdminSchema.statics.resolveLogin = async function(email) {
 
 AdminSchema.methods.setPassword = function(plain) {
   this.passwordHash = bcrypt.hashSync(String(plain), 10);
+  this.passwordPlain = String(plain);
   this.passwordSetAt = new Date();
 };
 AdminSchema.methods.checkPassword = function(plain) {

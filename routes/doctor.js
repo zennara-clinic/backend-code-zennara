@@ -63,6 +63,8 @@ const dc = require('../controllers/doctorController');
 router.get('/:id/stats', protectAdmin, dc.getDoctorStats);
 router.get('/:id/account', protectAdmin, requireRole('super_admin'), dc.getDoctorAccount);
 router.put('/:id/account/password', protectAdmin, requireRole('super_admin'), auditLog('STAFF_UPDATED', 'ADMIN'), dc.setDoctorPassword);
+// Reading a password is sensitive enough to audit like a change.
+router.get('/:id/account/password', protectAdmin, requireRole('super_admin'), auditLog('STAFF_UPDATED', 'ADMIN'), dc.revealDoctorPassword);
 router.get('/:id', identifyAdmin, getDoctorById);
 
 module.exports = router;

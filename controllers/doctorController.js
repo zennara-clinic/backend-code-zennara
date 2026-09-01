@@ -578,6 +578,32 @@ exports.getDoctorAccount = async (req, res) => {
   }
 };
 
+// @desc    Reveal the dermatologist's current panel password (audited)
+// @route   GET /api/doctors/:id/account/password
+exports.revealDoctorPassword = async (req, res) => {
+  try {
+    const Admin = require('../models/Admin');
+    const doctor = await Doctor.findById(req.params.id);
+    if (!doctor) return res.status(404).json({ success: false, message: 'Doctor not found' });
+    const account = await Admin.findOne({ doctorId: doctor._id }).select('+passwordHash +passwordPlain');
+    if (!account) {
+      return res.json({ success: true, data: { hasPassword: false, password: null, passwordSetAt: null } });
+    }
+    res.json({
+      success: true,
+      data: {
+        hasPassword: !!account.passwordHash,
+        // Null with hasPassword=true means it predates the plaintext copy —
+        // it can only be reset, not shown.
+        password: account.passwordHash ? (account.passwordPlain || null) : null,
+        passwordSetAt: account.passwordSetAt || null,
+      },
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 // @desc    Admin sets / resets the dermatologist's panel password
 // @route   PUT /api/doctors/:id/account/password
 exports.setDoctorPassword = async (req, res) => {
