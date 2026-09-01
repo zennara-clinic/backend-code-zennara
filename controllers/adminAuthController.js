@@ -3,6 +3,36 @@ const Token = require('../models/Token');
 const AdminAuditLog = require('../models/AdminAuditLog');
 const jwt = require('jsonwebtoken');
 const { sendAdminOTP } = require('../utils/emailService');
+const { computeEffectivePermissions } = require('../middleware/auth');
+
+/**
+ * Shared shape for the logged-in admin, with RBAC fields the panel gates on.
+ * `permissions` is the flattened effective set (empty for super_admin, who is
+ * flagged with `isSuperAdmin` and treated as holding everything client-side).
+ */
+async function buildAdminPayload(admin) {
+  const eff = await computeEffectivePermissions(admin);
+  return {
+    _id: admin._id,
+    id: admin._id,
+    email: admin.email,
+    name: admin.name,
+    role: admin.role,
+    phone: admin.phone || null,
+    branchId: admin.branchId || null,
+    branchIds: (admin.branchIds && admin.branchIds.length) ? admin.branchIds : (admin.branchId ? [admin.branchId] : []),
+    doctorId: admin.doctorId || null,
+    isActive: admin.isActive,
+    isVerified: admin.isVerified,
+    // RBAC
+    isSuperAdmin: eff.isSuperAdmin,
+    customRoleId: admin.customRoleId || null,
+    roleKey: eff.roleKey,
+    roleName: eff.roleName,
+    permissions: Array.from(eff.permissions),
+  };
+}
+exports.buildAdminPayload = buildAdminPayload;
 
 // Optional SecurityLog - won't break auth if it fails
 let SecurityLog;
@@ -313,15 +343,7 @@ exports.adminVerifyOTP = async (req, res) => {
       data: {
         token,
         expiresAt,
-        admin: {
-          _id: admin._id,
-          id: admin._id,
-          email: admin.email,
-          name: admin.name,
-          role: admin.role,
-          isActive: admin.isActive,
-          isVerified: admin.isVerified
-        }
+        admin: await buildAdminPayload(admin),
       }
     });
   } catch (error) {
@@ -467,26 +489,18 @@ exports.getAdminProfile = async (req, res) => {
       });
     }
 
+    // `_id` as well as `id`: clients that store this record alongside
+    // documents from other endpoints compare on `_id`, and returning only
+    // `id` left those comparisons undefined.
+    const payload = await buildAdminPayload(admin);
     res.status(200).json({
       success: true,
       data: {
-        // `_id` as well as `id`: clients that store this record alongside
-        // documents from other endpoints compare on `_id`, and returning only
-        // `id` left those comparisons undefined.
-        _id: admin._id,
-        id: admin._id,
-        email: admin.email,
-        name: admin.name,
-        role: admin.role,
-        phone: admin.phone || null,
-        branchId: admin.branchId || null,
-        branchIds: (admin.branchIds && admin.branchIds.length) ? admin.branchIds : (admin.branchId ? [admin.branchId] : []),
-        isActive: admin.isActive,
-        isVerified: admin.isVerified,
+        ...payload,
         lastLogin: admin.lastLogin,
         createdAt: admin.createdAt,
-        hasPassword: !!admin.passwordHash
-      }
+        hasPassword: !!admin.passwordHash,
+      },
     });
   } catch (error) {
     console.error('❌ Get admin profile failed:', error);
@@ -628,7 +642,7 @@ exports.adminPasswordLogin = async (req, res) => {
     res.status(200).json({
       success: true,
       message: 'Login successful',
-      data: { token, expiresAt, admin: { _id: admin._id, id: admin._id, email: admin.email, name: admin.name, role: admin.role, phone: admin.phone || null, branchId: admin.branchId || null, branchIds: (admin.branchIds && admin.branchIds.length) ? admin.branchIds : (admin.branchId ? [admin.branchId] : []), isActive: admin.isActive, isVerified: admin.isVerified } },
+      data: { token, expiresAt, admin: await buildAdminPayload(admin) },
     });
   } catch (error) {
     console.error('❌ Admin password login failed:', error);

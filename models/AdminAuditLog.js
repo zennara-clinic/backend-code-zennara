@@ -45,6 +45,12 @@ const AdminAuditLogSchema = new mongoose.Schema({
       'ADMIN_CREATED',
       'ADMIN_ROLE_CHANGED',
       'ADMIN_DEACTIVATED',
+      'STAFF_UPDATED',
+
+      // Roles & permissions (RBAC)
+      'ROLE_CREATED',
+      'ROLE_UPDATED',
+      'ROLE_DELETED',
       
       // Booking / front desk
       'BOOKING_CONFIRMED',

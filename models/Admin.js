@@ -35,12 +35,28 @@ const AdminSchema = new mongoose.Schema({
   }],
   role: {
     type: String,
-    // Three roles, three panels. 'super_admin' runs the clinic-wide admin
-    // panel; 'doctor' and 'therapist' back the dermatologist and floor panels
-    // and sign in through the same flow. Finer-grained admin permissions are a
-    // later change — until then every admin-panel login is a super admin.
-    enum: ['super_admin', 'doctor', 'therapist'],
+    // 'super_admin' runs the clinic-wide admin panel with every permission;
+    // 'doctor' and 'therapist' back the dermatologist and floor panels and sign
+    // in through the same flow. 'staff' is a general admin-panel account whose
+    // access is defined entirely by its assigned custom role + direct grants
+    // below — it holds no permission it was not given.
+    enum: ['super_admin', 'doctor', 'therapist', 'staff'],
     default: 'super_admin'
+  },
+  /**
+   * RBAC (admin-panel granular access). `customRoleId` points at a Role bundle;
+   * `permissions` are direct grants layered on top of it. Effective access is
+   * the union of the two (super_admin ignores both and holds everything). See
+   * middleware/auth.js `loadEffectivePermissions`.
+   */
+  customRoleId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Role',
+    default: null,
+  },
+  permissions: {
+    type: [String],
+    default: [],
   },
   
   // OTP for verification (hashed for security)

@@ -8,8 +8,8 @@ const {
   deleteType,
   syncCounts,
 } = require('../controllers/serviceTypeController');
-const { protectAdmin, auditLog, requireRole } = require('../middleware/auth');
-const MANAGE = requireRole('super_admin');
+const { protectAdmin, auditLog, requireRole, requirePermission } = require('../middleware/auth');
+const MANAGE = requirePermission('services.manage');
 
 // Public — the app browses the treatment menu by type before category.
 router.get('/', getTypes);

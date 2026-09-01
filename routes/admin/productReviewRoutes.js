@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const Review = require('../../models/Review');
 const Product = require('../../models/Product');
-const { protectAdmin } = require('../../middleware/auth');
+const { protectAdmin, requirePermission } = require('../../middleware/auth');
 
 /** Recompute a product's rating/count from its approved reviews. */
 async function syncProductRating(productId) {
@@ -57,7 +57,7 @@ router.get('/', async (req, res) => {
 // @desc    Update review approval status
 // @route   PUT /api/admin/product-reviews/:id/approval
 // @access  Private/Admin
-router.put('/:id/approval', async (req, res) => {
+router.put('/:id/approval', requirePermission('reviews.manage'), async (req, res) => {
   try {
     const { isApproved } = req.body;
     const review = await Review.findByIdAndUpdate(
@@ -95,7 +95,7 @@ router.put('/:id/approval', async (req, res) => {
 // @desc    Delete a product review
 // @route   DELETE /api/admin/product-reviews/:id
 // @access  Private/Admin
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requirePermission('reviews.manage'), async (req, res) => {
   try {
     const review = await Review.findByIdAndDelete(req.params.id);
 

@@ -5,20 +5,20 @@ const {
   approveServiceReview
 } = require('../../controllers/packageServiceReviewController');
 const PackageServiceReview = require('../../models/PackageServiceReview');
-const { protectAdmin } = require('../../middleware/auth');
+const { protectAdmin, requirePermission } = require('../../middleware/auth');
 
 // Admin authentication middleware
 router.use(protectAdmin);
 
 // Admin routes
 router.get('/', getAllServiceReviews);
-router.put('/:id/approval', approveServiceReview);
-router.put('/:id/approve', approveServiceReview); // Keep for backward compatibility
+router.put('/:id/approval', requirePermission('reviews.manage'), approveServiceReview);
+router.put('/:id/approve', requirePermission('reviews.manage'), approveServiceReview); // Keep for backward compatibility
 
 // @desc    Delete a package service review
 // @route   DELETE /api/admin/package-service-reviews/:id
 // @access  Private/Admin
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requirePermission('reviews.manage'), async (req, res) => {
   try {
     const review = await PackageServiceReview.findByIdAndDelete(req.params.id);
 

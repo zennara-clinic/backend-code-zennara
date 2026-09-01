@@ -11,8 +11,8 @@ const {
   getAvailableCoupons,
   applyCoupon
 } = require('../controllers/couponController');
-const { protectAdmin, protect, requireRole } = require('../middleware/auth');
-const MANAGE = requireRole('super_admin');
+const { protectAdmin, protect, requireRole, requirePermission } = require('../middleware/auth');
+const MANAGE = requirePermission('coupons.manage');
 
 // Public routes
 router.get('/available', getAvailableCoupons);

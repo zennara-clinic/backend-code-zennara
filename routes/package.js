@@ -9,8 +9,8 @@ const {
   togglePackageStatus,
   getPackageStats
 } = require('../controllers/packageController');
-const { protectAdmin, identifyAdmin, requireRole } = require('../middleware/auth');
-const MANAGE = requireRole('super_admin');
+const { protectAdmin, identifyAdmin, requireRole, requirePermission } = require('../middleware/auth');
+const MANAGE = requirePermission('packages.manage');
 
 // Public routes
 router.get('/', identifyAdmin, getAllPackages);

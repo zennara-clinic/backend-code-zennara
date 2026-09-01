@@ -9,8 +9,8 @@ const {
   deleteCategory,
   syncCategoryCounts
 } = require('../controllers/categoryController');
-const { protectAdmin, auditLog, requireRole } = require('../middleware/auth');
-const MANAGE = requireRole('super_admin');
+const { protectAdmin, auditLog, requireRole, requirePermission } = require('../middleware/auth');
+const MANAGE = requirePermission('categories.manage');
 
 // Public routes — the mobile app browses categories.
 router.get('/', getAllCategories);

@@ -6,8 +6,8 @@ const {
   createAuditLog,
   getSuspicious,
 } = require('../../controllers/auditLogController');
-const { protectAdmin, requireRole } = require('../../middleware/auth');
-const READ = requireRole('super_admin');
+const { protectAdmin, requireRole, requirePermission } = require('../../middleware/auth');
+const READ = requirePermission('audit.view');
 
 router.use(protectAdmin);
 

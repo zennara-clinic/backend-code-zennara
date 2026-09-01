@@ -197,6 +197,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 /* --------------------------- Connect services/jobs --------------------------- */
 connectDB();
+require('./utils/seedRoles').seedRoles();
 startBookingScheduler();
 require('./utils/bookingScheduler').startCheckInCodeJob();
 BookingStatusService.startAutoChecker();
@@ -233,6 +234,7 @@ app.use('/api/privacy', require('./routes/privacy'));
 app.use('/api/admin/auth', require('./routes/adminAuth'));
 app.use('/api/admin/users', require('./routes/user'));
 app.use('/api/admin/staff', require('./routes/admin/staffRoutes'));
+app.use('/api/admin/roles', require('./routes/admin/roleRoutes'));
 app.use('/api/admin/audit-logs', require('./routes/admin/auditLogRoutes'));
 app.use('/api/admin/products', require('./routes/adminProducts'));
 app.use('/api/admin/product-orders', require('./routes/adminOrders'));

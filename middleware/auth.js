@@ -3,6 +3,39 @@ const Token = require('../models/Token');
 const User = require('../models/User');
 const Admin = require('../models/Admin');
 const AdminAuditLog = require('../models/AdminAuditLog');
+const Role = require('../models/Role');
+const { sanitizePermissions } = require('../config/permissions');
+
+/**
+ * Resolve a staff account's effective permission set.
+ *
+ * super_admin implicitly holds everything, so callers should short-circuit on
+ * `isSuperAdmin` rather than enumerating. For everyone else the set is the union
+ * of their assigned role's permissions and any direct grants on the account,
+ * with stale keys dropped. doctor/therapist accounts have no admin-panel role,
+ * so their set is empty here — their own panels gate them separately.
+ *
+ * Returns { isSuperAdmin, permissions: Set<string>, roleKey, roleName }.
+ */
+async function computeEffectivePermissions(admin) {
+  if (!admin) return { isSuperAdmin: false, permissions: new Set(), roleKey: null, roleName: null };
+  if (admin.role === 'super_admin') {
+    return { isSuperAdmin: true, permissions: new Set(), roleKey: 'super_admin', roleName: 'Super admin' };
+  }
+  const perms = new Set(sanitizePermissions(admin.permissions));
+  let roleKey = null;
+  let roleName = null;
+  if (admin.customRoleId) {
+    const role = await Role.findById(admin.customRoleId).lean();
+    if (role && role.isActive !== false) {
+      roleKey = role.key;
+      roleName = role.name;
+      for (const p of sanitizePermissions(role.permissions)) perms.add(p);
+    }
+  }
+  return { isSuperAdmin: false, permissions: perms, roleKey, roleName };
+}
+exports.computeEffectivePermissions = computeEffectivePermissions;
 
 // Protect routes - verify JWT token
 exports.protect = async (req, res, next) => {
@@ -226,19 +259,28 @@ exports.protectAdmin = async (req, res, next) => {
       admin.lastLogin = Date.now();
       await admin.save();
 
+      // Resolve the account's effective admin-panel permissions once per
+      // request so requirePermission() and controllers can consult them without
+      // re-querying. super_admin short-circuits to "everything".
+      const eff = await computeEffectivePermissions(admin);
+
       // Add admin info to request
       req.admin = {
         _id: admin._id,
         email: admin.email,
         name: admin.name,
         role: admin.role,
-        isActive: admin.isActive
+        isActive: admin.isActive,
+        isSuperAdmin: eff.isSuperAdmin,
+        permissions: eff.permissions,     // Set<string>
+        roleKey: eff.roleKey,
+        roleName: eff.roleName,
       };
-      
+
       // Extract IP and user agent for audit logging
       req.adminIp = req.ip || req.connection.remoteAddress;
       req.adminUserAgent = req.get('user-agent');
-      
+
       next();
     } catch (error) {
       if (error.name === 'TokenExpiredError') {
@@ -248,7 +290,7 @@ exports.protectAdmin = async (req, res, next) => {
           code: 'SESSION_EXPIRED'
         });
       }
-      
+
       return res.status(401).json({
         success: false,
         message: 'Invalid token. Please login again.'
@@ -307,6 +349,58 @@ exports.requireRole = (...allowedRoles) => {
         success: false,
         message: 'Permission verification failed'
       });
+    }
+  };
+};
+
+/**
+ * Permission-based access control — the granular successor to requireRole.
+ *
+ * Pass one or more permission keys; the caller passes if they are a super_admin
+ * or hold ANY of them (OR semantics, matching requireRole). Use it to gate a
+ * mutation on its `.manage` key, e.g. requirePermission('bookings.manage').
+ * Denials are audited exactly like requireRole so the security log is uniform.
+ *
+ * Requires protectAdmin to have run first (it populates req.admin.permissions).
+ */
+exports.requirePermission = (...needed) => {
+  const required = needed.flat().map((p) => String(p).trim()).filter(Boolean);
+  return async (req, res, next) => {
+    try {
+      if (!req.admin) {
+        return res.status(401).json({ success: false, message: 'Admin authentication required' });
+      }
+      const perms = req.admin.permissions instanceof Set ? req.admin.permissions : new Set();
+      const allowed = req.admin.isSuperAdmin || required.some((p) => perms.has(p));
+      if (!allowed) {
+        await AdminAuditLog.logAction({
+          adminId: req.admin._id,
+          adminEmail: req.admin.email,
+          action: 'PERMISSION_DENIED',
+          resource: 'SECURITY',
+          details: {
+            required,
+            held: Array.from(perms),
+            role: req.admin.role,
+            roleKey: req.admin.roleKey || null,
+            endpoint: req.originalUrl,
+            method: req.method,
+          },
+          ipAddress: req.adminIp || req.ip,
+          userAgent: req.adminUserAgent,
+          status: 'FAILED',
+          errorMessage: `Missing permission (${required.join(' or ')})`,
+        }).catch(() => undefined);
+        return res.status(403).json({
+          success: false,
+          message: 'You do not have permission to perform this action.',
+          requiredPermission: required,
+        });
+      }
+      next();
+    } catch (error) {
+      console.error('❌ Permission verification error:', error);
+      res.status(500).json({ success: false, message: 'Permission verification failed' });
     }
   };
 };

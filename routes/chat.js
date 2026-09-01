@@ -13,8 +13,8 @@ const {
   assignChat,
   deleteMessage
 } = require('../controllers/chatController');
-const { protect, protectAdmin, protectBoth, requireRole } = require('../middleware/auth');
-const MANAGE = requireRole('super_admin');
+const { protect, protectAdmin, protectBoth, requireRole, requirePermission } = require('../middleware/auth');
+const MANAGE = requirePermission('chat.manage');
 const { receiveChatAttachment } = require('../middleware/chatAttachmentUpload');
 
 // User routes

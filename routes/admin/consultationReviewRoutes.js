@@ -11,7 +11,7 @@ async function syncConsultationRating(consultationId) {
   const avg = count ? rows.reduce((sum, r) => sum + (r.rating || 0), 0) / count : 0;
   await Consultation.findByIdAndUpdate(consultationId, { rating: Math.round(avg * 10) / 10, reviews: count });
 }
-const { protectAdmin } = require('../../middleware/auth');
+const { protectAdmin, requirePermission } = require('../../middleware/auth');
 
 // Admin authentication middleware
 router.use(protectAdmin);
@@ -58,7 +58,7 @@ router.get('/', async (req, res) => {
 // @desc    Update consultation review approval status
 // @route   PUT /api/admin/consultation-reviews/:id/approval
 // @access  Private/Admin
-router.put('/:id/approval', async (req, res) => {
+router.put('/:id/approval', requirePermission('reviews.manage'), async (req, res) => {
   try {
     const { isApproved } = req.body;
     const review = await ConsultationReview.findByIdAndUpdate(
@@ -95,7 +95,7 @@ router.put('/:id/approval', async (req, res) => {
 // @desc    Delete a consultation review
 // @route   DELETE /api/admin/consultation-reviews/:id
 // @access  Private/Admin
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requirePermission('reviews.manage'), async (req, res) => {
   try {
     const review = await ConsultationReview.findByIdAndDelete(req.params.id);
 

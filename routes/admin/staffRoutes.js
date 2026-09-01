@@ -10,27 +10,26 @@ const {
   setStaffPassword,
   revealStaffPassword,
 } = require('../../controllers/staffController');
-const { protectAdmin, requireRole, auditLog } = require('../../middleware/auth');
+const { protectAdmin, requirePermission, auditLog } = require('../../middleware/auth');
 
 router.use(protectAdmin);
 
-// Any signed-in admin can see who is on the team and what the roles mean.
+// The role-label helper is harmless metadata used across panels — keep it open
+// to any signed-in staff. The staff LIST needs the view permission.
 router.get('/roles', getRoles);
-router.get('/', getStaff);
+router.get('/', requirePermission('staff.view'), getStaff);
 
-// Changing who can sign in is restricted to the top two roles.
-//
-// Every existing account in this clinic is role 'admin' — there is no
-// super_admin — so gating on super_admin alone would lock staff management out
-// entirely. The "you cannot remove the last active super admin" guard in the
-// controller still applies once one exists.
-const MANAGE_STAFF = requireRole('super_admin');
+// Creating / editing staff and their sign-in requires the manage permission;
+// super admins pass automatically. Password set/reveal carries its own
+// sensitive permission so a role can manage staff without touching credentials.
+const MANAGE_STAFF = requirePermission('staff.manage');
+const MANAGE_PASSWORD = requirePermission('staff.password');
 
 router.post('/', MANAGE_STAFF, auditLog('ADMIN_CREATED', 'ADMIN'), createStaff);
 router.put('/:id', MANAGE_STAFF, updateStaff);
-router.put('/:id/password', MANAGE_STAFF, auditLog('STAFF_UPDATED', 'ADMIN'), setStaffPassword);
+router.put('/:id/password', MANAGE_PASSWORD, auditLog('STAFF_UPDATED', 'ADMIN'), setStaffPassword);
 // Reading a password is sensitive enough to audit like a change.
-router.get('/:id/password', MANAGE_STAFF, auditLog('STAFF_UPDATED', 'ADMIN'), revealStaffPassword);
+router.get('/:id/password', MANAGE_PASSWORD, auditLog('STAFF_UPDATED', 'ADMIN'), revealStaffPassword);
 router.patch(
   '/:id/toggle-status',
   MANAGE_STAFF,

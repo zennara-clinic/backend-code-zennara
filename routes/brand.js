@@ -8,8 +8,8 @@ const {
   deleteBrand,
   getBrandStatistics
 } = require('../controllers/brandController');
-const { protectAdmin, requireRole } = require('../middleware/auth');
-const MANAGE = requireRole('super_admin');
+const { protectAdmin, requireRole, requirePermission } = require('../middleware/auth');
+const MANAGE = requirePermission('brands.manage');
 
 // Mounted under /api/admin — staff only. /statistics must precede /:id.
 router.use(protectAdmin);

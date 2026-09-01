@@ -10,7 +10,8 @@ const AdminAuditLog = require('../models/AdminAuditLog');
  * when an account will not be able to sign in yet.
  */
 
-const ROLES = ['super_admin', 'doctor', 'therapist'];
+const ROLES = ['super_admin', 'doctor', 'therapist', 'staff'];
+const { sanitizePermissions } = require('../config/permissions');
 
 const authorizedEmails = () =>
   (process.env.ADMIN_EMAILS || '')
@@ -18,7 +19,7 @@ const authorizedEmails = () =>
     .map((e) => e.trim().toLowerCase())
     .filter(Boolean);
 
-const PANEL_LABEL = { doctor: 'Dermatologist', therapist: 'Therapist' };
+const PANEL_LABEL = { doctor: 'Dermatologist', therapist: 'Therapist', staff: 'Zennara' };
 
 const shape = (admin, allowList) => ({
   _id: admin._id,
@@ -35,9 +36,12 @@ const shape = (admin, allowList) => ({
   lastLogin: admin.lastLogin,
   createdAt: admin.createdAt,
   doctorId: admin.doctorId || null,
+  // RBAC: assigned custom role + direct permission grants.
+  customRoleId: admin.customRoleId || null,
+  permissions: sanitizePermissions(admin.permissions),
   hasPassword: !!admin.passwordHash,
   passwordSetAt: admin.passwordSetAt || null,
-  /** Doctors/therapists sign in with their password; others via the env list too. */
+  /** Doctors/therapists/staff sign in with their password; super admins via the env list too. */
   canSignIn: allowList.includes(String(admin.email).toLowerCase()) || !!admin.passwordHash || admin.role === 'super_admin',
 });
 
@@ -87,7 +91,7 @@ exports.getStaff = async (req, res) => {
 // @access  super_admin
 exports.createStaff = async (req, res) => {
   try {
-    const { email, name, role, doctorId, phone, branchId, branchIds, password } = req.body;
+    const { email, name, role, doctorId, phone, branchId, branchIds, password, customRoleId, permissions } = req.body;
 
     if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
       return res.status(400).json({ success: false, message: 'A valid email is required' });
@@ -104,6 +108,9 @@ exports.createStaff = async (req, res) => {
       return res.status(400).json({ success: false, message: 'A staff account with this email already exists' });
     }
 
+    // RBAC assignment only applies to admin-panel 'staff' accounts.
+    const isPanelStaff = role === 'staff';
+
     const admin = await Admin.create({
       email: email.toLowerCase(),
       name: name || email.split('@')[0],
@@ -112,6 +119,8 @@ exports.createStaff = async (req, res) => {
       phone: phone ? String(phone).trim() : null,
       branchId: branchId || (Array.isArray(branchIds) && branchIds[0]) || null,
       branchIds: Array.isArray(branchIds) ? branchIds.filter(Boolean) : (branchId ? [branchId] : []),
+      customRoleId: isPanelStaff && customRoleId ? customRoleId : null,
+      permissions: isPanelStaff ? sanitizePermissions(permissions) : [],
       isActive: true,
     });
 
@@ -185,7 +194,7 @@ exports.updateStaff = async (req, res) => {
     }
 
     const previousRole = admin.role;
-    const { phone, branchId, branchIds } = req.body;
+    const { phone, branchId, branchIds, customRoleId, permissions } = req.body;
     if (name !== undefined) admin.name = name;
     if (role !== undefined) admin.role = role;
     if (doctorId !== undefined) admin.doctorId = doctorId || null;
@@ -194,6 +203,17 @@ exports.updateStaff = async (req, res) => {
     if (branchIds !== undefined) {
       admin.branchIds = Array.isArray(branchIds) ? branchIds.filter(Boolean) : [];
       admin.branchId = admin.branchIds[0] || null;
+    }
+    // RBAC assignment. Only 'staff' accounts carry a custom role / direct grants;
+    // switching a staff member off the 'staff' role clears them to avoid stale
+    // permissions lingering on a doctor/therapist/super_admin record.
+    const effectiveRole = role !== undefined ? role : admin.role;
+    if (effectiveRole === 'staff') {
+      if (customRoleId !== undefined) admin.customRoleId = customRoleId || null;
+      if (permissions !== undefined) admin.permissions = sanitizePermissions(permissions);
+    } else {
+      admin.customRoleId = null;
+      admin.permissions = [];
     }
     await admin.save();
 

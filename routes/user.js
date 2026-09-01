@@ -14,8 +14,10 @@ const {
   getDeletedAccounts,
   restoreDeletedAccount,
 } = require('../controllers/userController');
-const { protectAdmin, requireRole } = require('../middleware/auth');
-const MANAGE = requireRole('super_admin');
+const { protectAdmin, requireRole, requirePermission } = require('../middleware/auth');
+const MANAGE = requirePermission('patients.manage');
+const VIEW = requirePermission('patients.view');
+const DELETE = requirePermission('patients.delete');
 const { uploadProfilePicture } = require('../middleware/upload');
 
 // All routes require admin authentication
@@ -24,9 +26,9 @@ router.use(protectAdmin);
 // User management routes
 router.post('/', MANAGE, createUser); // Create new user (admin)
 router.get('/', getAllUsers);
-router.get('/export', MANAGE, exportUsers);
-router.get('/deleted', MANAGE, getDeletedAccounts);
-router.post('/deleted/:archiveId/restore', MANAGE, restoreDeletedAccount);
+router.get('/export', VIEW, exportUsers);
+router.get('/deleted', DELETE, getDeletedAccounts);
+router.post('/deleted/:archiveId/restore', DELETE, restoreDeletedAccount);
 router.get('/:id', getUserById);
 router.put('/:id', uploadProfilePicture, updateUser); // Add upload middleware
 router.delete('/:id', MANAGE, deleteUser);

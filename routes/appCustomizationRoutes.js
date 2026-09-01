@@ -12,8 +12,8 @@ const {
   addReelVideo,
   deleteReelVideo
 } = require('../controllers/appCustomizationController');
-const { protectAdmin, requireRole } = require('../middleware/auth');
-const MANAGE = requireRole('super_admin');
+const { protectAdmin, requireRole, requirePermission } = require('../middleware/auth');
+const MANAGE = requirePermission('appStudio.manage');
 const upload = require('../config/multer');
 
 // Public route for mobile app

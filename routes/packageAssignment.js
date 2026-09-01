@@ -2,11 +2,11 @@ const express = require('express');
 const router = express.Router();
 const multer = require('multer');
 const packageAssignmentController = require('../controllers/packageAssignmentController');
-const { protectAdmin, protect, requireRole } = require('../middleware/auth');
+const { protectAdmin, protect, requireRole, requirePermission } = require('../middleware/auth');
 // Packages are a commercial decision — the clinic assigns, prices, cancels and
 // refunds them. Clinical staff read them (a doctor sees a guest's course, a
 // therapist redeems sessions) but never create or change them.
-const MANAGE = requireRole('super_admin');
+const MANAGE = requirePermission('packages.manage');
 
 // Configure multer for file uploads (using memory storage for S3 upload)
 const upload = multer({ 
