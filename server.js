@@ -95,7 +95,9 @@ const ALLOWED_ORIGINS = [...PANEL_ORIGINS, ...DEV_ORIGINS];
 // Socket.IO setup with CORS
 const io = new Server(server, {
   cors: {
-    origin: ALLOWED_ORIGINS,
+    // TEMPORARY: reflect any origin until the deployed panel domains are
+    // finalised — then restore ALLOWED_ORIGINS via PANEL_ORIGINS.
+    origin: true,
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE']
   },
@@ -165,13 +167,10 @@ app.use(mongoSanitize({
 // Log suspicious activity
 app.use(logSuspiciousActivity);
 
-// Allow the unified panel and the mobile app only — see ALLOWED_ORIGINS above.
+// TEMPORARY: reflect any origin until the deployed panel domains are
+// finalised — then restore the ALLOWED_ORIGINS allowlist below.
 app.use(cors({
-  origin: [
-    ...ALLOWED_ORIGINS,
-    /^http:\/\/localhost:\d+$/, // Allow any localhost port for development
-    /^http:\/\/192\.168\.\d+\.\d+:\d+$/, // Allow local network IPs for mobile testing
-  ],
+  origin: true,
   credentials: false, // don't use cookies with a single origin unless you need them
   methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS','HEAD'],
   allowedHeaders: [
