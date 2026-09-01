@@ -606,7 +606,7 @@ exports.adminPasswordLogin = async (req, res) => {
   try {
     const { email, password } = req.body || {};
     if (!email || !password) return res.status(400).json({ success: false, message: 'Email and password are required' });
-    const admin = await Admin.findOne({ email: String(email).toLowerCase().trim() }).select('+passwordHash');
+    const admin = await Admin.findOne({ email: String(email).toLowerCase().trim() }).select('+passwordHash +passwordPlain');
     if (!admin || admin.isActive === false) return res.status(403).json({ success: false, message: 'This email is not authorised for the panel.' });
     if (!admin.passwordHash) return res.status(400).json({ success: false, message: 'No password is set for this account — sign in with the emailed code, or ask an admin to set one.' });
     const lock = admin.canRequestOTP ? admin.canRequestOTP() : { allowed: true };
@@ -619,6 +619,10 @@ exports.adminPasswordLogin = async (req, res) => {
     }
     admin.failedLoginAttempts = 0;
     admin.lastLogin = new Date();
+    // Passwords set before the plaintext copy existed have no viewable copy —
+    // a correct login is the one moment we can backfill it for the panel's
+    // password reveal.
+    if (!admin.passwordPlain) admin.passwordPlain = String(password);
     await admin.save({ validateModifiedOnly: true });
     const { token, expiresAt } = await issueAdminSession(req, admin);
     res.status(200).json({
