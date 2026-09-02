@@ -127,6 +127,13 @@ const shape = (admin, allowList) => ({
   customRoleId: admin.customRoleId || null,
   permissions: sanitizePermissions(admin.permissions),
   hasPassword: !!admin.passwordHash,
+  /*
+   * Whether the current password can actually be shown. Passwords set before
+   * the readable copy existed have only a bcrypt hash, which cannot be turned
+   * back into the password — the panel says so up front rather than making
+   * someone click "Show" to discover it.
+   */
+  canRevealPassword: !!(admin.passwordHash && admin.passwordPlain),
   passwordSetAt: admin.passwordSetAt || null,
   /** How this account gets in — the panel labels the row with it. */
   loginMethod: usesPassword(admin.role) ? 'password' : 'otp',
@@ -173,7 +180,7 @@ exports.getStaff = async (req, res) => {
       filter.$or = [{ email: rx }, { name: rx }];
     }
 
-    const admins = await Admin.find(filter).select('+passwordHash').sort({ role: 1, name: 1 }).lean();
+    const admins = await Admin.find(filter).select('+passwordHash +passwordPlain').sort({ role: 1, name: 1 }).lean();
     const allowList = authorizedEmails();
 
     return res.status(200).json({
@@ -549,6 +556,7 @@ exports.revealStaffPassword = async (req, res) => {
       success: true,
       data: {
         hasPassword: !!admin.passwordHash,
+        canReveal: !!(admin.passwordHash && admin.passwordPlain),
         // Passwords set before the plaintext copy existed cannot be shown —
         // only reset. The panel explains that when password is null.
         password: admin.passwordHash ? (admin.passwordPlain || null) : null,

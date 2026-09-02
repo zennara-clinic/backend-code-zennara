@@ -571,8 +571,8 @@ exports.getDoctorAccount = async (req, res) => {
     const doctor = await Doctor.findById(req.params.id);
     if (!doctor) return res.status(404).json({ success: false, message: 'Doctor not found' });
     const account = await ensureDoctorLogin(doctor);
-    const withHash = account ? await Admin.findById(account._id).select('+passwordHash') : null;
-    res.json({ success: true, data: account ? { _id: account._id, email: account.email, phone: account.phone, role: account.role, isActive: account.isActive, lastLogin: account.lastLogin, hasPassword: !!(withHash && withHash.passwordHash), passwordSetAt: account.passwordSetAt, placeholderEmail: /@dermatologist\.zennara\.in$/i.test(account.email) } : null });
+    const withHash = account ? await Admin.findById(account._id).select('+passwordHash +passwordPlain') : null;
+    res.json({ success: true, data: account ? { _id: account._id, email: account.email, phone: account.phone, role: account.role, isActive: account.isActive, lastLogin: account.lastLogin, hasPassword: !!(withHash && withHash.passwordHash), canRevealPassword: !!(withHash && withHash.passwordHash && withHash.passwordPlain), passwordSetAt: account.passwordSetAt, placeholderEmail: /@dermatologist\.zennara\.in$/i.test(account.email) } : null });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -585,16 +585,25 @@ exports.revealDoctorPassword = async (req, res) => {
     const Admin = require('../models/Admin');
     const doctor = await Doctor.findById(req.params.id);
     if (!doctor) return res.status(404).json({ success: false, message: 'Doctor not found' });
-    const account = await Admin.findOne({ doctorId: doctor._id }).select('+passwordHash +passwordPlain');
+    // Resolve the login the same way getDoctorAccount and setDoctorPassword do.
+    // Matching on `doctorId` alone missed any account still linked only by
+    // email, so the panel reported "no password" for a dermatologist who had
+    // one — and the Set/Reset button written beside it worked on a different
+    // lookup, which is how the two views disagreed.
+    const linked = await ensureDoctorLogin(doctor);
+    const account = linked
+      ? await Admin.findById(linked._id).select('+passwordHash +passwordPlain')
+      : null;
     if (!account) {
-      return res.json({ success: true, data: { hasPassword: false, password: null, passwordSetAt: null } });
+      return res.json({ success: true, data: { hasPassword: false, canReveal: false, password: null, passwordSetAt: null } });
     }
     res.json({
       success: true,
       data: {
         hasPassword: !!account.passwordHash,
-        // Null with hasPassword=true means it predates the plaintext copy —
-        // it can only be reset, not shown.
+        // A password set before the readable copy existed can only be reset,
+        // never shown — a bcrypt hash cannot be turned back into the password.
+        canReveal: !!(account.passwordHash && account.passwordPlain),
         password: account.passwordHash ? (account.passwordPlain || null) : null,
         passwordSetAt: account.passwordSetAt || null,
       },
