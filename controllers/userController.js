@@ -1,4 +1,5 @@
 const User = require('../models/User');
+const { clinicDateKey, clinicDayStart } = require('../utils/bookingTime');
 const { buildUserFilter } = require('../utils/listFilters');
 const DeletedAccountArchive = require('../models/DeletedAccountArchive');
 const accountDeletion = require('../services/accountDeletionService');
@@ -35,9 +36,8 @@ exports.getAllUsers = async (req, res) => {
     const clinicCustomers = await User.countDocuments({ source: 'zenoti' });
     
     // Get new users this month
-    const startOfMonth = new Date();
-    startOfMonth.setDate(1);
-    startOfMonth.setHours(0, 0, 0, 0);
+    // The clinic's month, not the server's timezone.
+    const startOfMonth = clinicDayStart(`${clinicDateKey(new Date()).slice(0, 8)}01`);
     const newThisMonth = await User.countDocuments({
       createdAt: { $gte: startOfMonth }
     });

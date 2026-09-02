@@ -1,4 +1,5 @@
 const Consultation = require('../models/Consultation');
+const { clinicDateKey, clinicDayStart } = require('../utils/bookingTime');
 const Booking = require('../models/Booking');
 const Category = require('../models/Category');
 const mongoose = require('mongoose');
@@ -307,9 +308,8 @@ exports.getConsultationStats = async (req, res) => {
     const featuredServices = await Consultation.countDocuments({ isPopular: true, isActive: true });
 
     // Get services added this month
-    const startOfMonth = new Date();
-    startOfMonth.setDate(1);
-    startOfMonth.setHours(0, 0, 0, 0);
+    // The clinic's month, not the server's timezone.
+    const startOfMonth = clinicDayStart(`${clinicDateKey(new Date()).slice(0, 8)}01`);
     const newThisMonth = await Consultation.countDocuments({
       createdAt: { $gte: startOfMonth }
     });

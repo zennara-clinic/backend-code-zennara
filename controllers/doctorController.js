@@ -1,4 +1,5 @@
 const Doctor = require('../models/Doctor');
+const { clinicDateKey, clinicDayEnd, clinicDayStart } = require('../utils/bookingTime');
 const { canEditDoctor, resolveDoctorForAdmin } = require('../utils/doctorIdentity');
 const DoctorTier = require('../models/DoctorTier');
 const Booking = require('../models/Booking');
@@ -673,8 +674,9 @@ exports.getDoctorStats = async (req, res) => {
     const { consultationIdsByKind } = require('../utils/listFilters');
     const doctor = await Doctor.findById(req.params.id).lean();
     if (!doctor) return res.status(404).json({ success: false, message: 'Doctor not found' });
-    const end = req.query.endDate ? new Date(req.query.endDate) : new Date(); end.setHours(23, 59, 59, 999);
-    const start = req.query.startDate ? new Date(req.query.startDate) : new Date(end.getTime() - 89 * 86400000); start.setHours(0, 0, 0, 0);
+    // Clinic days: a UTC server would otherwise cut the window 5h30m early.
+    const end = clinicDayEnd(req.query.endDate || new Date());
+    const start = clinicDayStart(req.query.startDate || new Date(end.getTime() - 89 * 86400000));
     const { consult } = await consultationIdsByKind();
     const consultSet = new Set(consult.map(String));
     const isConsult = (b) => (b.consultationId ? consultSet.has(String(b.consultationId._id || b.consultationId)) : /consult|counsel/i.test(b.externalServiceName || ''));

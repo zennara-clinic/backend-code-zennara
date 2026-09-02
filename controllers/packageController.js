@@ -1,4 +1,5 @@
 const Package = require('../models/Package');
+const { clinicDateKey, clinicDayStart } = require('../utils/bookingTime');
 const Consultation = require('../models/Consultation');
 const mongoose = require('mongoose');
 
@@ -297,9 +298,8 @@ exports.getPackageStats = async (req, res) => {
     const activePackages = await Package.countDocuments({ isActive: true });
     
     // Get packages created this month
-    const startOfMonth = new Date();
-    startOfMonth.setDate(1);
-    startOfMonth.setHours(0, 0, 0, 0);
+    // The clinic's month, not the server's timezone.
+    const startOfMonth = clinicDayStart(`${clinicDateKey(new Date()).slice(0, 8)}01`);
     
     const newThisMonth = await Package.countDocuments({
       createdAt: { $gte: startOfMonth }

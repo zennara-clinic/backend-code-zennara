@@ -1,4 +1,5 @@
 const AdminAuditLog = require('../models/AdminAuditLog');
+const { clinicDayEnd, clinicDayStart } = require('../utils/bookingTime');
 
 /**
  * Read side of the audit trail.
@@ -34,10 +35,11 @@ exports.getAuditLogs = async (req, res) => {
 
     if (startDate || endDate) {
       filter.timestamp = {};
-      if (startDate) filter.timestamp.$gte = new Date(startDate);
+      // Clinic days on both ends — a UTC server otherwise drops the last
+      // 5h30m of the chosen day, hiding that evening's entries.
+      if (startDate) filter.timestamp.$gte = clinicDayStart(startDate);
       if (endDate) {
-        const end = new Date(endDate);
-        end.setHours(23, 59, 59, 999);
+        const end = clinicDayEnd(endDate);
         filter.timestamp.$lte = end;
       }
     }

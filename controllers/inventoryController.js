@@ -1,4 +1,5 @@
 const Inventory = require('../models/Inventory');
+const { clinicDateKey, clinicDayEnd, clinicDayStart } = require('../utils/bookingTime');
 const StockMovement = require('../models/StockMovement');
 const NotificationHelper = require('../utils/notificationHelper');
 
@@ -419,7 +420,7 @@ exports.getStockMovements = async (req, res) => {
     if (startDate || endDate) {
       q.createdAt = {};
       if (startDate) q.createdAt.$gte = new Date(startDate);
-      if (endDate) { const d = new Date(endDate); d.setHours(23, 59, 59, 999); q.createdAt.$lte = d; }
+      if (endDate) q.createdAt.$lte = clinicDayEnd(endDate);
     }
     const perPage = Math.min(500, Math.max(1, parseInt(limit, 10) || 100));
     const pageNo = Math.max(1, parseInt(page, 10) || 1);

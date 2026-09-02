@@ -1,4 +1,5 @@
 const ProductOrder = require('../models/ProductOrder');
+const { clinicDateKey, clinicDayEnd, clinicDayStart } = require('../utils/bookingTime');
 const Product = require('../models/Product');
 const NotificationHelper = require('../utils/notificationHelper');
 const whatsappService = require('../services/whatsappService');
@@ -30,7 +31,7 @@ exports.getAllOrders = async (req, res) => {
     if (startDate || endDate) {
       query.createdAt = {};
       if (startDate) query.createdAt.$gte = new Date(startDate);
-      if (endDate) { const d = new Date(endDate); d.setHours(23, 59, 59, 999); query.createdAt.$lte = d; }
+      if (endDate) query.createdAt.$lte = clinicDayEnd(endDate);
     }
 
     if (search) {

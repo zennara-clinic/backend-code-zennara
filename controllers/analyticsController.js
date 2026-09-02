@@ -169,13 +169,14 @@ exports.getFinancialAnalytics = async (req, res) => {
     
     // Daily revenue trend (last 30 days)
     const dailyRevenue = [];
+    // Buckets are CLINIC days. setHours() uses the server's timezone, so on a
+    // UTC host every bucket ran 00:00-24:00 UTC and a 9pm IST booking landed in
+    // the next day's column — the same off-by-one the panels showed.
+    const todayKey = clinicDateKey(new Date());
     for (let i = 29; i >= 0; i--) {
-      const date = new Date();
-      date.setDate(date.getDate() - i);
-      date.setHours(0, 0, 0, 0);
-      
-      const nextDate = new Date(date);
-      nextDate.setDate(nextDate.getDate() + 1);
+      const dayKey = addClinicDays(todayKey, -i);
+      const date = clinicDayStart(dayKey);
+      const nextDate = new Date(clinicDayEnd(dayKey).getTime() + 1);
       
       const dayBookings = bookings.filter(b => {
         const bookingDate = new Date(b.createdAt);
@@ -198,7 +199,7 @@ exports.getFinancialAnalytics = async (req, res) => {
         dayPackages.reduce((sum, p) => sum + p.pricing.finalAmount, 0);
       
       dailyRevenue.push({
-        date: date.toISOString().split('T')[0],
+        date: dayKey,
         revenue: dayRevenue,
         consultations: dayBookings.length,
         orders: dayOrders.length,
@@ -316,10 +317,10 @@ exports.getMonthlyRevenueTrend = async (req, res) => {
 // Get Daily Collection Target Progress
 exports.getDailyTargetProgress = async (req, res) => {
   try {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
+    // "Today" is the clinic's day, not the server's.
+    const todayKey = clinicDateKey(new Date());
+    const today = clinicDayStart(todayKey);
+    const tomorrow = new Date(clinicDayEnd(todayKey).getTime() + 1);
     
     const bookings = await Booking.find({
       createdAt: { $gte: today, $lt: tomorrow },
@@ -1189,10 +1190,8 @@ exports.getServiceAnalytics = async (req, res) => {
     const categoryPerformanceArray = Object.values(categoryPerformance)
       .sort((a, b) => b.revenue - a.revenue);
 
-    // 7. New Services Added This Month
-    const startOfMonth = new Date();
-    startOfMonth.setDate(1);
-    startOfMonth.setHours(0, 0, 0, 0);
+    // 7. New Services Added This Month — the clinic's month, not the server's.
+    const startOfMonth = clinicDayStart(`${clinicDateKey(new Date()).slice(0, 8)}01`);
 
     const newServicesThisMonth = await Consultation.find({
       createdAt: { $gte: startOfMonth }
