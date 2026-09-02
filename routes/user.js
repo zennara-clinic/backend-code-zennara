@@ -25,14 +25,14 @@ router.use(protectAdmin);
 
 // User management routes
 router.post('/', MANAGE, createUser); // Create new user (admin)
-router.get('/', getAllUsers);
+router.get('/', VIEW, getAllUsers);
 router.get('/export', VIEW, exportUsers);
 router.get('/deleted', DELETE, getDeletedAccounts);
 router.post('/deleted/:archiveId/restore', DELETE, restoreDeletedAccount);
-router.get('/:id', getUserById);
-router.put('/:id', uploadProfilePicture, updateUser); // Add upload middleware
+router.get('/:id', VIEW, getUserById);
+router.put('/:id', MANAGE, uploadProfilePicture, updateUser); // Add upload middleware
 router.delete('/:id', MANAGE, deleteUser);
-router.patch('/:id/statistics', updateUserStatistics);
+router.patch('/:id/statistics', MANAGE, updateUserStatistics);
 
 // Membership management routes
 router.post('/:id/membership', MANAGE, assignMembership);

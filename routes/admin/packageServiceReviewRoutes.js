@@ -11,7 +11,7 @@ const { protectAdmin, requirePermission } = require('../../middleware/auth');
 router.use(protectAdmin);
 
 // Admin routes
-router.get('/', getAllServiceReviews);
+router.get('/', requirePermission('reviews.view', 'reviews.manage'), getAllServiceReviews);
 router.put('/:id/approval', requirePermission('reviews.manage'), approveServiceReview);
 router.put('/:id/approve', requirePermission('reviews.manage'), approveServiceReview); // Keep for backward compatibility
 

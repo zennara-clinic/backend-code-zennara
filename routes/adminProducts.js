@@ -18,7 +18,10 @@ const { adminSensitiveOperationsLimiter } = require('../middleware/rateLimiter')
 router.use(protectAdmin);
 
 // Statistics route (must be before :id routes)
-router.get('/statistics', getProductStatistics);
+// The catalogue is also read where products are only named: coupon scoping,
+// inventory lines and the analytics report.
+const VIEW = requirePermission('products.view', 'coupons.view', 'coupons.manage', 'inventory.view', 'analytics.view');
+router.get('/statistics', VIEW, getProductStatistics);
 
 // Bulk operations
 router.patch('/bulk-update',
@@ -30,7 +33,7 @@ router.patch('/bulk-update',
 
 // CRUD routes
 router.route('/')
-  .get(getAllProducts)
+  .get(VIEW, getAllProducts)
   .post(
     requirePermission('products.manage'),
     auditLog('PRODUCT_CREATED', 'PRODUCT'),
@@ -38,7 +41,7 @@ router.route('/')
   );
 
 router.route('/:id')
-  .get(getProductById)
+  .get(VIEW, getProductById)
   .put(
     requirePermission('products.manage'),
     auditLog('PRODUCT_UPDATED', 'PRODUCT'),

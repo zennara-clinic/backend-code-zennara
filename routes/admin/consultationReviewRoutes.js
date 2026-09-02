@@ -19,7 +19,7 @@ router.use(protectAdmin);
 // @desc    Get all consultation reviews
 // @route   GET /api/admin/consultation-reviews
 // @access  Private/Admin
-router.get('/', async (req, res) => {
+router.get('/', requirePermission('reviews.view', 'reviews.manage'), async (req, res) => {
   try {
     const { isApproved, limit, page = 1, search } = req.query;
     const q = {};

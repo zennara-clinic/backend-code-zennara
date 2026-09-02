@@ -22,7 +22,12 @@ router.use(protectAdmin);
  * permission actually covers (see `rolesInScope` there) — so a therapists-only
  * role can neither list nor touch a super admin through this route.
  */
-const VIEW_STAFF = requirePermission('staff.view', 'therapists.view');
+const VIEW_STAFF = requirePermission(
+  'staff.view', 'therapists.view',
+  // Screens that must name clinical staff to assign work — see `rolesInScope`
+  // in staffController, which narrows these callers to doctor/therapist rows.
+  'bookings.view', 'bookings.manage', 'chat.view', 'chat.manage', 'today.view', 'overview.view',
+);
 const MANAGE_STAFF = requirePermission('staff.manage', 'therapists.manage');
 // Password set/reveal carries its own sensitive permission, so a role can
 // manage accounts without ever seeing or changing credentials.

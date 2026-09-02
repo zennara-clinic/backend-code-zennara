@@ -49,10 +49,34 @@ exports.getAdminCustomizationSettings = async (req, res) => {
 // @desc    Update app customization settings
 // @route   PUT /api/admin/app-customization
 // @access  Private (Admin only)
+/**
+ * Fields a caller holding only `appContent.manage` may write.
+ *
+ * That permission is "consultation page, membership, copy & legal" — the words
+ * the app shows. The app's appearance, logo and home layout stay with
+ * `appStudio.manage`, so a content editor cannot restyle the app.
+ */
+const CONTENT_FIELDS = new Set([
+  'copy', 'membership', 'consultationsScreen', 'appointmentsScreen',
+  'productsScreen', 'profileScreen', 'helpScreen', 'termsOfService', 'privacyPolicy',
+]);
+
 exports.updateCustomizationSettings = async (req, res) => {
   try {
     const settings = await AppCustomization.getSettings();
     const updates = { ...req.body };
+
+    const held = req.admin && req.admin.permissions instanceof Set ? req.admin.permissions : new Set();
+    const contentOnly = !req.admin?.isSuperAdmin && !held.has('appStudio.manage');
+    if (contentOnly) {
+      const refused = Object.keys(updates).filter((k) => !CONTENT_FIELDS.has(k));
+      if (refused.length) {
+        return res.status(403).json({
+          success: false,
+          message: `Your role can edit the app's content, not its design. Not allowed here: ${refused.join(', ')}.`,
+        });
+      }
+    }
     if (Object.prototype.hasOwnProperty.call(updates, 'appearance')) {
       updates.appearance = sanitizeAppearance(updates.appearance);
     }

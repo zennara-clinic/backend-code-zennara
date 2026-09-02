@@ -71,13 +71,30 @@ const PANEL_LABEL = { doctor: 'Dermatologist', therapist: 'Therapist', staff: 'Z
  */
 const SCOPED_BY_PERMISSION = { therapist: 'therapists', doctor: 'dermatologists' };
 
+/*
+ * Operational screens that must NAME clinical staff — the booking drawer's
+ * "assign a therapist", the bookings filter, the chat assignee list — read this
+ * route too. They are revealed by `bookings.*` / `chat.*`, not `staff.view`, so
+ * without this they got a 403 on a list they legitimately need. They see only
+ * dermatologist and therapist rows: the people work is assigned to, never a
+ * super admin or another admin-panel account.
+ */
+const ASSIGNEE_PERMISSIONS = ['bookings.view', 'bookings.manage', 'chat.view', 'chat.manage', 'today.view', 'overview.view'];
+const ASSIGNEE_ROLES = ['doctor', 'therapist'];
+
 function rolesInScope(admin, verb) {
   if (!admin) return [];
   const held = admin.permissions instanceof Set ? admin.permissions : new Set();
   if (admin.isSuperAdmin || held.has(`staff.${verb}`)) return null;
-  return Object.entries(SCOPED_BY_PERMISSION)
+  const scoped = Object.entries(SCOPED_BY_PERMISSION)
     .filter(([, area]) => held.has(`${area}.${verb}`))
     .map(([role]) => role);
+  // Reading who to assign work to is a view-only concession; it never widens
+  // what a role may change.
+  if (verb === 'view' && ASSIGNEE_PERMISSIONS.some((p) => held.has(p))) {
+    for (const r of ASSIGNEE_ROLES) if (!scoped.includes(r)) scoped.push(r);
+  }
+  return scoped;
 }
 
 /** 403 unless `role` is inside the caller's scope. Returns true when it answered. */

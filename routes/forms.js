@@ -7,10 +7,12 @@ const {
   deleteForm,
   getFormStats
 } = require('../controllers/formsController');
-const { protectAdmin } = require('../middleware/auth');
+const { protectAdmin, requirePermission } = require('../middleware/auth');
 
 // All routes are admin-only
 router.use(protectAdmin);
+// Patient-submitted forms are part of the patient record.
+router.use(requirePermission('patients.view'));
 
 // Get form statistics
 router.get('/stats', getFormStats);

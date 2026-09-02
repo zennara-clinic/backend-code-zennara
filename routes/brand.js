@@ -13,6 +13,7 @@ const MANAGE = requirePermission('brands.manage');
 
 // Mounted under /api/admin — staff only. /statistics must precede /:id.
 router.use(protectAdmin);
+router.use(requirePermission('brands.view', 'brands.manage', 'products.view', 'inventory.view'));
 router.get('/statistics', getBrandStatistics);
 router.get('/', getAllBrands);
 router.get('/:id', getBrandById);

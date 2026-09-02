@@ -9,7 +9,13 @@ const {
   syncCounts,
 } = require('../controllers/serviceTypeController');
 const { protectAdmin, auditLog, requireRole, requirePermission } = require('../middleware/auth');
-const MANAGE = requirePermission('services.manage');
+/*
+  * Service types are level 1 of the category taxonomy and are edited inline on
+  * the Categories page ("+ New type", reorder, sync counts), which is revealed
+  * by `categories.manage`. They are also the top of the services tree, so
+  * `services.manage` keeps working for the Services page.
+  */
+const MANAGE = requirePermission('services.manage', 'categories.manage');
 
 // Public — the app browses the treatment menu by type before category.
 router.get('/', getTypes);

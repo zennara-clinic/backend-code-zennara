@@ -14,18 +14,19 @@ const { protectAdmin, requireRole, requirePermission, auditLog } = require('../m
 router.use(protectAdmin);
 
 // Statistics route
-router.get('/stats', getVendorStats);
+const VIEW = requirePermission('vendors.view', 'inventory.view');
+router.get('/stats', VIEW, getVendorStats);
 router.get('/:id/bank-details', requirePermission('vendors.bank'), auditLog('VENDOR_UPDATED', 'VENDOR'), require('../controllers/vendorController').getVendorBankDetails);
 
 // CRUD routes
 const MANAGE = requirePermission('vendors.manage');
 
 router.route('/')
-  .get(getVendors)
+  .get(VIEW, getVendors)
   .post(MANAGE, createVendor);
 
 router.route('/:id')
-  .get(getVendor)
+  .get(VIEW, getVendor)
   .put(MANAGE, updateVendor)
   .delete(MANAGE, deleteVendor);
 

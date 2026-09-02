@@ -9,22 +9,24 @@ const z = require('../controllers/zenotiAdminController');
 // no customer-app impersonation, no OTP handling.
 router.use(protectAdmin);
 
-router.get('/overview', adminGuestOverview); // legacy by-phone/email lookup
-router.get('/status', z.getStatus);
+// Clinic (CRM) data is a module of its own — reading it needs `zenoti.view`.
+const VIEW = requirePermission('zenoti.view', 'patients.view');
+router.get('/overview', VIEW, adminGuestOverview); // legacy by-phone/email lookup
+router.get('/status', VIEW, z.getStatus);
 router.post('/import', requirePermission('zenoti.manage'), z.startImport);
 router.post('/crawl', requirePermission('zenoti.manage'), z.startCrawl);
 router.post('/appointments/sync', requirePermission('zenoti.manage'), z.syncAppointments);
-router.get('/practitioners', z.listPractitioners);
+router.get('/practitioners', requirePermission('zenoti.view', 'patients.view', 'bookings.view'), z.listPractitioners);
 router.post('/practitioners/sync', requirePermission('zenoti.manage'), z.syncPractitioners);
 
-router.get('/packages', z.listPackages);
-router.get('/appointments', z.listAppointments);
-router.get('/memberships', z.listMemberships);
-router.get('/orders', z.listOrders);
-router.get('/notes', z.listNotes);
-router.get('/forms', z.listForms);
+router.get('/packages', VIEW, z.listPackages);
+router.get('/appointments', VIEW, z.listAppointments);
+router.get('/memberships', VIEW, z.listMemberships);
+router.get('/orders', VIEW, z.listOrders);
+router.get('/notes', VIEW, z.listNotes);
+router.get('/forms', VIEW, z.listForms);
 
-router.get('/users/:userId', z.getUserData);
-router.post('/users/:userId/sync', z.syncUser);
+router.get('/users/:userId', VIEW, z.getUserData);
+router.post('/users/:userId/sync', VIEW, z.syncUser);
 
 module.exports = router;

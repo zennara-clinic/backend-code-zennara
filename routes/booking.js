@@ -33,11 +33,17 @@ const { manualCleanup } = require('../utils/bookingScheduler');
 router.get('/available-slots', getAvailableTimeSlots);
 
 // Admin routes
-router.get('/admin/all', protectAdmin, getAllBookingsAdmin);
-router.get('/admin/export', protectAdmin, bookingController.exportBookingsAdmin);
+/*
+ * Reads are gated on `bookings.view` so a role that cannot open the Bookings
+ * page cannot fetch the day book by URL either. Dermatologists and therapists
+ * hold it through their role baseline (config/permissions.js).
+ */
+const VIEW = requirePermission('bookings.view', 'today.view', 'patients.view');
+router.get('/admin/all', protectAdmin, VIEW, getAllBookingsAdmin);
+router.get('/admin/export', protectAdmin, VIEW, bookingController.exportBookingsAdmin);
 // Reception creates walk-in and phone bookings here.
 router.post('/admin', protectAdmin, auditLog('BOOKING_CREATED', 'BOOKING'), createBookingAdmin);
-router.get('/admin/:id', protectAdmin, getBookingByIdAdmin);
+router.get('/admin/:id', protectAdmin, VIEW, getBookingByIdAdmin);
 router.put('/admin/:id/confirm', protectAdmin, auditLog('BOOKING_CONFIRMED', 'BOOKING'), confirmBooking);
 router.put('/admin/:id/checkin', protectAdmin, auditLog('BOOKING_CHECKED_IN', 'BOOKING'), checkInBookingAdmin);
 router.put('/admin/:id/checkout', protectAdmin, auditLog('BOOKING_CHECKED_OUT', 'BOOKING'), checkOutBookingAdmin);

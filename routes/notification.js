@@ -22,10 +22,11 @@ const { protectAdmin, protect, requirePermission } = require('../middleware/auth
 /*
  * The bell is ambient clinic activity, not a privileged module: every staff
  * account that can open a panel sees it, so reading and marking read need no
- * permission beyond being signed in. Only deleting notifications — which
- * removes the record for everyone — is gated.
+ * permission beyond being signed in. Deleting removes the record for everyone,
+ * and the screen that does it is Announcements — so that page's permission is
+ * the one that governs it.
  */
-const DELETE = requirePermission('notifications.manage');
+const DELETE = requirePermission('announcements.manage');
 
 // ==================== ADMIN ROUTES ====================
 // Get all notifications with filters (admin)

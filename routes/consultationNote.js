@@ -10,6 +10,9 @@ const { protectAdmin, requireRole, requirePermission, auditLog } = require('../m
 
 // Clinical records are staff-only.
 router.use(protectAdmin);
+// Prescriptions and consult notes are clinical records — reading them needs the
+// permission, which dermatologists hold through their role baseline.
+router.use(requirePermission('consultationNotes.view', 'consultationNotes.manage', 'patients.view'));
 
 router.get('/', getNotes);
 router.get('/booking/:bookingId', getNoteForBooking);

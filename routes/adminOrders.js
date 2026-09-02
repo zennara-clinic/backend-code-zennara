@@ -26,9 +26,11 @@ const { adminSensitiveOperationsLimiter } = require('../middleware/rateLimiter')
 router.use(protectAdmin);
 
 // Order routes
-router.get('/', getAllOrders);
-router.get('/stats', getOrderStats);
-router.get('/:id', getOrderById);
+// Also read by a patient's record (their purchase history) and by Analytics.
+const VIEW = requirePermission('orders.view', 'patients.view', 'analytics.view');
+router.get('/', VIEW, getAllOrders);
+router.get('/stats', VIEW, getOrderStats);
+router.get('/:id', VIEW, getOrderById);
 router.put('/:id/status',
   requirePermission('orders.manage'),
   auditLog('ORDER_STATUS_UPDATED', 'ORDER'),

@@ -34,7 +34,6 @@ const GROUPS = [
       { key: 'overview.view', label: 'Overview dashboard' },
       { key: 'today.view', label: "Today's schedule" },
       { key: 'analytics.view', label: 'Analytics & reports' },
-      { key: 'notifications.manage', label: 'Delete clinic notifications' },
     ],
   },
   {
@@ -159,6 +158,11 @@ const ROLE_BASELINES = {
     'patients.view', 'patients.manage',
     'consultationNotes.view', 'consultationNotes.manage',
     'services.view', 'packages.view', 'branches.view',
+    // Their own profile, schedule and fee requests live behind these.
+    'dermatologists.view',
+    // The prescription pad reads the product catalogue; PatientDetail reads the
+    // app's membership copy; the CRM tab reads a guest's clinic history.
+    'products.view', 'appStudio.view', 'zenoti.view',
   ],
   therapist: [
     // The floor: today's guests, check-in/out, and stock consumed in session.
@@ -166,6 +170,9 @@ const ROLE_BASELINES = {
     'patients.view',
     'inventory.view', 'inventory.manage',
     'services.view', 'packages.view', 'branches.view',
+    // The session screen reads the app's service copy, and shows what the
+    // dermatologist prescribed for this guest.
+    'appStudio.view', 'consultationNotes.view',
   ],
 };
 
