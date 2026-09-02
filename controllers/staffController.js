@@ -11,6 +11,29 @@ const AdminAuditLog = require('../models/AdminAuditLog');
  */
 
 const ROLES = ['super_admin', 'doctor', 'therapist', 'staff'];
+
+/**
+ * Which account types this endpoint may create, and where the others come from.
+ *
+ * Only two are made here: `staff` from the Add-staff form, and `therapist` from
+ * the Therapists page. The rest are deliberately unreachable, because each is
+ * owned somewhere else and a second way to mint one would let the panel
+ * contradict its source of truth:
+ *
+ *   super_admin — the server's ADMIN_EMAILS list. `Admin.resolveLogin` creates
+ *                 the row on first sign-in, so the env file stays authoritative
+ *                 and nobody can grant themselves everything from the UI.
+ *   doctor      — POST /api/doctors, which creates the clinical profile and the
+ *                 login together; a login with no profile behind it is useless.
+ *
+ * The same rule blocks promotion on update: an account cannot be moved onto a
+ * type this endpoint could not have created.
+ */
+const CREATABLE_ROLES = ['staff', 'therapist'];
+const ROLE_SOURCE = {
+  super_admin: "Super admins come from the server's ADMIN_EMAILS list — add the address there and the account appears on their first sign-in.",
+  doctor: 'Dermatologist logins are created on the Dermatologists page, together with the clinical profile they belong to.',
+};
 const { sanitizePermissions } = require('../config/permissions');
 
 /**
@@ -172,6 +195,12 @@ exports.createStaff = async (req, res) => {
     if (!ROLES.includes(role)) {
       return res.status(400).json({ success: false, message: `Role must be one of: ${ROLES.join(', ')}` });
     }
+    if (!CREATABLE_ROLES.includes(role)) {
+      return res.status(400).json({
+        success: false,
+        message: ROLE_SOURCE[role] || 'This kind of account is not created here.',
+      });
+    }
     if (refuseOutOfScope(req, res, role, 'manage')) return;
     // Admin-panel accounts have no password — they sign in with an emailed code.
     // Accepting one here would create a second, unusable way in.
@@ -264,6 +293,12 @@ exports.updateStaff = async (req, res) => {
 
     if (role && !ROLES.includes(role)) {
       return res.status(400).json({ success: false, message: `Role must be one of: ${ROLES.join(', ')}` });
+    }
+    if (role && role !== admin.role && !CREATABLE_ROLES.includes(role)) {
+      return res.status(400).json({
+        success: false,
+        message: ROLE_SOURCE[role] || 'An account cannot be changed into this type here.',
+      });
     }
     if (refuseOutOfScope(req, res, admin.role, 'manage')) return;
     if (role && refuseOutOfScope(req, res, role, 'manage')) return;
@@ -516,10 +551,10 @@ exports.getRoles = async (req, res) => {
   res.status(200).json({
     success: true,
     data: [
-      { id: 'super_admin', label: 'Super Admin', description: 'The full admin panel — every clinic, every module. Signs in with an emailed code.' },
-      { id: 'staff', label: 'Staff', description: 'Admin panel, limited to an assigned role. Signs in with an emailed code.' },
-      { id: 'doctor', label: 'Dermatologist', description: 'Clinical panel — own day, patients, prescriptions. Signs in with a password.' },
-      { id: 'therapist', label: 'Therapist', description: 'Floor panel — today’s guests, sessions, consumption. Signs in with a password.' },
+      { id: 'staff', label: 'Staff', description: 'Admin panel, limited to an assigned role. Signs in with an emailed code. Created on the Staff page.' },
+      { id: 'super_admin', label: 'Super Admin', description: 'The full admin panel — every clinic, every module. Signs in with an emailed code. Created from ADMIN_EMAILS.' },
+      { id: 'doctor', label: 'Dermatologist', description: 'Clinical panel — own day, patients, prescriptions. Signs in with a password. Created on the Dermatologists page.' },
+      { id: 'therapist', label: 'Therapist', description: 'Floor panel — today’s guests, sessions, consumption. Signs in with a password. Created on the Therapists page.' },
     ],
   });
 };
