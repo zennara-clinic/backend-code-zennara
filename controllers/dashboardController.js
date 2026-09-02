@@ -22,20 +22,22 @@ const Branch = require('../models/Branch');
 const ZenotiGuestData = require('../models/ZenotiGuestData');
 const { consultationIdsByKind } = require('../utils/listFilters');
 const { canonicalName } = require('../utils/dermatologistMatch');
+const { addClinicDays, clinicDateKey, clinicDayEnd, clinicDayStart } = require('../utils/bookingTime');
 
 const CONSULT_RX = /consult|counsel/i;
-const dayKey = (d) => { const x = new Date(d); x.setMinutes(x.getMinutes() - x.getTimezoneOffset()); return x.toISOString().slice(0, 10); };
+const dayKey = clinicDateKey;
 const sum = (arr, f) => arr.reduce((n, x) => n + (Number(f(x)) || 0), 0);
 const round = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
 exports.getDashboard = async (req, res) => {
   try {
     // ---- window + scope ---------------------------------------------------
-    const end = req.query.endDate ? new Date(req.query.endDate) : new Date();
-    end.setHours(23, 59, 59, 999);
-    const start = req.query.startDate ? new Date(req.query.startDate) : new Date(end.getTime() - 29 * 86400000);
-    start.setHours(0, 0, 0, 0);
-    const days = Math.max(1, Math.round((end - start) / 86400000));
+    const today = clinicDateKey(new Date());
+    const endKey = req.query.endDate || today;
+    const startKey = req.query.startDate || addClinicDays(endKey, -29);
+    const end = clinicDayEnd(endKey);
+    const start = clinicDayStart(startKey);
+    const days = Math.max(1, Math.round((end - start + 1) / 86400000));
     const prevStart = new Date(start.getTime() - days * 86400000);
     const prevEnd = new Date(start.getTime() - 1);
 

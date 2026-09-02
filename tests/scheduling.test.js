@@ -11,7 +11,10 @@ const {
   validateBranchSession,
 } = require('../utils/branchSchedule');
 const { slotsForDate, whoIsFreeWithBranches } = require('../utils/dermatologistSlots');
-const { clinicDateTime } = require('../utils/bookingTime');
+const {
+  bookingScheduledAt, clinicDateKey, clinicDateTime, clinicDayEnd, clinicDayStart,
+} = require('../utils/bookingTime');
+const { buildBookingQuery } = require('../utils/listFilters');
 
 const allDays = Object.fromEntries(
   ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
@@ -47,6 +50,7 @@ test('treatment slots are hourly even when an old branch record says 30 minutes'
 test('doctor slots are hourly and overlapping legacy bookings block the full hour', async () => {
   const originalScheduleFind = DermatologistSchedule.findOne;
   const originalBookingFind = Booking.find;
+  const originalDoctorFindOne = Doctor.findOne;
   let bookings = [];
 
   DermatologistSchedule.findOne = () => ({
@@ -69,6 +73,7 @@ test('doctor slots are hourly and overlapping legacy bookings block the full hou
     select() { return this; },
     lean: async () => bookings,
   });
+  Doctor.findOne = () => ({ select() { return this; }, lean: async () => ({ isActive: true }) });
 
   try {
     const free = await slotsForDate('doctor-test', '2030-01-01', {
@@ -95,6 +100,7 @@ test('doctor slots are hourly and overlapping legacy bookings block the full hou
   } finally {
     DermatologistSchedule.findOne = originalScheduleFind;
     Booking.find = originalBookingFind;
+    Doctor.findOne = originalDoctorFindOne;
   }
 });
 
@@ -129,7 +135,9 @@ test('doctor and treatment booking changes close 24 hours before check-in', () =
 
 test('any available returns free dermatologists across clinics with their actual clinic', async () => {
   const originalDoctorFind = Doctor.find;
+  const originalDoctorFindOne = Doctor.findOne;
   const originalBranchFind = Branch.find;
+  const originalBranchFindById = Branch.findById;
   const originalScheduleFind = DermatologistSchedule.findOne;
   const originalBookingFind = Booking.find;
 
@@ -152,11 +160,17 @@ test('any available returns free dermatologists across clinics with their actual
     select() { return this; },
     lean: async () => doctors,
   });
+  Doctor.findOne = () => ({ select() { return this; }, lean: async () => ({ isActive: true }) });
   Branch.find = (query) => ({
     select() { return this; },
     lean: async () => query?._id
       ? branches.filter((branch) => String(branch._id) === String(query._id))
       : branches,
+  });
+  Branch.findById = async (id) => ({
+    _id: id,
+    closureFor: () => null,
+    hoursFor: () => ({ open: '10:00', close: '13:00' }),
   });
   DermatologistSchedule.findOne = ({ doctorId }) => ({
     lean: async () => ({
@@ -201,8 +215,29 @@ test('any available returns free dermatologists across clinics with their actual
     assert.deepEqual(kondapurOnly.map((match) => match.doctorId), ['doctor-kondapur']);
   } finally {
     Doctor.find = originalDoctorFind;
+    Doctor.findOne = originalDoctorFindOne;
     Branch.find = originalBranchFind;
+    Branch.findById = originalBranchFindById;
     DermatologistSchedule.findOne = originalScheduleFind;
     Booking.find = originalBookingFind;
   }
+});
+
+test('clinic dates and appointment instants never inherit the EC2 or browser timezone', async () => {
+  const start = clinicDayStart('2026-09-01');
+  const end = clinicDayEnd('2026-09-01');
+  assert.equal(start.toISOString(), '2026-08-31T18:30:00.000Z');
+  assert.equal(end.toISOString(), '2026-09-01T18:29:59.999Z');
+  assert.equal(clinicDateKey(start), '2026-09-01');
+
+  const scheduled = bookingScheduledAt({
+    preferredDate: start,
+    preferredTimeSlots: ['10:00 AM'],
+  });
+  assert.equal(scheduled.toISOString(), '2026-09-01T04:30:00.000Z');
+
+  const { query } = await buildBookingQuery({ date: '2026-09-01' });
+  const range = query.$and[0].$or[0].confirmedDate;
+  assert.equal(range.$gte.toISOString(), start.toISOString());
+  assert.equal(range.$lte.toISOString(), end.toISOString());
 });

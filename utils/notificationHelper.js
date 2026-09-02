@@ -1,4 +1,5 @@
 const Notification = require('../models/Notification');
+const { formatClinicDate } = require('./bookingTime');
 
 /**
  * Notification Helper
@@ -53,7 +54,7 @@ class NotificationHelper {
       await this.create({
         type: 'booking',
         title: 'New Booking Created',
-        message: `New booking for ${booking.consultation?.name || 'consultation'} at ${booking.branch?.name || 'branch'} on ${new Date(booking.appointmentDate).toLocaleDateString()}`,
+        message: `New booking for ${booking.consultation?.name || 'consultation'} at ${booking.branch?.name || 'branch'} on ${formatClinicDate(booking.appointmentDate)}`,
         relatedId: booking._id,
         relatedModel: 'Booking',
         priority: 'high',
@@ -95,7 +96,7 @@ class NotificationHelper {
       await this.create({
         type: 'booking',
         title: 'Appointment Confirmed',
-        message: `Appointment for ${booking.patientName || 'patient'} - ${booking.consultation?.name || 'consultation'} confirmed for ${booking.confirmedDate ? new Date(booking.confirmedDate).toLocaleDateString() : 'selected date'}`,
+        message: `Appointment for ${booking.patientName || 'patient'} - ${booking.consultation?.name || 'consultation'} confirmed for ${booking.confirmedDate ? formatClinicDate(booking.confirmedDate) : 'selected date'}`,
         relatedId: booking._id,
         relatedModel: 'Booking',
         priority: 'medium',
@@ -114,7 +115,7 @@ class NotificationHelper {
           userId: booking.userId,
           type: 'booking',
           title: 'Appointment Confirmed',
-          message: `Your appointment for ${booking.consultation?.name || 'consultation'} on ${booking.confirmedDate ? new Date(booking.confirmedDate).toLocaleDateString() : 'your selected date'} has been confirmed.`,
+          message: `Your appointment for ${booking.consultation?.name || 'consultation'} on ${booking.confirmedDate ? formatClinicDate(booking.confirmedDate) : 'your selected date'} has been confirmed.`,
           relatedId: booking._id,
           relatedModel: 'Booking',
           priority: 'high',
@@ -177,7 +178,7 @@ class NotificationHelper {
       await this.create({
         type: 'booking',
         title: 'Appointment Rescheduled',
-        message: `${booking.patientName || 'Patient'} rescheduled appointment for ${booking.consultation?.name || 'consultation'} to ${booking.confirmedDate ? new Date(booking.confirmedDate).toLocaleDateString() : 'new date'}`,
+        message: `${booking.patientName || 'Patient'} rescheduled appointment for ${booking.consultation?.name || 'consultation'} to ${booking.confirmedDate ? formatClinicDate(booking.confirmedDate) : 'new date'}`,
         relatedId: booking._id,
         relatedModel: 'Booking',
         priority: 'medium',
@@ -196,7 +197,7 @@ class NotificationHelper {
           userId: booking.userId,
           type: 'booking',
           title: 'Appointment Rescheduled',
-          message: `Your appointment has been rescheduled to ${booking.confirmedDate ? new Date(booking.confirmedDate).toLocaleDateString() : 'a new date'}. We'll confirm shortly.`,
+          message: `Your appointment has been rescheduled to ${booking.confirmedDate ? formatClinicDate(booking.confirmedDate) : 'a new date'}. We'll confirm shortly.`,
           relatedId: booking._id,
           relatedModel: 'Booking',
           priority: 'high',

@@ -1,6 +1,9 @@
 const cron = require('node-cron');
 const Booking = require('../models/Booking');
 const emailService = require('./emailService');
+const {
+  addClinicDays, bookingScheduledAt, clinicDateKey, clinicDayEnd, clinicDayStart, formatClinicDate,
+} = require('./bookingTime');
 
 /**
  * Automatically delete expired bookings that are still in "Awaiting Confirmation" status
@@ -11,52 +14,22 @@ const cleanupExpiredBookings = async () => {
     console.log('🧹 Running booking cleanup scheduler...');
     
     const now = new Date();
-    const currentDate = now.toISOString().split('T')[0]; // YYYY-MM-DD
-    const currentTime = now.toLocaleTimeString('en-US', { 
-      hour: '2-digit', 
-      minute: '2-digit',
-      hour12: true 
-    });
+    const currentDate = clinicDateKey(now);
 
     // Find all bookings that are:
     // 1. Still in "Awaiting Confirmation" status
     // 2. Preferred date is in the past OR (date is today AND time has passed)
     const expiredBookings = await Booking.find({
       status: 'Awaiting Confirmation',
-      $or: [
-        // Date is in the past
-        { preferredDate: { $lt: now } },
-        // Date is today but we need to check time
-        {
-          preferredDate: {
-            $gte: new Date(currentDate),
-            $lt: new Date(new Date(currentDate).setDate(new Date(currentDate).getDate() + 1))
-          }
-        }
-      ]
+      preferredDate: { $lte: clinicDayEnd(currentDate) },
     }).populate('consultationId', 'name');
 
     // Filter bookings where time has also passed (for today's bookings)
     const bookingsToDelete = [];
     
     for (const booking of expiredBookings) {
-      const bookingDate = booking.preferredDate.toISOString().split('T')[0];
-      
-      // If booking date is in the past, delete it
-      if (bookingDate < currentDate) {
-        bookingsToDelete.push(booking);
-        continue;
-      }
-      
-      // If booking date is today, check if time has passed
-      if (bookingDate === currentDate && booking.preferredTimeSlots.length > 0) {
-        const bookingTime = booking.preferredTimeSlots[0]; // e.g., "10:00 AM"
-        
-        // Compare times
-        if (isTimePassed(bookingTime, currentTime)) {
-          bookingsToDelete.push(booking);
-        }
-      }
+      const scheduledAt = bookingScheduledAt(booking);
+      if (scheduledAt && scheduledAt < now) bookingsToDelete.push(booking);
     }
 
     if (bookingsToDelete.length === 0) {
@@ -75,9 +48,7 @@ const cleanupExpiredBookings = async () => {
           {
             referenceNumber: booking.referenceNumber,
             treatment: booking.consultationId?.name || 'N/A',
-            date: booking.preferredDate.toLocaleDateString('en-US', { 
-              weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-            }),
+            date: formatClinicDate(booking.preferredDate),
             time: booking.preferredTimeSlots[0],
             location: booking.preferredLocation
           }
@@ -99,18 +70,6 @@ const cleanupExpiredBookings = async () => {
     console.error('❌ Error in booking cleanup scheduler:', error);
   }
 };
-
-/**
- * Helper function to check if a time has passed
- * @param {string} bookingTime - Time in format "10:00 AM"
- * @param {string} currentTime - Current time in format "10:00 AM"
- * @returns {boolean} - True if booking time has passed
- */
-function isTimePassed(bookingTime, currentTime) {
-  const bookingDate = new Date(`1970-01-01 ${bookingTime}`);
-  const currentDate = new Date(`1970-01-01 ${currentTime}`);
-  return currentDate > bookingDate;
-}
 
 /** "10:00 AM" from a Date; a date with no set time defaults to a 10 AM slot. */
 /** "HH:mm" in clinic time — the diary keys slots on this, not on a label. */
@@ -310,8 +269,9 @@ async function sendUpcomingCheckInCodes() {
   const Booking = require('../models/Booking');
   const visitCodes = require('./visitCodes');
   const now = new Date();
-  const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
-  const dayEnd = new Date(now); dayEnd.setDate(dayEnd.getDate() + 1); dayEnd.setHours(23, 59, 59, 999);
+  const today = clinicDateKey(now);
+  const dayStart = clinicDayStart(today);
+  const dayEnd = clinicDayEnd(addClinicDays(today, 1));
   const candidates = await Booking.find({
     status: { $in: ['Confirmed', 'Rescheduled'] },
     checkInCodeSentAt: null,
@@ -321,15 +281,8 @@ async function sendUpcomingCheckInCodes() {
 
   let sent = 0;
   for (const b of candidates) {
-    const date = b.confirmedDate || b.preferredDate;
-    const time = b.confirmedTime || b.slotTime || (b.preferredTimeSlots && b.preferredTimeSlots[0]);
-    if (!date || !time) continue;
-    const m = String(time).match(/(\d{1,2}):(\d{2})\s*(am|pm)?/i);
-    if (!m) continue;
-    let h = Number(m[1]); const min = Number(m[2]); const mer = (m[3] || '').toLowerCase();
-    if (mer === 'pm' && h < 12) h += 12;
-    if (mer === 'am' && h === 12) h = 0;
-    const start = new Date(date); start.setHours(h, min, 0, 0);
+    const start = bookingScheduledAt(b);
+    if (!start) continue;
     const lead = start.getTime() - now.getTime();
     if (lead > 65 * 60 * 1000 || lead < -30 * 60 * 1000) continue; // outside the 1h window
     try {

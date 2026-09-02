@@ -781,8 +781,7 @@ async function getGuestForms(guestId) {
 }
 
 function isoDaysFromNow(days) {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
+  const d = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
   const parts = new Intl.DateTimeFormat('en-GB', {
     timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
   }).formatToParts(d);

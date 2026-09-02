@@ -6,6 +6,9 @@ const Consultation = require('../models/Consultation');
 const Branch = require('../models/Branch');
 const User = require('../models/User');
 const Inventory = require('../models/Inventory');
+const {
+  addClinicDays, clinicDateKey, clinicDayEnd, clinicDayStart, formatClinicDate, parseClockMinutes,
+} = require('../utils/bookingTime');
 
 // Get Financial Dashboard Analytics
 
@@ -20,8 +23,8 @@ const dateScope = (req, field = 'createdAt') => {
   const { startDate, endDate } = req.query;
   if (!startDate && !endDate) return {};
   const r = {};
-  if (startDate) r.$gte = new Date(startDate);
-  if (endDate) { const d = new Date(endDate); d.setHours(23, 59, 59, 999); r.$lte = d; }
+  if (startDate) r.$gte = clinicDayStart(startDate);
+  if (endDate) r.$lte = clinicDayEnd(endDate);
   return { [field]: r };
 };
 
@@ -880,12 +883,21 @@ exports.getAppointmentAnalytics = async (req, res) => {
     const { startDate, endDate } = req.query;
     
     // Default to last 30 days
-    const start = startDate ? new Date(startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const end = endDate ? new Date(endDate) : new Date();
+    const today = clinicDateKey(new Date());
+    const startKey = startDate || addClinicDays(today, -29);
+    const endKey = endDate || today;
+    const start = clinicDayStart(startKey);
+    const end = clinicDayEnd(endKey);
+    const slotRange = (from, to) => ({
+      $or: [
+        { confirmedDate: { $gte: from, $lte: to } },
+        { confirmedDate: null, preferredDate: { $gte: from, $lte: to } },
+      ],
+    });
     
     // Get all bookings in date range
     const bookings = await Booking.find({
-      createdAt: { $gte: start, $lte: end },
+      ...slotRange(start, end),
       ...branchScope(req)
     }).populate('consultationId', 'name category');
 
@@ -893,7 +905,7 @@ exports.getAppointmentAnalytics = async (req, res) => {
     const completedBookings = bookings.filter(b => b.status === 'Completed').length;
     const cancelledBookings = bookings.filter(b => b.status === 'Cancelled').length;
     const noShowBookings = bookings.filter(b => b.status === 'No Show').length;
-    const pendingBookings = bookings.filter(b => b.status === 'Pending').length;
+    const pendingBookings = bookings.filter(b => b.status === 'Awaiting Confirmation').length;
 
     // 1. Appointment Conversion Rate
     const conversionRate = totalBookings > 0 ? (completedBookings / totalBookings) * 100 : 0;
@@ -907,8 +919,10 @@ exports.getAppointmentAnalytics = async (req, res) => {
     // 3. Peak Booking Hours (0-23)
     const hourlyBookings = Array(24).fill(0);
     bookings.forEach(booking => {
-      if (booking.timeSlot) {
-        const hour = parseInt(booking.timeSlot.split(':')[0]);
+      const time = booking.confirmedTime || booking.slotTime || booking.preferredTimeSlots?.[0];
+      if (time) {
+        const minutes = parseClockMinutes(time);
+        const hour = minutes === null ? NaN : Math.floor(minutes / 60);
         if (!isNaN(hour) && hour >= 0 && hour < 24) {
           hourlyBookings[hour]++;
         }
@@ -918,29 +932,27 @@ exports.getAppointmentAnalytics = async (req, res) => {
     // 4. Peak Booking Days (0=Sunday, 6=Saturday)
     const dayOfWeekBookings = Array(7).fill(0);
     bookings.forEach(booking => {
-      const day = new Date(booking.appointmentDate).getDay();
+      const key = clinicDateKey(booking.confirmedDate || booking.preferredDate);
+      if (!key) return;
+      const [y, m, d] = key.split('-').map(Number);
+      const day = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
       dayOfWeekBookings[day]++;
     });
 
     // 5. Cancellation Rate Trend (last 7 days)
     const cancellationTrend = [];
     for (let i = 6; i >= 0; i--) {
-      const date = new Date();
-      date.setDate(date.getDate() - i);
-      date.setHours(0, 0, 0, 0);
-      const nextDate = new Date(date);
-      nextDate.setDate(nextDate.getDate() + 1);
+      const key = addClinicDays(today, -i);
 
       const dayBookings = bookings.filter(b => {
-        const bookingDate = new Date(b.appointmentDate);
-        return bookingDate >= date && bookingDate < nextDate;
+        return clinicDateKey(b.confirmedDate || b.preferredDate) === key;
       });
 
       const dayCancellations = dayBookings.filter(b => b.status === 'Cancelled').length;
       const cancellationRate = dayBookings.length > 0 ? (dayCancellations / dayBookings.length) * 100 : 0;
 
       cancellationTrend.push({
-        date: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+        date: formatClinicDate(clinicDayStart(key), { month: 'short', day: 'numeric' }),
         rate: parseFloat(cancellationRate.toFixed(1)),
         cancelled: dayCancellations,
         total: dayBookings.length
@@ -977,7 +989,7 @@ exports.getAppointmentAnalytics = async (req, res) => {
         if (!patientBookings[userId]) {
           patientBookings[userId] = [];
         }
-        patientBookings[userId].push(new Date(booking.appointmentDate));
+        patientBookings[userId].push(new Date(booking.confirmedDate || booking.preferredDate));
       }
     });
 
@@ -997,20 +1009,18 @@ exports.getAppointmentAnalytics = async (req, res) => {
       : 0;
 
     // 8. Upcoming Appointments This Week
-    const startOfWeek = new Date();
-    startOfWeek.setHours(0, 0, 0, 0);
-    const endOfWeek = new Date(startOfWeek);
-    endOfWeek.setDate(endOfWeek.getDate() + 7);
+    const startOfWeek = clinicDayStart(today);
+    const endOfWeek = clinicDayEnd(addClinicDays(today, 7));
 
     const upcomingThisWeek = await Booking.countDocuments({
-      appointmentDate: { $gte: startOfWeek, $lte: endOfWeek },
-      status: { $in: ['Pending', 'Confirmed'] }
+      ...slotRange(startOfWeek, endOfWeek),
+      status: { $in: ['Awaiting Confirmation', 'Confirmed', 'Rescheduled'] }
     });
 
     // 9. Pending Confirmations Count
     const pendingConfirmations = await Booking.countDocuments({
-      status: 'Pending',
-      appointmentDate: { $gte: new Date() }
+      status: 'Awaiting Confirmation',
+      ...slotRange(clinicDayStart(today), clinicDayEnd(addClinicDays(today, 365)))
     });
 
     // Response

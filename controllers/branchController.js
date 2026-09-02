@@ -1,5 +1,6 @@
 const Branch = require('../models/Branch');
 const { SESSION_SLOT_MINUTES } = require('../config/scheduling');
+const { clinicDayStart } = require('../utils/bookingTime');
 
 /**
  * Mongoose validation failures are the caller's fault, not the server's.
@@ -109,7 +110,10 @@ exports.getBranchSlots = async (req, res) => {
       });
     }
 
-    const selectedDate = new Date(date);
+    const selectedDate = clinicDayStart(date);
+    if (!selectedDate) {
+      return res.status(400).json({ success: false, message: 'Date must be a valid YYYY-MM-DD clinic date' });
+    }
     const slots = branch.getAvailableSlots(selectedDate);
 
     res.status(200).json({
@@ -117,7 +121,7 @@ exports.getBranchSlots = async (req, res) => {
       data: {
         branchId: branch._id,
         branchName: branch.name,
-        date: selectedDate,
+        date,
         slots: slots,
         slotDuration: SESSION_SLOT_MINUTES
       }

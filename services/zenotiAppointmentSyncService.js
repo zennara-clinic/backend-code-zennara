@@ -33,15 +33,27 @@ function clinicDay(value = new Date()) {
   return `${part('year')}-${part('month')}-${part('day')}`;
 }
 
-function localParts(value) {
+function appointmentLocalParts(value, utcValue = null) {
   const raw = String(value || '');
   const match = raw.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
-  if (!match) return { date: new Date(value), day: null, time: null };
-  return {
-    date: new Date(`${match[1]}T00:00:00+05:30`),
-    day: match[1],
-    time: match[2],
-  };
+  const explicitZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
+  // Zenoti's `start_time` is normally a clinic wall-clock string. Preserve
+  // that written day/time. If it ever supplies UTC (or a non-IST offset),
+  // convert the instant to Asia/Kolkata instead of silently using UTC fields.
+  if (match && (!explicitZone || /\+05:?30$/i.test(raw))) {
+    return { date: new Date(`${match[1]}T00:00:00+05:30`), day: match[1], time: match[2] };
+  }
+
+  const instant = new Date(utcValue || value);
+  if (Number.isNaN(instant.getTime())) return { date: instant, day: null, time: null };
+  const rows = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).formatToParts(instant);
+  const part = (type) => rows.find((row) => row.type === type)?.value || '00';
+  const day = `${part('year')}-${part('month')}-${part('day')}`;
+  const hour = part('hour') === '24' ? '00' : part('hour');
+  return { date: new Date(`${day}T00:00:00+05:30`), day, time: `${hour}:${part('minute')}` };
 }
 
 function clinicDate(value) {
@@ -96,6 +108,37 @@ function amountOf(appointment) {
  * Upsert one normalised Zenoti appointment. `user` may be supplied for the
  * guest-history backfill; center polling provisions it from appointment.guest.
  */
+/**
+ * A reference number for a mirrored appointment that cannot collide.
+ *
+ * The old form was `ZNT` + the first 20 hex characters of Zenoti's appointment
+ * GUID. Those 20 characters never collide between two appointments — but the
+ * reference outlives the row's identity. An earlier version of the invoice
+ * adoption below let a second service in a multi-service visit re-point an
+ * existing booking at its own appointment id, leaving that row holding a
+ * reference derived from the FIRST appointment. When the first appointment came
+ * back on the next sync it could never be inserted: its natural reference was
+ * already taken, `save()` threw a duplicate-key error, and the row was counted
+ * as failed and dropped. It repeated on every sync, for ever.
+ *
+ * So derive the reference, then verify the holder is this very appointment;
+ * otherwise fall through to progressively longer, still deterministic forms.
+ * Same appointment in, same reference out — re-running creates no duplicates.
+ */
+async function uniqueZenotiReference(appointmentId) {
+  const hex = String(appointmentId).replace(/-/g, '').toUpperCase();
+  const candidates = [`ZNT${hex.slice(0, 20)}`, `ZNT${hex}`];
+  for (let i = 2; i <= 9; i += 1) candidates.push(`ZNT${hex}X${i}`);
+  for (const ref of candidates) {
+    const holder = await Booking.findOne({ referenceNumber: ref })
+      .select('zenotiAppointmentId').lean();
+    if (!holder) return ref;
+    if (String(holder.zenotiAppointmentId || '').toLowerCase() === String(appointmentId).toLowerCase()) return ref;
+  }
+  // Unreachable in practice; keeps the caller from inserting a null reference.
+  return `ZNT${hex}${Date.now().toString(36).toUpperCase()}`;
+}
+
 async function upsertAppointment(appointment, { user = null, context = null } = {}) {
   if (!appointment?.id) return { outcome: 'skipped', reason: 'missing appointment id' };
   const guest = appointment.guest;
@@ -106,7 +149,7 @@ async function upsertAppointment(appointment, { user = null, context = null } = 
   const branchName = appointment.branchName || branchNameForCenter(appointment.centerId || owner.zenotiCenterId);
   const branch = ctx.branchByName.get(norm(branchName));
   const consultation = ctx.consultationByName.get(norm(appointment.serviceName));
-  const parts = localParts(appointment.startTime);
+  const parts = appointmentLocalParts(appointment.startTime, appointment.startTimeUtc);
   if (!parts.day || !parts.time || Number.isNaN(parts.date.getTime())) {
     return { outcome: 'skipped', reason: 'invalid appointment time' };
   }
@@ -137,8 +180,10 @@ async function upsertAppointment(appointment, { user = null, context = null } = 
       userId: owner._id,
       source: 'zenoti',
       // The generic four-digit random reference collides during bulk history
-      // imports. Zenoti's GUID gives this row a stable, globally unique ref.
-      referenceNumber: `ZNT${String(appointment.id).replace(/-/g, '').slice(0, 20).toUpperCase()}`,
+      // imports. Zenoti's GUID gives this row a stable reference, and
+      // uniqueZenotiReference guarantees it is not already held by a different
+      // appointment — see the note there.
+      referenceNumber: await uniqueZenotiReference(appointment.id),
     });
   }
 
@@ -241,7 +286,20 @@ async function upsertAppointment(appointment, { user = null, context = null } = 
   // Mark the document so Booking's outbound post-save hook does not echo the
   // imported lifecycle state back to Zenoti.
   booking.$locals.skipZenotiWrite = true;
-  await booking.save({ validateModifiedOnly: !isNew });
+  try {
+    await booking.save({ validateModifiedOnly: !isNew });
+  } catch (error) {
+    // A reference number that was free when we generated it can still be taken
+    // by a concurrent pass. Re-derive once and retry rather than losing the
+    // appointment — the old code counted this as `failed` and moved on, which
+    // is how thousands of visits stayed missing across every sync.
+    if (isNew && error && error.code === 11000) {
+      booking.referenceNumber = await uniqueZenotiReference(appointment.id);
+      await booking.save({ validateModifiedOnly: false });
+    } else {
+      throw error;
+    }
+  }
   return { outcome: isNew ? 'created' : 'updated', bookingId: booking._id };
 }
 
@@ -375,7 +433,12 @@ function isAppointmentSyncRunning() {
 }
 
 module.exports = {
+  appointmentLocalParts,
   localStatus,
+  uniqueZenotiReference,
+  // Exported so bulk backfills can build the lookup maps once instead of
+  // rebuilding them (four collection reads) for every appointment row.
+  lookupContext,
   upsertAppointment,
   syncUserAppointments,
   syncRecentAppointments,

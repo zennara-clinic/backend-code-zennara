@@ -9,7 +9,9 @@ const emailService = require('../utils/emailService');
 const NotificationHelper = require('../utils/notificationHelper');
 const whatsappService = require('../services/whatsappService');
 const twilioVoiceService = require('../services/twilioVoiceService');
-const { bookingScheduledAt } = require('../utils/bookingTime');
+const {
+  bookingScheduledAt, clinicDateKey, clinicDayEnd, clinicDayStart, formatClinicDateTime,
+} = require('../utils/bookingTime');
 const { validateBranchBooking } = require('../utils/branchSchedule');
 const { SESSION_SLOT_MINUTES } = require('../config/scheduling');
 
@@ -112,7 +114,7 @@ exports.createBooking = async (req, res) => {
       email,
       branchId: branch._id,
       preferredLocation,
-      preferredDate: new Date(preferredDate),
+      preferredDate: clinicDayStart(preferredDate),
       preferredTimeSlots,
       amount: consultation.price || 0,
       status: 'Awaiting Confirmation'
@@ -968,8 +970,8 @@ exports.exportBookingsAdmin = async (req, res) => {
       .limit(limit)
       .lean();
 
-    const fmtDate = (d) => (d ? new Date(d).toISOString().slice(0, 10) : '');
-    const fmtWhen = (d) => (d ? new Date(d).toISOString().replace('T', ' ').slice(0, 16) : '');
+    const fmtDate = (d) => (d ? clinicDateKey(d) || '' : '');
+    const fmtWhen = (d) => (d ? formatClinicDateTime(d) : '');
     const rows = bookings.map((b) => {
       const slotDate = b.confirmedDate || b.preferredDate;
       const slotTime = b.confirmedTime || b.slotTime || (b.preferredTimeSlots && b.preferredTimeSlots[0]) || '';
@@ -1042,8 +1044,7 @@ exports.confirmBooking = async (req, res) => {
     // clash blocks; leave/hours problems remain a staff judgement call.
     if (booking.specialistId && confirmedTime) {
       const { isSlotBookable } = require('../utils/dermatologistSlots');
-      const { clinicDateKey } = require('../utils/bookingTime');
-      const key = clinicDateKey(new Date(confirmedDate || booking.preferredDate));
+      const key = clinicDateKey(confirmedDate || booking.preferredDate);
       const check = key
         ? await isSlotBookable(booking.specialistId, key, confirmedTime, {
             branchId: booking.branchId || null,
@@ -1060,7 +1061,7 @@ exports.confirmBooking = async (req, res) => {
     }
 
     booking.status = 'Confirmed';
-    booking.confirmedDate = new Date(confirmedDate);
+    booking.confirmedDate = clinicDayStart(confirmedDate);
     booking.confirmedTime = confirmedTime;
     // Keep the diary's primary field in step for calendar-booked consults.
     if (booking.slotTime) booking.slotTime = confirmedTime || booking.slotTime;
@@ -1488,30 +1489,9 @@ exports.checkOutBookingAdmin = async (req, res) => {
  * the appointment (check-in), and again once the guest is checked in (check-out).
  * ======================================================================== */
 
-const HM_RE = /^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i;
-
-/** Parse "9:00 AM" / "14:30" / "09:00" into {h, m}, or null. */
-function parseTimeToHM(value) {
-  const m = String(value || '').trim().match(HM_RE);
-  if (!m) return null;
-  let h = parseInt(m[1], 10);
-  const min = parseInt(m[2], 10);
-  const ap = m[3] ? m[3].toUpperCase() : null;
-  if (ap === 'PM' && h < 12) h += 12;
-  if (ap === 'AM' && h === 12) h = 0;
-  return { h, m: min };
-}
-
 /** The appointment's start Date, from the confirmed (or preferred) date + time. */
 function appointmentStart(booking) {
-  const dateSrc = booking.confirmedDate || booking.preferredDate;
-  if (!dateSrc) return null;
-  const d = new Date(dateSrc);
-  const timeStr = booking.confirmedTime || booking.slotTime ||
-    (booking.preferredTimeSlots && booking.preferredTimeSlots[0]);
-  const hm = parseTimeToHM(timeStr);
-  if (hm) d.setHours(hm.h, hm.m, 0, 0);
-  return d;
+  return bookingScheduledAt(booking);
 }
 
 
@@ -1994,13 +1974,11 @@ exports.getAvailableTimeSlots = async (req, res) => {
       name: { $regex: `^${escaped}$`, $options: 'i' },
       isActive: true,
     });
-    const allSlots = branch ? branch.getAvailableSlots(new Date(date)) : [];
+    const allSlots = branch ? branch.getAvailableSlots(clinicDayStart(date)) : [];
 
     // Get bookings for the date and location
-    const startDate = new Date(date);
-    startDate.setHours(0, 0, 0, 0);
-    const endDate = new Date(date);
-    endDate.setHours(23, 59, 59, 999);
+    const startDate = clinicDayStart(date);
+    const endDate = clinicDayEnd(date);
 
     const bookings = await Booking.find({
       preferredLocation: location,
@@ -2127,8 +2105,7 @@ exports.createBookingAdmin = async (req, res) => {
     // diary states (lead time, leave) stay overridable at the front desk.
     if (specialistId && confirmNow && slots[0]) {
       const { isSlotBookable } = require('../utils/dermatologistSlots');
-      const { clinicDateKey } = require('../utils/bookingTime');
-      const key = clinicDateKey(new Date(preferredDate));
+      const key = clinicDateKey(preferredDate);
       const check = key
         ? await isSlotBookable(specialistId, key, slots[0], { branchId: branch._id })
         : { ok: true };
@@ -2149,7 +2126,7 @@ exports.createBookingAdmin = async (req, res) => {
       email: user.email,
       branchId: branch._id,
       preferredLocation,
-      preferredDate: new Date(preferredDate),
+      preferredDate: clinicDayStart(preferredDate),
       preferredTimeSlots: slots,
       slotTime: specialistId && confirmNow ? slots[0] : undefined,
       specialistId: specialistId || undefined,
@@ -2164,7 +2141,7 @@ exports.createBookingAdmin = async (req, res) => {
     });
 
     if (confirmNow) {
-      booking.confirmedDate = new Date(preferredDate);
+      booking.confirmedDate = clinicDayStart(preferredDate);
       booking.confirmedTime = slots[0];
     }
 
@@ -2275,8 +2252,7 @@ exports.rescheduleBookingAdmin = async (req, res) => {
     // judgement call rather than a hard block.
     if (booking.specialistId && confirmedTime) {
       const { isSlotBookable } = require('../utils/dermatologistSlots');
-      const { clinicDateKey } = require('../utils/bookingTime');
-      const key = clinicDateKey(new Date(preferredDate));
+      const key = clinicDateKey(preferredDate);
       const check = key
         ? await isSlotBookable(booking.specialistId, key, confirmedTime, {
             branchId: booking.branchId || null,
@@ -2297,12 +2273,12 @@ exports.rescheduleBookingAdmin = async (req, res) => {
       time: booking.confirmedTime || booking.preferredTimeSlots?.[0],
     };
     booking.rescheduledAt = new Date();
-    booking.preferredDate = new Date(preferredDate);
+    booking.preferredDate = clinicDayStart(preferredDate);
     if (Array.isArray(preferredTimeSlots) && preferredTimeSlots.length) {
       booking.preferredTimeSlots = preferredTimeSlots;
     }
     if (confirmedTime) {
-      booking.confirmedDate = new Date(preferredDate);
+      booking.confirmedDate = clinicDayStart(preferredDate);
       booking.confirmedTime = confirmedTime;
       booking.status = 'Confirmed';
     } else {

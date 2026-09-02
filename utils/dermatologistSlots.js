@@ -155,8 +155,7 @@ async function clampToBranch(ranges, branchId, key) {
 /** Starts already held by a live booking, as minutes from midnight. */
 async function bookedTimes(doctorId, key, { excludeBookingId = null } = {}) {
   const day = fromKey(key);
-  const next = new Date(day);
-  next.setDate(next.getDate() + 1);
+  const next = fromKey(addDaysToKey(key, 1));
 
   const rows = await Booking.find({
     specialistId: doctorId,
@@ -306,8 +305,7 @@ async function availabilityRange(doctorId, fromKeyStr, toKeyStr, { branchId = nu
     }
     return { configured: true, slotMinutes: SESSION_SLOT_MINUTES, days };
   }
-  const next = new Date(to);
-  next.setDate(next.getDate() + 1);
+  const next = fromKey(addDaysToKey(toKeyStr, 1));
 
   const rows = await Booking.find({
     specialistId: doctorId,

@@ -19,6 +19,20 @@ const appointmentSync = require('../services/zenotiAppointmentSyncService');
 const practitionerSync = require('../services/zenotiPractitionerService');
 const { canonicalName } = require('../utils/dermatologistMatch');
 const logger = require('../utils/logger');
+const { clinicDateKey, clinicParts } = (() => {
+  const bookingTime = require('../utils/bookingTime');
+  const parts = (value = new Date()) => {
+    const date = value instanceof Date ? value : new Date(value);
+    const rows = new Intl.DateTimeFormat('en-GB', {
+      timeZone: bookingTime.CLINIC_TIME_ZONE,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    }).formatToParts(date);
+    const get = (type) => rows.find((row) => row.type === type)?.value || '00';
+    return { hour: get('hour') === '24' ? '00' : get('hour'), minute: get('minute'), second: get('second') };
+  };
+  return { clinicDateKey: bookingTime.clinicDateKey, clinicParts: parts };
+})();
 
 const clamp = (v, lo, hi, d) => { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
 
@@ -275,9 +289,16 @@ exports.listAppointments = async (req, res) => {
     const branchName = await branchNameFrom(req.query);
     const match = {};
     const range = {};
-    if (req.query.from) range.$gte = new Date(req.query.from).toISOString();
-    if (req.query.to) { const t = new Date(req.query.to); t.setHours(23, 59, 59, 999); range.$lte = t.toISOString(); }
-    if (req.query.upcoming === '1') range.$gte = new Date().toISOString();
+    // Zenoti mirror values are clinic wall-clock strings without an offset.
+    // Compare like with like; converting a date filter to UTC shifted the
+    // boundary and put a 1 September appointment under 2 September.
+    if (/^\d{4}-\d{2}-\d{2}/.test(req.query.from || '')) range.$gte = `${String(req.query.from).slice(0, 10)}T00:00:00`;
+    if (/^\d{4}-\d{2}-\d{2}/.test(req.query.to || '')) range.$lte = `${String(req.query.to).slice(0, 10)}T23:59:59.999`;
+    if (req.query.upcoming === '1') {
+      const now = new Date();
+      const clock = clinicParts(now);
+      range.$gte = `${clinicDateKey(now)}T${clock.hour}:${clock.minute}:${clock.second}`;
+    }
     if (Object.keys(range).length) match['appointments.startTime'] = range;
     const { rows, total } = await listUnwound('appointments', {
       match, page, limit, branchName, search: req.query.search,

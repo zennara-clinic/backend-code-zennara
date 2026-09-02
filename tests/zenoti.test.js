@@ -5,7 +5,7 @@ const zenoti = require('../services/zenotiService');
 const { isMembershipCurrentlyActive } = require('../services/zenotiSyncService');
 const User = require('../models/User');
 const Booking = require('../models/Booking');
-const { localStatus } = require('../services/zenotiAppointmentSyncService');
+const { appointmentLocalParts, localStatus } = require('../services/zenotiAppointmentSyncService');
 const { buildDoctorMatcher } = require('../utils/dermatologistMatch');
 
 test('full guest profile keeps root-level address and operational fields', () => {
@@ -97,6 +97,17 @@ test('Zenoti lifecycle maps to real Booking statuses', () => {
   assert.equal(localStatus({ status: 0, progress: 2 }), 'Completed');
   assert.equal(localStatus({ status: -1 }), 'Cancelled');
   assert.equal(localStatus({ status: -2 }), 'No Show');
+});
+
+test('Zenoti appointment time keeps the clinic day for wall-clock and UTC payloads', () => {
+  const local = appointmentLocalParts('2026-09-01T10:00:00');
+  assert.equal(local.day, '2026-09-01');
+  assert.equal(local.time, '10:00');
+  assert.equal(local.date.toISOString(), '2026-08-31T18:30:00.000Z');
+
+  const utc = appointmentLocalParts('2026-09-01T18:30:00Z');
+  assert.equal(utc.day, '2026-09-02');
+  assert.equal(utc.time, '00:00');
 });
 
 test('Zenoti bookings may retain an external service before catalogue mapping', () => {

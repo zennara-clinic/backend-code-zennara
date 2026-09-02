@@ -9,12 +9,13 @@ const Consultation = require('../models/Consultation');
 const User = require('../models/User');
 const ZenotiPractitioner = require('../models/ZenotiPractitioner');
 const { canonicalName } = require('./dermatologistMatch');
+const { clinicDayEnd, clinicDayStart } = require('./bookingTime');
 
 const escapeRx = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const list = (v) => (v === undefined || v === null || v === '' ? [] : Array.isArray(v) ? v : String(v).split(',')).map((x) => String(x).trim()).filter(Boolean);
 const num = (v) => (v === undefined || v === '' || v === null || Number.isNaN(Number(v)) ? null : Number(v));
-const dayStart = (v) => { if (!v) return null; const d = new Date(v); if (Number.isNaN(d.getTime())) return null; d.setHours(0, 0, 0, 0); return d; };
-const dayEnd = (v) => { if (!v) return null; const d = new Date(v); if (Number.isNaN(d.getTime())) return null; d.setHours(23, 59, 59, 999); return d; };
+const dayStart = (v) => (v ? clinicDayStart(v) : null);
+const dayEnd = (v) => (v ? clinicDayEnd(v) : null);
 const isoDate = (d) => d.toISOString().slice(0, 10);
 
 const practitionerNameRx = (name) => {

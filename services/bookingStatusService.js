@@ -1,5 +1,6 @@
 const Booking = require('../models/Booking');
 const emailService = require('../utils/emailService');
+const { bookingScheduledAt, formatClinicDate } = require('../utils/bookingTime');
 
 class BookingStatusService {
   /**
@@ -30,7 +31,7 @@ class BookingStatusService {
         if (!appointmentDate || !appointmentTime) continue;
 
         // Parse appointment datetime
-        const appointmentDateTime = this.parseAppointmentDateTime(appointmentDate, appointmentTime);
+        const appointmentDateTime = bookingScheduledAt(booking);
         
         if (!appointmentDateTime) continue;
 
@@ -52,9 +53,7 @@ class BookingStatusService {
               booking.fullName,
               {
                 treatment: booking.consultationId?.name || 'Treatment',
-                date: appointmentDate.toLocaleDateString('en-US', { 
-                  weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-                }),
+                date: formatClinicDate(appointmentDate),
                 time: appointmentTime,
                 location: booking.preferredLocation,
                 referenceNumber: booking.referenceNumber
@@ -87,33 +86,7 @@ class BookingStatusService {
    * Parse appointment date and time into a single DateTime object
    */
   static parseAppointmentDateTime(date, timeString) {
-    try {
-      const appointmentDate = new Date(date);
-      
-      // Parse time string (e.g., "10:00 AM", "2:30 PM")
-      const timeMatch = timeString.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
-      if (!timeMatch) {
-        console.warn(`Invalid time format: ${timeString}`);
-        return null;
-      }
-
-      let hours = parseInt(timeMatch[1]);
-      const minutes = parseInt(timeMatch[2]);
-      const period = timeMatch[3].toUpperCase();
-
-      // Convert to 24-hour format
-      if (period === 'PM' && hours !== 12) {
-        hours += 12;
-      } else if (period === 'AM' && hours === 12) {
-        hours = 0;
-      }
-
-      appointmentDate.setHours(hours, minutes, 0, 0);
-      return appointmentDate;
-    } catch (error) {
-      console.error('Error parsing appointment datetime:', error);
-      return null;
-    }
+    return require('../utils/bookingTime').clinicDateTime(date, timeString);
   }
 
   /**
@@ -133,7 +106,7 @@ class BookingStatusService {
       
       if (!appointmentDate || !appointmentTime) return false;
 
-      const appointmentDateTime = this.parseAppointmentDateTime(appointmentDate, appointmentTime);
+      const appointmentDateTime = bookingScheduledAt(booking);
       if (!appointmentDateTime) return false;
 
       // Check if appointment time has passed (with 15-minute grace period)
@@ -153,9 +126,7 @@ class BookingStatusService {
             booking.fullName,
             {
               treatment: booking.consultationId?.name || 'Treatment',
-              date: appointmentDate.toLocaleDateString('en-US', { 
-                weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-              }),
+              date: formatClinicDate(appointmentDate),
               time: appointmentTime,
               location: booking.preferredLocation,
               referenceNumber: booking.referenceNumber

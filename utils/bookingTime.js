@@ -35,6 +35,54 @@ const clinicDateKey = (value) => {
   return `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
 };
 
+const DATE_KEY = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Add whole clinic-calendar days without using the server's local timezone. */
+const addClinicDays = (key, amount) => {
+  if (!DATE_KEY.test(String(key || ''))) return null;
+  const [year, month, day] = String(key).split('-').map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  date.setUTCDate(date.getUTCDate() + amount);
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}-${String(date.getUTCDate()).padStart(2, '0')}`;
+};
+
+/**
+ * Clinic-midnight instant for an API date value. A YYYY-MM-DD input is a
+ * written clinic day; an ISO timestamp is first converted to its clinic day.
+ */
+const clinicDayStart = (value) => {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  const key = DATE_KEY.test(raw) ? raw : clinicDateKey(value);
+  return key ? clinicDateTime(key, '00:00') : null;
+};
+
+/** Inclusive clinic-day end, suitable for existing Mongo `$lte` filters. */
+const clinicDayEnd = (value) => {
+  const start = clinicDayStart(value);
+  if (!start) return null;
+  const nextKey = addClinicDays(clinicDateKey(start), 1);
+  const next = nextKey ? clinicDateTime(nextKey, '00:00') : null;
+  return next ? new Date(next.getTime() - 1) : null;
+};
+
+const formatClinicDate = (value, options = {
+  weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+}) => {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('en-US', { ...options, timeZone: CLINIC_TIME_ZONE }).format(date);
+};
+
+const formatClinicDateTime = (value) => {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: CLINIC_TIME_ZONE,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(date);
+};
+
 const parseClockMinutes = (value) => {
   if (typeof value !== 'string') return null;
   const text = value.trim();
@@ -101,10 +149,15 @@ const bookingChangeAllowed = (booking, now = new Date()) => {
 module.exports = {
   BOOKING_CHANGE_CUTOFF_HOURS,
   CLINIC_TIME_ZONE,
+  addClinicDays,
   bookingChangeAllowed,
   bookingScheduledAt,
+  clinicDayEnd,
+  clinicDayStart,
   clinicDateKey,
   clinicDateParts,
   clinicDateTime,
+  formatClinicDate,
+  formatClinicDateTime,
   parseClockMinutes,
 };
