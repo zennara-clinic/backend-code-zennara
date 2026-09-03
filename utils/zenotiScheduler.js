@@ -42,6 +42,12 @@ function startZenotiScheduler() {
     practitionerSync.syncPractitioners({ trigger: 'schedule' }).catch(() => {});
   });
 
+  // Panel working hours → Zenoti shifts, daily at 03:15 IST, so Zenoti's slot
+  // engine can accept app bookings (see zenotiScheduleWriteService).
+  cron.schedule('15 3 * * *', () => {
+    require('../services/zenotiScheduleWriteService').publishDoctorHours({ trigger: 'schedule' }).catch(() => {});
+  }, { timezone: 'Asia/Kolkata' });
+
   // Zenoti roster → app availability (narrow-only; see zenotiPractitionerService).
   // Opt-in: it changes what the app sells based on Zenoti's published shifts.
   if (String(process.env.ZENOTI_ROSTER_TO_AVAILABILITY || 'false').toLowerCase() === 'true') {

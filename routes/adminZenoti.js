@@ -17,6 +17,7 @@ router.post('/import', requirePermission('zenoti.manage'), z.startImport);
 router.post('/crawl', requirePermission('zenoti.manage'), z.startCrawl);
 router.post('/appointments/sync', requirePermission('zenoti.manage'), z.syncAppointments);
 router.post('/write-breaker/reset', requirePermission('zenoti.manage'), z.resetWriteBreaker);
+router.post('/publish-doctor-hours', requirePermission('zenoti.manage'), z.publishDoctorHours);
 router.get('/catalog/services', requirePermission('zenoti.view', 'services.view', 'packages.view'), z.listCatalogServices);
 router.get('/catalog/packages', requirePermission('zenoti.view', 'services.view', 'packages.view'), z.listCatalogPackages);
 router.get('/readiness', VIEW, z.getReadiness);

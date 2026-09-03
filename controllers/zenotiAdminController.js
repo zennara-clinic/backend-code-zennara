@@ -178,6 +178,23 @@ exports.getReadiness = async (_req, res) => {
   }
 };
 
+// POST /api/admin/zenoti/publish-doctor-hours  { days?, doctorId?, dryRun? }
+exports.publishDoctorHours = async (req, res) => {
+  try {
+    const svc = require('../services/zenotiScheduleWriteService');
+    const summary = await svc.publishDoctorHours({
+      days: clamp(req.body?.days, 1, 62, svc.HORIZON_DAYS),
+      doctorId: req.body?.doctorId || null,
+      dryRun: req.body?.dryRun === true,
+      trigger: 'manual',
+    });
+    logger.info('Dermatologist hours publish requested', { adminId: req.admin?._id, dryRun: summary.dryRun, written: summary.written });
+    res.json({ success: true, data: summary });
+  } catch (error) {
+    res.status(502).json({ success: false, message: error.message });
+  }
+};
+
 // POST /api/admin/zenoti/write-breaker/reset
 exports.resetWriteBreaker = async (req, res) => {
   require('../services/zenotiWriteService').resetBreaker();

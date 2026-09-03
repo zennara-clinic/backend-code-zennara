@@ -80,11 +80,28 @@ function resetBreaker() {
   logger.warn('Zenoti write breaker reset by admin');
 }
 /** Run one live Zenoti write under the breaker. */
-async function liveWrite(action, fn) {
+const BULK_LIMIT_1_HOUR = Math.max(LIMIT_1_HOUR, Number(process.env.ZENOTI_BULK_WRITE_LIMIT_HOUR) || 600);
+const bulkWriteTimes = [];
+async function liveWrite(action, fn, { bulk = false } = {}) {
   const now = Date.now();
   pruneWrites(now);
   if (breaker.tripped) {
     throw new Error(`Zenoti write-back paused by safety breaker since ${breaker.at?.toISOString?.() || breaker.at}: ${breaker.reason}`);
+  }
+  if (bulk) {
+    // Roster publishing legitimately writes hundreds of small shift records in
+    // one pass; it has its own hourly ceiling and never counts against the
+    // per-record breaker, but a tripped breaker still stops it.
+    while (bulkWriteTimes.length && now - bulkWriteTimes[0] > 60 * 60 * 1000) bulkWriteTimes.shift();
+    if (bulkWriteTimes.length + 1 > BULK_LIMIT_1_HOUR) {
+      breaker.tripped = true; breaker.at = new Date(); breaker.lastAction = action;
+      breaker.reason = `${bulkWriteTimes.length + 1} bulk writes in 1 h (limit ${BULK_LIMIT_1_HOUR}); last action ${action}`;
+      logger.error('ZENOTI WRITE BREAKER TRIPPED (bulk) — all writes to Zenoti paused', breaker);
+      throw new Error(`Zenoti write-back paused by safety breaker: ${breaker.reason}`);
+    }
+    bulkWriteTimes.push(now);
+    breaker.lastAction = action;
+    return fn();
   }
   const in15 = writeTimes.filter((t) => now - t <= 15 * 60 * 1000).length;
   if (in15 + 1 > LIMIT_15_MIN || writeTimes.length + 1 > LIMIT_1_HOUR) {
@@ -612,12 +629,12 @@ async function syncBooking(bookingId) {
 async function hydrateAppointmentIds(booking) {
   if (!booking.zenotiAppointmentId) return;
   try {
-    const detail = await zenoti.request(`/v1/appointments/${booking.zenotiAppointmentId}`);
-    booking.zenotiInvoiceId = booking.zenotiInvoiceId || detail?.invoice_id || null;
-    booking.zenotiInvoiceItemId = booking.zenotiInvoiceItemId || detail?.invoice_item_id || null;
-    booking.zenotiAppointmentGroupId = booking.zenotiAppointmentGroupId || detail?.appointment_group_id || null;
-    booking.zenotiAppointmentSegmentId = booking.zenotiAppointmentSegmentId || detail?.appointment_segment_id || null;
-    booking.zenotiServiceId = booking.zenotiServiceId || detail?.service?.id || null;
+    const detail = await zenoti.getAppointment(booking.zenotiAppointmentId);
+    booking.zenotiInvoiceId = booking.zenotiInvoiceId || detail?.invoiceId || null;
+    booking.zenotiInvoiceItemId = booking.zenotiInvoiceItemId || detail?.invoiceItemId || null;
+    booking.zenotiAppointmentGroupId = booking.zenotiAppointmentGroupId || detail?.appointmentGroupId || null;
+    booking.zenotiAppointmentSegmentId = booking.zenotiAppointmentSegmentId || detail?.appointmentSegmentId || null;
+    booking.zenotiServiceId = booking.zenotiServiceId || detail?.serviceId || null;
   } catch (_) {
     // The old field sometimes contains an invoice id, not an appointment id;
     // callers can still use that value as the invoice fallback below.
@@ -880,6 +897,7 @@ module.exports = {
   existingRecordWritebackEnabled,
   breakerStatus,
   resetBreaker,
+  liveWrite,
   ensureGuest,
   syncGuestProfile,
   syncConsultationNote,

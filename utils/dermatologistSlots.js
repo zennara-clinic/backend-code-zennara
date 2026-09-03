@@ -565,6 +565,8 @@ async function whoIsFree(key, time, { branchId = null, branchName = null, now = 
 
 module.exports = {
   LIVE_STATUSES,
+  rangesFor,
+  clampToBranch,
   anySlotsForDate,
   anyAvailabilityRange,
   whoIsFree,

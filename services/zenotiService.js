@@ -740,8 +740,10 @@ async function getCenterAppointments(centerId, { from, to, includeCancelled = tr
 async function getAppointment(appointmentId) {
   if (!appointmentId) return null;
   const json = await request(`/v1/appointments/${appointmentId}`);
-  const raw = json?.appointment || json;
-  if (!raw) return null;
+  // Verified live: this endpoint answers with a one-element ARRAY of the same
+  // row shape as the centre diary (appointment_id, guest, service, status…).
+  const raw = Array.isArray(json) ? json[0] : (json?.appointment || json?.appointments?.[0] || json);
+  if (!raw || !raw.appointment_id) return null;
   const centerId = pick(raw, 'center_id', 'CenterId') || pick(raw.center || {}, 'id');
   return normalizeCenterAppointment(raw, centerId);
 }
