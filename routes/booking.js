@@ -89,8 +89,17 @@ router.get('/:id', getBooking);
 router.get('/:id/visit-code', getVisitCode);
 router.put('/:id/cancel', cancelBooking);
 router.put('/:id/reschedule', rescheduleBooking);
-router.put('/:id/checkin', checkInBooking);
-router.put('/:id/checkout', checkOutBooking);
+// Self check-in/out from the app is retired: attendance is recorded at the
+// desk (visit code or manual, audited) or arrives from Zenoti. Left open, a
+// guest could mark any booking — including a clinic one — as attended from
+// anywhere, and the diary merge would then keep that state.
+const retired = (_req, res) => res.status(410).json({
+  success: false,
+  code: 'SELF_CHECKIN_RETIRED',
+  message: 'Check-in and check-out are done at reception with your visit code.',
+});
+router.put('/:id/checkin', retired);
+router.put('/:id/checkout', retired);
 router.put('/:id/rate', rateBooking);
 
 module.exports = router;

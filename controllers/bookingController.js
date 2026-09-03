@@ -909,8 +909,9 @@ exports.rateBooking = async (req, res) => {
     }
 
     booking.rating = rating;
-    booking.status = 'Completed';
-    booking.checkOutTime = new Date();
+    // A rating never rewrites the visit itself: the real check-out time (and
+    // the session duration derived from it) must stay what the desk recorded.
+    booking.$locals.skipZenotiWrite = true;
 
     await booking.save();
 
