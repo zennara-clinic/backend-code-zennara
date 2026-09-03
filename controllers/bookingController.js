@@ -359,10 +359,10 @@ exports.cancelBooking = async (req, res) => {
       });
     }
 
-    // An appointment booked in Zenoti is changed in Zenoti. Until lifecycle
-    // write-back is switched on, a change made only here would leave the
-    // clinic's diary expecting the guest (see ZENOTI-NO-SHOW-INCIDENT).
-    if (booking.source === 'zenoti' && !zenotiWrite.lifecycleWritebackEnabled()) {
+    // An appointment booked in Zenoti is changed in Zenoti, always: a change
+    // made only here would leave the clinic's diary expecting the guest (see
+    // ZENOTI-NO-SHOW-INCIDENT).
+    if (booking.source === 'zenoti') {
       return res.status(409).json({
         success: false,
         code: 'CLINIC_BOOKING_CHANGE_AT_CLINIC',
@@ -495,10 +495,10 @@ exports.rescheduleBooking = async (req, res) => {
       });
     }
 
-    // An appointment booked in Zenoti is changed in Zenoti. Until lifecycle
-    // write-back is switched on, a change made only here would leave the
-    // clinic's diary expecting the guest (see ZENOTI-NO-SHOW-INCIDENT).
-    if (booking.source === 'zenoti' && !zenotiWrite.lifecycleWritebackEnabled()) {
+    // An appointment booked in Zenoti is changed in Zenoti, always: a change
+    // made only here would leave the clinic's diary expecting the guest (see
+    // ZENOTI-NO-SHOW-INCIDENT).
+    if (booking.source === 'zenoti') {
       return res.status(409).json({
         success: false,
         code: 'CLINIC_BOOKING_CHANGE_AT_CLINIC',
@@ -1197,6 +1197,13 @@ exports.markNoShow = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'Booking not found'
+      });
+    }
+    if (booking.source === 'zenoti') {
+      return res.status(409).json({
+        success: false,
+        code: 'ZENOTI_OWNED_APPOINTMENT',
+        message: 'This appointment was booked in Zenoti. Mark the no-show in Zenoti — it appears here within 2 minutes.'
       });
     }
 
@@ -1913,9 +1920,9 @@ exports.cancelBookingAdmin = async (req, res) => {
       });
     }
 
-    // Zenoti-booked: the diary of record is Zenoti. Without lifecycle
-    // write-back, cancel/reschedule it there; it syncs here within 2 minutes.
-    if (booking.source === 'zenoti' && !zenotiWrite.lifecycleWritebackEnabled()) {
+    // Zenoti-booked: the diary of record is Zenoti. Cancel / reschedule /
+    // no-show are done there, always; only attendance is recorded here.
+    if (booking.source === 'zenoti') {
       return res.status(409).json({
         success: false,
         code: 'ZENOTI_OWNED_APPOINTMENT',
@@ -2293,9 +2300,9 @@ exports.rescheduleBookingAdmin = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Booking not found' });
     }
 
-    // Zenoti-booked: the diary of record is Zenoti. Without lifecycle
-    // write-back, cancel/reschedule it there; it syncs here within 2 minutes.
-    if (booking.source === 'zenoti' && !zenotiWrite.lifecycleWritebackEnabled()) {
+    // Zenoti-booked: the diary of record is Zenoti. Cancel / reschedule /
+    // no-show are done there, always; only attendance is recorded here.
+    if (booking.source === 'zenoti') {
       return res.status(409).json({
         success: false,
         code: 'ZENOTI_OWNED_APPOINTMENT',

@@ -206,3 +206,12 @@ test('service resolution ignores tier words but package resolution never guesses
   assert.equal(looseKey('Dr. Rickson Consultations'), 'rickson consultations');
   assert.notEqual(looseKey('Glow Before the Vow'), looseKey('3 Facials'));
 });
+
+test('a Zenoti-booked appointment can never be cancelled, rescheduled or no-showed from our side', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '../controllers/bookingController.js'), 'utf8');
+  const guards = (src.match(/if \(booking\.source === 'zenoti'\) \{\s*\n\s*return res\.status\(409\)/g) || []).length;
+  assert.ok(guards >= 5, `expected unconditional 409 guards on guest cancel/reschedule, admin cancel/reschedule and mark-no-show; found ${guards}`);
+  assert.ok(!/source === 'zenoti' && !zenotiWrite\.lifecycleWritebackEnabled\(\)/.test(src), 'guards must not depend on the write-back switch');
+  const write = require('fs').readFileSync(require('path').join(__dirname, '../services/zenotiWriteService.js'), 'utf8');
+  assert.ok(write.includes("booking.source === 'zenoti' && !['In Progress', 'Completed'].includes(booking.status)"), 'write-back policy for Zenoti rows must be attendance-only');
+});
