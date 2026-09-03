@@ -433,7 +433,7 @@ bookingSchema.pre('save', function (next) {
 bookingSchema.post('save', function (doc) {
   if (doc.$locals?.skipZenotiWrite) return;
   if (!doc._wasNew) return;
-  if (doc.zenotiAppointmentId) return;
+  if (doc.zenotiAppointmentId || doc.source === 'zenoti') return;
   setImmediate(() => {
     try {
       require('../services/zenotiWriteService').syncBooking(doc._id).catch(() => {});
@@ -447,6 +447,9 @@ bookingSchema.post('save', function (doc) {
 bookingSchema.post('save', function (doc) {
   if (doc.$locals?.skipZenotiWrite || doc._wasNew || !doc._zenotiOperationalChanged) return;
   if (!doc.zenotiAppointmentId && !doc.zenotiInvoiceId) return;
+  // An appointment booked in Zenoti is Zenoti's to run. Its mirrored Booking
+  // may change state here (reception, auto jobs) but must never write back.
+  if (doc.source === 'zenoti') return;
   setImmediate(() => {
     try {
       require('../services/zenotiWriteService').syncBookingState(doc._id).catch(() => {});

@@ -188,6 +188,10 @@ async function syncGuestProfile(userId) {
   const User = require('../models/User');
   const user = await User.findById(userId);
   if (!user || !user.zenotiGuestId || isOff()) return;
+  if (!existingRecordWritebackEnabled()) {
+    logger.info('Zenoti guest profile write-back disabled (ZENOTI_EDIT_EXISTING_WRITEBACK != true)', { userId });
+    return;
+  }
   try {
     const guest = await zenoti.getGuest(user.zenotiGuestId);
     const payload = guest?._raw;
@@ -245,6 +249,10 @@ async function syncConsultationNote(noteId) {
   const User = require('../models/User');
   const note = await ConsultationNote.findById(noteId);
   if (!note || isOff()) return;
+  if (note.zenotiNoteId && !existingRecordWritebackEnabled()) {
+    logger.info('Zenoti note update write-back disabled (ZENOTI_EDIT_EXISTING_WRITEBACK != true)', { noteId });
+    return;
+  }
   try {
     const [booking, user] = await Promise.all([
       Booking.findById(note.bookingId).select('referenceNumber preferredLocation zenotiAppointmentId'),
@@ -559,11 +567,42 @@ async function rescheduleLinkedBooking(booking, user) {
  * by syncBooking; this covers confirm, reschedule, check-in/start, completion,
  * cancellation and no-show.
  */
+/**
+ * Lifecycle write-back (confirm / check-in / complete / cancel / no-show /
+ * reschedule) is a separate switch from record creation. It is OFF unless
+ * ZENOTI_LIFECYCLE_WRITEBACK=true, and it NEVER applies to an appointment that
+ * was booked in Zenoti (source 'zenoti'): the clinic's own diary is the system
+ * of record for those, and mirrored rows must never write their state back.
+ *
+ * Why: on 2026-09-02/03 the automatic no-show job marked hundreds of mirrored
+ * clinic appointments No Show and this function recorded every one of them in
+ * Zenoti. See Technical Documentation/ZENOTI-NO-SHOW-INCIDENT-2026-09-03.md.
+ */
+function lifecycleWritebackEnabled() {
+  return String(process.env.ZENOTI_LIFECYCLE_WRITEBACK || 'false').toLowerCase() === 'true';
+}
+/**
+ * Editing an EXISTING Zenoti record (guest profile, an existing note) is a
+ * second opt-in, separate from creating new records. Default off: a wrong
+ * field in a PUT overwrites what the clinic entered.
+ */
+function existingRecordWritebackEnabled() {
+  return String(process.env.ZENOTI_EDIT_EXISTING_WRITEBACK || 'false').toLowerCase() === 'true';
+}
+
 async function syncBookingState(bookingId) {
   const Booking = require('../models/Booking');
   const User = require('../models/User');
   const booking = await Booking.findById(bookingId);
   if (!booking || isOff() || (!booking.zenotiAppointmentId && !booking.zenotiInvoiceId)) return;
+  if (booking.source === 'zenoti') {
+    logger.info('Zenoti lifecycle write-back refused for a Zenoti-owned appointment', { bookingId, status: booking.status });
+    return;
+  }
+  if (!lifecycleWritebackEnabled()) {
+    logger.info('Zenoti lifecycle write-back disabled (ZENOTI_LIFECYCLE_WRITEBACK != true)', { bookingId, status: booking.status });
+    return;
+  }
 
   try {
     await hydrateAppointmentIds(booking);
@@ -714,6 +753,8 @@ module.exports = {
   mode,
   isOff,
   isLive,
+  lifecycleWritebackEnabled,
+  existingRecordWritebackEnabled,
   ensureGuest,
   syncGuestProfile,
   syncConsultationNote,

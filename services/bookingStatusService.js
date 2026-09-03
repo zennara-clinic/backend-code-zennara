@@ -13,9 +13,19 @@ class BookingStatusService {
       
       const now = new Date();
       
-      // Find all confirmed or rescheduled bookings
+      // Find all confirmed or rescheduled bookings.
+      //
+      // INCIDENT 2026-09-03: this job used to include appointments mirrored
+      // from Zenoti. Front desk check-ins in Zenoti do not always reach us as
+      // a checkInTime, so 15 minutes after every clinic appointment this job
+      // marked it No Show, and the lifecycle write-back then recorded that no
+      // show INSIDE Zenoti ("No show recorded in Zennara") and emailed the
+      // guest. Zenoti owns the lifecycle of its own appointments; this job
+      // only ever decides for bookings made in the app / reception / package.
       const eligibleBookings = await Booking.find({
         status: { $in: ['Confirmed', 'Rescheduled'] },
+        source: { $nin: ['zenoti'] },
+        zenotiAppointmentId: null,
         $or: [
           { confirmedDate: { $exists: true } },
           { preferredDate: { $exists: true } }
@@ -40,8 +50,9 @@ class BookingStatusService {
         const cutoffTime = new Date(appointmentDateTime.getTime() + (gracePeriodMinutes * 60 * 1000));
         
         if (now > cutoffTime && !booking.checkInTime) {
-          // Mark as No Show
+          // Mark as No Show — a local decision; it is never pushed to Zenoti.
           booking.status = 'No Show';
+          booking.$locals.skipZenotiWrite = true;
           await booking.save();
           
           console.log(`📋 Booking ${booking.referenceNumber} marked as No Show`);
@@ -99,6 +110,8 @@ class BookingStatusService {
       if (!booking || !['Confirmed', 'Rescheduled'].includes(booking.status)) {
         return false;
       }
+      // Zenoti-owned appointments are never auto no-showed here (see above).
+      if (booking.source === 'zenoti' || booking.zenotiAppointmentId) return false;
 
       const now = new Date();
       const appointmentDate = booking.confirmedDate || booking.preferredDate;
@@ -115,6 +128,7 @@ class BookingStatusService {
       
       if (now > cutoffTime && !booking.checkInTime) {
         booking.status = 'No Show';
+        booking.$locals.skipZenotiWrite = true;
         await booking.save();
         
         console.log(`📋 Booking ${booking.referenceNumber} marked as No Show (single check)`);

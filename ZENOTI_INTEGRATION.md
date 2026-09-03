@@ -47,7 +47,9 @@ ZENOTI_API_KEY=...          # organisation API key (Authorization: apikey <KEY>)
 ZENOTI_APPLICATION_ID=...   # reserved for future OAuth token flows
 ZENOTI_SECRET=...           # reserved for future OAuth token flows
 # write-back:
-ZENOTI_WRITE_MODE=dryrun     # off | dryrun | live  (default dryrun)
+ZENOTI_WRITE_MODE=dryrun     # off | dryrun | live  (default dryrun) — creating NEW Zenoti records only
+ZENOTI_LIFECYCLE_WRITEBACK=false      # confirm/check-in/complete/cancel/no-show of OUR bookings → Zenoti (default off; never for Zenoti-booked rows)
+ZENOTI_EDIT_EXISTING_WRITEBACK=false  # PUT an existing Zenoti guest profile / note from Zennara (default off)
 # Required before live guest/appointment lifecycle writes:
 # ZENOTI_REFERRAL_SOURCE_ID=... # org referral source for API-created guests
 # ZENOTI_UPDATED_BY_ID=...       # Zenoti employee GUID for confirm/start/complete
