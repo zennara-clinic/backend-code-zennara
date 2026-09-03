@@ -93,6 +93,13 @@ exports.syncAppointments = async (_req, res) => {
   return res.status(202).json({ success: true, message: 'Refreshing all clinic appointment books now.' });
 };
 
+// POST /api/admin/zenoti/write-breaker/reset
+exports.resetWriteBreaker = async (req, res) => {
+  require('../services/zenotiWriteService').resetBreaker();
+  logger.warn('Zenoti write breaker reset', { adminId: req.admin?._id });
+  res.json({ success: true, data: require('../services/zenotiWriteService').breakerStatus() });
+};
+
 // GET /api/admin/zenoti/practitioners
 // Unified reporting/filter dimension. Onboarded doctors remain the only rows
 // exposed by /api/doctors and therefore the only doctors visible in the app.

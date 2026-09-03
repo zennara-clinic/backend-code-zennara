@@ -3,12 +3,11 @@ const emailService = require('../utils/emailService');
 const { bookingScheduledAt, formatClinicDate } = require('../utils/bookingTime');
 
 /**
- * How long after the slot an app booking with no check-in is treated as a no
- * show and the guest is emailed. 15 minutes was aggressive for a clinic where
- * late arrivals are checked in by hand; two hours is the default now, and the
- * desk can always mark a no-show earlier from the panel.
+ * How long after its slot an APP booking with no check-in is treated as a no
+ * show (clinic rule: 15 minutes). Only app/reception/package bookings are ever
+ * considered; a Zenoti-booked visit is Zenoti's to judge.
  */
-const NO_SHOW_GRACE_MINUTES = Math.max(15, Number(process.env.NO_SHOW_GRACE_MINUTES) || 120);
+const NO_SHOW_GRACE_MINUTES = Math.max(5, Number(process.env.NO_SHOW_GRACE_MINUTES) || 15);
 
 class BookingStatusService {
   /**

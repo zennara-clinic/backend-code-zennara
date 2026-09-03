@@ -2435,3 +2435,16 @@ exports.addBookingNoteAdmin = async (req, res) => {
     return res.status(500).json({ success: false, message: 'Failed to add note', error: error.message });
   }
 };
+
+// @desc    Re-read one Zenoti-linked booking from Zenoti now and reconcile it
+// @route   POST /api/bookings/admin/:id/zenoti-refresh
+// @access  Private (Admin)
+exports.refreshFromZenotiAdmin = async (req, res) => {
+  try {
+    const { refreshAppointment } = require('../services/zenotiAppointmentSyncService');
+    const { booking, result } = await refreshAppointment(req.params.id);
+    res.status(200).json({ success: true, message: `Refreshed from Zenoti (${result.outcome}).`, data: booking });
+  } catch (error) {
+    res.status(error.status || 502).json({ success: false, message: error.message || 'Could not refresh from Zenoti.' });
+  }
+};

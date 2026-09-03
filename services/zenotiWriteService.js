@@ -47,6 +47,57 @@ function isLive() {
   return mode() === 'live' && zenoti.isConfigured();
 }
 
+/* ---------------------------- Safety breaker ------------------------------ *
+ * Every LIVE write to Zenoti passes through liveWrite(). If more than a small
+ * number happen in a short window the breaker trips and every further write is
+ * refused (and recorded as 'skipped' on the record) until an admin resets it or
+ * the server restarts. A legitimate day at the clinic produces a handful of
+ * app bookings/orders; hundreds of writes in minutes is a bug, not business —
+ * exactly the shape of the 2026-09-03 no-show incident.
+ * ------------------------------------------------------------------------- */
+const LIMIT_15_MIN = Math.max(1, Number(process.env.ZENOTI_WRITE_LIMIT_15MIN) || 15);
+const LIMIT_1_HOUR = Math.max(LIMIT_15_MIN, Number(process.env.ZENOTI_WRITE_LIMIT_HOUR) || 40);
+const writeTimes = [];
+const breaker = { tripped: false, at: null, reason: null, lastAction: null };
+
+function pruneWrites(now = Date.now()) {
+  while (writeTimes.length && now - writeTimes[0] > 60 * 60 * 1000) writeTimes.shift();
+}
+function breakerStatus() {
+  const now = Date.now();
+  pruneWrites(now);
+  return {
+    ...breaker,
+    writesLast15Min: writeTimes.filter((t) => now - t <= 15 * 60 * 1000).length,
+    writesLastHour: writeTimes.length,
+    limit15Min: LIMIT_15_MIN,
+    limitHour: LIMIT_1_HOUR,
+  };
+}
+function resetBreaker() {
+  breaker.tripped = false; breaker.at = null; breaker.reason = null;
+  writeTimes.length = 0;
+  logger.warn('Zenoti write breaker reset by admin');
+}
+/** Run one live Zenoti write under the breaker. */
+async function liveWrite(action, fn) {
+  const now = Date.now();
+  pruneWrites(now);
+  if (breaker.tripped) {
+    throw new Error(`Zenoti write-back paused by safety breaker since ${breaker.at?.toISOString?.() || breaker.at}: ${breaker.reason}`);
+  }
+  const in15 = writeTimes.filter((t) => now - t <= 15 * 60 * 1000).length;
+  if (in15 + 1 > LIMIT_15_MIN || writeTimes.length + 1 > LIMIT_1_HOUR) {
+    breaker.tripped = true; breaker.at = new Date(); breaker.lastAction = action;
+    breaker.reason = `${in15 + 1} writes in 15 min / ${writeTimes.length + 1} in 1 h (limits ${LIMIT_15_MIN}/${LIMIT_1_HOUR}); last action ${action}`;
+    logger.error('ZENOTI WRITE BREAKER TRIPPED — all writes to Zenoti paused', breaker);
+    throw new Error(`Zenoti write-back paused by safety breaker: ${breaker.reason}`);
+  }
+  writeTimes.push(now);
+  breaker.lastAction = action;
+  return fn();
+}
+
 /** Log a write we would/did perform. In dryrun we log the full payload. */
 function logWrite(action, payload, extra = {}) {
   logger.info(`Zenoti write [${mode()}] ${action}`, {
@@ -164,7 +215,7 @@ async function ensureGuest(user) {
   }
 
   try {
-    const res = await zenoti.request('/v1/guests', { method: 'POST', body: payload });
+    const res = await liveWrite('createGuest', () => zenoti.request('/v1/guests', { method: 'POST', body: payload }));
     const guestId = res?.id || res?.Id || res?.guest?.id;
     if (!guestId) throw new Error('Zenoti guest create returned no id');
     user.zenotiGuestId = guestId;
@@ -210,7 +261,7 @@ async function syncGuestProfile(userId) {
     if (!isLive()) {
       user.zenotiSyncStatus = 'dryrun';
     } else {
-      await zenoti.request(`/v1/guests/${user.zenotiGuestId}`, { method: 'PUT', body: payload });
+      await liveWrite('updateGuest', () => zenoti.request(`/v1/guests/${user.zenotiGuestId}`, { method: 'PUT', body: payload }));
       user.zenotiSyncStatus = 'synced';
       user.zenotiSyncError = null;
       user.zenotiSyncedAt = new Date();
@@ -283,12 +334,12 @@ async function syncConsultationNote(noteId) {
     if (!isLive()) {
       note.zenotiSyncStatus = 'dryrun';
     } else {
-      const result = await zenoti.request(
+      const result = await liveWrite(note.zenotiNoteId ? 'updateNote' : 'createNote', () => zenoti.request(
         note.zenotiNoteId
           ? `/v1/guests/${user.zenotiGuestId}/notes/${note.zenotiNoteId}`
           : `/v1/guests/${user.zenotiGuestId}/notes`,
         { method: note.zenotiNoteId ? 'PUT' : 'POST', body: payload }
-      );
+      ));
       note.zenotiNoteId = note.zenotiNoteId || result?.id || null;
       note.zenotiSyncStatus = 'synced';
       note.zenotiSyncError = null;
@@ -326,7 +377,7 @@ async function syncMembership(userId) {
       user.zenotiMembershipSyncError = null;
       logWrite('createMembershipInvoice', payload, { userId: user._id });
     } else {
-      const result = await zenoti.request('/api/Catalog/Memberships/CreateInvoice', { method: 'POST', body: payload });
+      const result = await liveWrite('createMembershipInvoice', () => zenoti.request('/api/Catalog/Memberships/CreateInvoice', { method: 'POST', body: payload }));
       user.zenotiMembershipInvoiceId = result?.invoice_id || result?.id || result?.Invoice?.Id || result?.Invoice?.id || null;
       if (!user.zenotiMembershipInvoiceId) throw new Error('Zenoti membership invoice returned no id.');
       user.zenotiMembershipSyncStatus = 'synced';
@@ -369,7 +420,7 @@ async function syncPackageAssignment(assignmentId) {
       assignment.zenotiSyncError = null;
       logWrite('createPackageInvoice', payload, { assignmentId: assignment._id });
     } else {
-      const result = await zenoti.request('/v1/invoices/packages', { method: 'POST', body: payload });
+      const result = await liveWrite('createPackageInvoice', () => zenoti.request('/v1/invoices/packages', { method: 'POST', body: payload }));
       assignment.zenotiInvoiceId = result?.invoice_id || result?.id || result?.invoice?.id || result?.Invoice?.Id || null;
       if (!assignment.zenotiInvoiceId) throw new Error('Zenoti package invoice returned no id.');
       assignment.zenotiSyncStatus = 'synced';
@@ -448,7 +499,7 @@ async function syncBooking(bookingId) {
     }
 
     // Zenoti booking flow: create booking → get slots → reserve → confirm.
-    const created = await zenoti.request('/v1/bookings', { method: 'POST', body: payload });
+    const created = await liveWrite('bookAppointment', () => zenoti.request('/v1/bookings', { method: 'POST', body: payload }));
     const zBookingId = created?.id || created?.Id;
     if (!zBookingId) throw new Error('Zenoti booking create returned no id');
 
@@ -465,14 +516,14 @@ async function syncBooking(bookingId) {
         : `Zenoti returned no available slot on ${date}`);
     }
 
-    await zenoti.request(`/v1/bookings/${zBookingId}/slots/reserve`, {
+    await liveWrite('reserveSlot', () => zenoti.request(`/v1/bookings/${zBookingId}/slots/reserve`, {
       method: 'POST',
       body: { slot_time: slotTime },
-    });
-    const confirmed = await zenoti.request(`/v1/bookings/${zBookingId}/slots/confirm`, {
+    }));
+    const confirmed = await liveWrite('confirmSlot', () => zenoti.request(`/v1/bookings/${zBookingId}/slots/confirm`, {
       method: 'POST',
       body: { notes: payload.notes },
-    });
+    }));
 
     const invoice = confirmed?.invoice || confirmed?.Invoice || {};
     const item = (invoice.items || invoice.Items || [])[0] || {};
@@ -526,8 +577,8 @@ async function reserveExactSlot(bookingId, date, time) {
     ? valueOf(slots.find((slot) => String(valueOf(slot) || '').includes(`T${time}`)))
     : valueOf(slots[0]);
   if (!chosen) throw new Error(`Requested Zenoti slot ${time || ''} is unavailable on ${date}`.trim());
-  await zenoti.request(`/v1/bookings/${bookingId}/slots/reserve`, { method: 'POST', body: { slot_time: chosen } });
-  return zenoti.request(`/v1/bookings/${bookingId}/slots/confirm`, { method: 'POST', body: {} });
+  await liveWrite('reserveSlot', () => zenoti.request(`/v1/bookings/${bookingId}/slots/reserve`, { method: 'POST', body: { slot_time: chosen } }));
+  return liveWrite('confirmSlot', () => zenoti.request(`/v1/bookings/${bookingId}/slots/confirm`, { method: 'POST', body: {} }));
 }
 
 /** Reschedule using Zenoti's documented create → reserve → confirm workflow. */
@@ -550,7 +601,7 @@ async function rescheduleLinkedBooking(booking, user) {
     }],
   };
   logWrite('rescheduleAppointment', payload, { bookingId: booking._id });
-  const created = await zenoti.request('/v1/bookings', { method: 'POST', body: payload });
+  const created = await liveWrite('rescheduleAppointment', () => zenoti.request('/v1/bookings', { method: 'POST', body: payload }));
   const zBookingId = created?.id || created?.Id;
   if (!zBookingId) throw new Error('Zenoti reschedule returned no booking id');
   const confirmed = await reserveExactSlot(zBookingId, date, time);
@@ -618,31 +669,31 @@ async function syncBookingState(bookingId, { staffAction = false } = {}) {
       booking.zenotiSyncError = null;
     } else if (booking.status === 'Cancelled') {
       if (!invoiceId) throw new Error('Zenoti invoice id is required to cancel this booking.');
-      await zenoti.request(`/v1/invoices/${invoiceId}/cancel`, {
+      await liveWrite('cancelAppointment', () => zenoti.request(`/v1/invoices/${invoiceId}/cancel`, {
         method: 'PUT',
         query: { comments: booking.cancellationReason || 'Cancelled from Zennara' },
-      });
+      }));
       booking.zenotiSyncStatus = 'synced';
     } else if (booking.status === 'No Show') {
       if (!groupId) throw new Error('Zenoti appointment group id is required to mark no-show.');
-      await zenoti.request(`/v1/appointments/${groupId}/no_show`, {
+      await liveWrite('noShow', () => zenoti.request(`/v1/appointments/${groupId}/no_show`, {
         method: 'PUT', body: { comments: booking.cancellationReason || 'No show recorded in Zennara' },
-      });
+      }));
       booking.zenotiSyncStatus = 'synced';
     } else if (booking.status === 'In Progress') {
       if (!groupId) throw new Error('Zenoti appointment group id is required to check in.');
-      await zenoti.request(`/v1/appointments/${groupId}/check_in`, { method: 'PUT' });
+      await liveWrite('checkIn', () => zenoti.request(`/v1/appointments/${groupId}/check_in`, { method: 'PUT' }));
       if (updatedById && booking.zenotiAppointmentId) {
-        await zenoti.request(`/v1/appointments/${booking.zenotiAppointmentId}/progress`, {
+        await liveWrite('progressStart', () => zenoti.request(`/v1/appointments/${booking.zenotiAppointmentId}/progress`, {
           method: 'PUT', body: { updated_by_id: updatedById, progress: 1, ...(booking.zenotiAppointmentSegmentId ? { appointment_segment_id: booking.zenotiAppointmentSegmentId } : {}) },
-        });
+        }));
       }
       booking.zenotiSyncStatus = 'synced';
     } else if (booking.status === 'Completed') {
       if (!updatedById) throw new Error('ZENOTI_UPDATED_BY_ID is required to complete appointments in Zenoti.');
-      await zenoti.request(`/v1/appointments/${booking.zenotiAppointmentId}/progress`, {
+      await liveWrite('progressComplete', () => zenoti.request(`/v1/appointments/${booking.zenotiAppointmentId}/progress`, {
         method: 'PUT', body: { updated_by_id: updatedById, progress: 2, ...(booking.zenotiAppointmentSegmentId ? { appointment_segment_id: booking.zenotiAppointmentSegmentId } : {}) },
-      });
+      }));
       booking.zenotiSyncStatus = 'synced';
     } else if (booking.status === 'Rescheduled') {
       if (!user?.zenotiGuestId) throw new Error('Booking owner is not linked to a Zenoti guest.');
@@ -650,9 +701,9 @@ async function syncBookingState(bookingId, { staffAction = false } = {}) {
       booking.zenotiSyncStatus = 'synced';
     } else if (booking.status === 'Confirmed') {
       if (!invoiceId || !updatedById) throw new Error('Zenoti invoice id and ZENOTI_UPDATED_BY_ID are required to confirm appointments.');
-      await zenoti.request(`/v1/invoices/${invoiceId}/confirm`, {
+      await liveWrite('confirm', () => zenoti.request(`/v1/invoices/${invoiceId}/confirm`, {
         method: 'PUT', body: { updated_by_id: updatedById },
-      });
+      }));
       booking.zenotiSyncStatus = 'synced';
     } else {
       booking.zenotiSyncStatus = 'skipped';
@@ -731,7 +782,7 @@ async function syncOrder(orderId) {
     }
 
     // Create a product sale invoice for the guest.
-    const res = await zenoti.request('/v1/invoices/products', { method: 'POST', body: payload });
+    const res = await liveWrite('createProductInvoice', () => zenoti.request('/v1/invoices/products', { method: 'POST', body: payload }));
     const invoiceId = res?.invoice_id || res?.id || res?.Id;
     if (!invoiceId) throw new Error('Zenoti product invoice returned no id');
 
@@ -755,6 +806,8 @@ module.exports = {
   isLive,
   lifecycleWritebackEnabled,
   existingRecordWritebackEnabled,
+  breakerStatus,
+  resetBreaker,
   ensureGuest,
   syncGuestProfile,
   syncConsultationNote,

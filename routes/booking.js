@@ -58,6 +58,7 @@ router.put('/admin/:id/no-show', protectAdmin, auditLog('BOOKING_NO_SHOW', 'BOOK
 router.put('/admin/:id/cancel', protectAdmin, auditLog('BOOKING_CANCELLED', 'BOOKING'), cancelBookingAdmin);
 router.put('/admin/:id/payment', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.updateBookingPaymentAdmin);
 router.put('/admin/:id/notes', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.addBookingNoteAdmin);
+router.post('/admin/:id/zenoti-refresh', protectAdmin, VIEW, bookingController.refreshFromZenotiAdmin);
 router.put('/admin/:id/reschedule', protectAdmin, auditLog('BOOKING_RESCHEDULED', 'BOOKING'), rescheduleBookingAdmin);
 // Clinic declines a guest's reschedule request → reverts to the original slot.
 router.put('/admin/:id/reject-reschedule', protectAdmin, auditLog('BOOKING_RESCHEDULED', 'BOOKING'), rejectReschedule);

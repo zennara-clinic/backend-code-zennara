@@ -443,6 +443,8 @@ async function getStatus() {
   return {
     configured: zenoti.isConfigured(),
     writeMode: process.env.ZENOTI_WRITE_MODE || 'dryrun',
+    lifecycleWriteback: require('./zenotiWriteService').lifecycleWritebackEnabled(),
+    writeBreaker: require('./zenotiWriteService').breakerStatus(),
     linkedUsers: linked,
     mirrored,
     freshWithin24h: fresh,

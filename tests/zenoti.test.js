@@ -139,3 +139,56 @@ test('doctor matching never assigns unrelated Zenoti treatment staff', () => {
   assert.equal(match('Praveen K'), null);
   assert.equal(match('Dr Varsha Reddy'), null);
 });
+
+/* ------------------------------------------------------------------------ *
+ * Guards added after the 2026-09-03 no-show incident.
+ * ------------------------------------------------------------------------ */
+const { mergeStatus, appointmentAttended } = require('../services/zenotiAppointmentSyncService');
+const zenotiWrite = require('../services/zenotiWriteService');
+
+test('inbound merge keeps a desk-advanced state while Zenoti is unchanged, and lets Zenoti terminal states win', () => {
+  const local = (status, zs, zp = 0) => ({ status, zenotiSource: { status: zs, progress: zp } });
+  const feed = (status, progress = 0) => ({ status, progress });
+  assert.equal(mergeStatus(local('In Progress', 0), feed(0), 'Confirmed', false), 'In Progress');
+  assert.equal(mergeStatus(local('Completed', 0), feed(0), 'Confirmed', false), 'Completed');
+  assert.equal(mergeStatus(local('No Show', 0), feed(0), 'Confirmed', false), 'No Show');
+  assert.equal(mergeStatus(local('No Show', 0), feed(2, 1), 'In Progress', false), 'In Progress');
+  assert.equal(mergeStatus(local('In Progress', 2), feed(1), 'Completed', false), 'Completed');
+  assert.equal(mergeStatus(local('Completed', 0), feed(-1), 'Cancelled', false), 'Cancelled');
+  assert.equal(mergeStatus(local('Cancelled', 'vanished'), feed(0), 'Confirmed', false), 'Confirmed');
+  assert.equal(mergeStatus({}, feed(0), 'Confirmed', true), 'Confirmed');
+});
+
+test('a Zenoti appointment counts as attended on check-in, start or close', () => {
+  assert.equal(appointmentAttended({ status: 0, progress: 0 }), false);
+  assert.equal(appointmentAttended({ status: 0, progress: 0, checkinTime: '2026-09-03T10:00:00' }), true);
+  assert.equal(appointmentAttended({ status: 2, progress: 0 }), true);
+  assert.equal(appointmentAttended({ status: 0, progress: 1 }), true);
+  assert.equal(appointmentAttended({ status: 1, progress: 2 }), true);
+  assert.equal(appointmentAttended({ status: -2, progress: 0 }), false);
+});
+
+test('lifecycle and existing-record write-back are off unless explicitly enabled', () => {
+  const prev = { l: process.env.ZENOTI_LIFECYCLE_WRITEBACK, e: process.env.ZENOTI_EDIT_EXISTING_WRITEBACK };
+  delete process.env.ZENOTI_LIFECYCLE_WRITEBACK; delete process.env.ZENOTI_EDIT_EXISTING_WRITEBACK;
+  assert.equal(zenotiWrite.lifecycleWritebackEnabled(), false);
+  assert.equal(zenotiWrite.existingRecordWritebackEnabled(), false);
+  process.env.ZENOTI_LIFECYCLE_WRITEBACK = 'true';
+  assert.equal(zenotiWrite.lifecycleWritebackEnabled(), true);
+  if (prev.l === undefined) delete process.env.ZENOTI_LIFECYCLE_WRITEBACK; else process.env.ZENOTI_LIFECYCLE_WRITEBACK = prev.l;
+  if (prev.e === undefined) delete process.env.ZENOTI_EDIT_EXISTING_WRITEBACK; else process.env.ZENOTI_EDIT_EXISTING_WRITEBACK = prev.e;
+});
+
+test('the write breaker reports its limits and starts untripped', () => {
+  const status = zenotiWrite.breakerStatus();
+  assert.equal(status.tripped, false);
+  assert.ok(status.limit15Min >= 1 && status.limitHour >= status.limit15Min);
+  assert.equal(status.writesLast15Min, 0);
+});
+
+test('the automatic no-show job never considers Zenoti-linked bookings', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '../services/bookingStatusService.js'), 'utf8');
+  assert.ok(src.includes("source: { $nin: ['zenoti'] }"), 'query must exclude source zenoti');
+  assert.ok(src.includes('zenotiAppointmentId: null'), 'query must exclude Zenoti-linked rows');
+  assert.ok(src.includes('booking.$locals.skipZenotiWrite = true'), 'auto no-show must never write to Zenoti');
+});

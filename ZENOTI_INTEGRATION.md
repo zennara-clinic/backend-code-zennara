@@ -50,6 +50,9 @@ ZENOTI_SECRET=...           # reserved for future OAuth token flows
 ZENOTI_WRITE_MODE=dryrun     # off | dryrun | live  (default dryrun) — creating NEW Zenoti records only
 ZENOTI_LIFECYCLE_WRITEBACK=false      # confirm/check-in/complete/cancel/no-show of OUR bookings → Zenoti (default off; never for Zenoti-booked rows)
 ZENOTI_EDIT_EXISTING_WRITEBACK=false  # PUT an existing Zenoti guest profile / note from Zennara (default off)
+ZENOTI_WRITE_LIMIT_15MIN=15           # safety breaker: more live writes than this in 15 min pauses ALL Zenoti writes
+ZENOTI_WRITE_LIMIT_HOUR=40            # …or than this in an hour (reset: POST /api/admin/zenoti/write-breaker/reset)
+NO_SHOW_GRACE_MINUTES=15              # app bookings only: minutes after the slot before an unchecked-in guest is a no-show
 # Required before live guest/appointment lifecycle writes:
 # ZENOTI_REFERRAL_SOURCE_ID=... # org referral source for API-created guests
 # ZENOTI_UPDATED_BY_ID=...       # Zenoti employee GUID for confirm/start/complete

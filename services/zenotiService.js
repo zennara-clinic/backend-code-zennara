@@ -688,6 +688,20 @@ async function getCenterAppointments(centerId, { from, to, includeCancelled = tr
   return rows.map((row) => normalizeCenterAppointment(row, centerId)).filter(Boolean);
 }
 
+/**
+ * One appointment by id (GET /v1/appointments/{id}) — the same operational
+ * shape as the centre book, so a single visit can be re-read on demand or
+ * double-checked before a terminal state from the feed is applied.
+ */
+async function getAppointment(appointmentId) {
+  if (!appointmentId) return null;
+  const json = await request(`/v1/appointments/${appointmentId}`);
+  const raw = json?.appointment || json;
+  if (!raw) return null;
+  const centerId = pick(raw, 'center_id', 'CenterId') || pick(raw.center || {}, 'id');
+  return normalizeCenterAppointment(raw, centerId);
+}
+
 /** Active employees assigned to a centre on the requested clinic date. */
 async function getCenterEmployees(centerId, { date } = {}) {
   if (!centerId) return [];
@@ -802,6 +816,7 @@ module.exports = {
   getGuest,
   getGuestAppointments,
   getCenterAppointments,
+  getAppointment,
   getCenterEmployees,
   getGuestProducts,
   getGuestMemberships,

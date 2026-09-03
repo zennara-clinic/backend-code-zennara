@@ -208,7 +208,15 @@ async function uniqueZenotiReference(appointmentId) {
   return `ZNT${hex}${Date.now().toString(36).toUpperCase()}`;
 }
 
-async function upsertAppointment(appointment, { user = null, context = null } = {}) {
+/** Did the guest actually attend, according to a Zenoti appointment record? */
+function appointmentAttended(appointment) {
+  const status = String(appointment.status ?? '');
+  return Boolean(appointment.checkinTime) || Boolean(appointment.actualStartTime)
+    || Number(appointment.progress) >= 1 || appointment.isStarted || appointment.isCompleted
+    || status === '1' || status === '2';
+}
+
+async function upsertAppointment(appointment, { user = null, context = null, verified = false } = {}) {
   if (!appointment?.id) return { outcome: 'skipped', reason: 'missing appointment id' };
   const guest = appointment.guest;
   let owner = user || (guest ? await provisionUserFromGuest(guest, { quiet: true }) : null);
@@ -268,6 +276,23 @@ async function upsertAppointment(appointment, { user = null, context = null } = 
   // finished visit, not something "in progress" today — the app's Upcoming
   // list and the panel's day book must not keep showing it as live.
   if (status === 'In Progress' && parts.day < clinicDay()) status = 'Completed';
+  // A no-show or cancellation from the feed that contradicts attendance the
+  // desk already recorded here is re-read from Zenoti before it is applied.
+  // If Zenoti's own detail shows the guest checked in / started / closed, the
+  // feed row was stale (or an echo) and the attended state is kept.
+  if (!isNew && !verified && (status === 'No Show' || status === 'Cancelled')
+      && ['In Progress', 'Completed'].includes(booking.status) && appointment.id) {
+    try {
+      const detail = await zenoti.getAppointment(appointment.id);
+      if (detail && appointmentAttended(detail)) {
+        logger.warn('Zenoti terminal state contradicted by appointment detail; keeping attended state', { appointmentId: appointment.id, feedStatus: appointment.status, detailStatus: detail.status });
+        appointment = { ...appointment, status: detail.status, progress: detail.progress, checkinTime: detail.checkinTime || appointment.checkinTime };
+        status = localStatus(appointment);
+      }
+    } catch (error) {
+      logger.warn('Zenoti appointment detail re-check failed; applying feed state', { appointmentId: appointment.id, error: error.message });
+    }
+  }
   status = mergeStatus(booking, appointment, status, isNew);
   booking.userId = owner._id;
   if (consultation) booking.consultationId = consultation._id;
@@ -388,6 +413,21 @@ async function upsertAppointment(appointment, { user = null, context = null } = 
     }
   }
   return { outcome: isNew ? 'created' : 'updated', bookingId: booking._id };
+}
+
+/**
+ * Re-read ONE appointment from Zenoti right now and reconcile it — the
+ * panel's "Refresh from Zenoti" on a booking. Read-only towards Zenoti.
+ */
+async function refreshAppointment(bookingId) {
+  const booking = await Booking.findById(bookingId);
+  if (!booking) throw Object.assign(new Error('Booking not found'), { status: 404 });
+  if (!booking.zenotiAppointmentId) throw Object.assign(new Error('This booking is not linked to a Zenoti appointment.'), { status: 400 });
+  const detail = await zenoti.getAppointment(booking.zenotiAppointmentId);
+  if (!detail) throw Object.assign(new Error('Zenoti has no appointment with this id any more.'), { status: 404 });
+  const owner = await User.findById(booking.userId).select('_id fullName phone email zenotiGuestId zenotiCenterId').lean();
+  const result = await upsertAppointment(detail, { user: owner, verified: true });
+  return { result, booking: await Booking.findById(bookingId).populate('consultationId', 'name category price image').populate('userId', 'fullName email phone patientId') };
 }
 
 /** Backfill/update every appointment already fetched for one patient. */
@@ -545,6 +585,8 @@ module.exports = {
   // rebuilding them (four collection reads) for every appointment row.
   lookupContext,
   upsertAppointment,
+  refreshAppointment,
+  appointmentAttended,
   syncUserAppointments,
   syncRecentAppointments,
   syncUpcomingAppointments,
