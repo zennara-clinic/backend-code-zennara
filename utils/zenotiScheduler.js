@@ -42,10 +42,13 @@ function startZenotiScheduler() {
     practitionerSync.syncPractitioners({ trigger: 'schedule' }).catch(() => {});
   });
 
-  // Zenoti roster → app availability (restrict-only; see zenotiPractitionerService).
-  cron.schedule('7,37 * * * *', () => {
-    practitionerSync.syncDoctorShiftsFromZenoti({ trigger: 'schedule' }).catch(() => {});
-  });
+  // Zenoti roster → app availability (narrow-only; see zenotiPractitionerService).
+  // Opt-in: it changes what the app sells based on Zenoti's published shifts.
+  if (String(process.env.ZENOTI_ROSTER_TO_AVAILABILITY || 'false').toLowerCase() === 'true') {
+    cron.schedule('7,37 * * * *', () => {
+      practitionerSync.syncDoctorShiftsFromZenoti({ trigger: 'schedule' }).catch(() => {});
+    });
+  }
 
   cron.schedule('*/2 * * * *', () => {
     appointmentSync.syncRecentAppointments({ trigger: 'schedule' }).catch(() => {});

@@ -52,6 +52,7 @@ ZENOTI_LIFECYCLE_WRITEBACK=true       # desk actions → Zenoti: full lifecycle 
 ZENOTI_EDIT_EXISTING_WRITEBACK=false  # PUT an existing Zenoti guest profile / note from Zennara (default off)
 ZENOTI_WRITE_LIMIT_15MIN=15           # safety breaker: more live writes than this in 15 min pauses ALL Zenoti writes
 ZENOTI_WRITE_LIMIT_HOUR=40            # …or than this in an hour (reset: POST /api/admin/zenoti/write-breaker/reset)
+ZENOTI_ROSTER_TO_AVAILABILITY=false   # opt-in: Zenoti Working shifts narrow a doctor's app hours for that day (never close a day)
 NO_SHOW_GRACE_MINUTES=15              # app bookings only: minutes after the slot before an unchecked-in guest is a no-show
 # Required before live guest/appointment lifecycle writes:
 # ZENOTI_REFERRAL_SOURCE_ID=... # org referral source for API-created guests
