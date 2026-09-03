@@ -176,13 +176,8 @@ branchSchema.methods.isOpenOnDay = function(dayName) {
 
 // Virtual for full address
 branchSchema.virtual('fullAddress').get(function() {
-  const parts = [
-    this.address.line1,
-    this.address.line2,
-    this.address.city,
-    this.address.state,
-    this.address.pincode
-  ].filter(Boolean);
+  const a = this.address || {};
+  const parts = [a.line1, a.line2, a.city, a.state, a.pincode].filter(Boolean);
   return parts.join(', ');
 });
 
