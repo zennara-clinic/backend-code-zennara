@@ -225,3 +225,8 @@ test('Zenoti shifts only narrow panel hours; they never extend them', () => {
   const src = require('fs').readFileSync(require('path').join(__dirname, '../services/zenotiPractitionerService.js'), 'utf8');
   assert.ok(!/unavailable: true, ranges: \[\], note: 'Not rostered/.test(src), 'the roster sync must never close a day on Zenoti silence');
 });
+
+test('centre diary reads ask Zenoti for one day past the inclusive window (end_date is exclusive)', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '../services/zenotiService.js'), 'utf8');
+  assert.ok(src.includes('endExclusive.setUTCDate(endExclusive.getUTCDate() + 1)'), 'getCenterAppointments must add a day to end_date');
+});

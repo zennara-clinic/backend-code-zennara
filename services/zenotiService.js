@@ -715,11 +715,16 @@ async function getCenterAppointments(centerId, { from, to, includeCancelled = tr
   if (!centerId) return [];
   const start = from || isoDaysFromNow(-1);
   const end = to || isoDaysFromNow(6);
+  // Zenoti treats end_date as EXCLUSIVE (start=end returns nothing — verified
+  // live 2026-09-03). Callers pass an inclusive clinic-day window, so ask for
+  // one day more; the reconciler's "vanished" pass must see the last day too.
+  const endExclusive = new Date(`${end}T12:00:00Z`);
+  endExclusive.setUTCDate(endExclusive.getUTCDate() + 1);
   const json = await request('/v1/appointments', {
     query: {
       center_id: centerId,
       start_date: start,
-      end_date: end,
+      end_date: endExclusive.toISOString().slice(0, 10),
       include_no_show_cancel: includeCancelled,
     },
   });
