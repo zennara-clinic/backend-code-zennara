@@ -94,6 +94,8 @@ const overrideSchema = new mongoose.Schema(
       trim: true,
       maxlength: 200,
     },
+    /** 'manual' = set in a panel; 'zenoti' = derived from the Zenoti roster and replaced on every sync. */
+    source: { type: String, enum: ['manual', 'zenoti'], default: 'manual' },
   },
   { _id: false },
 );

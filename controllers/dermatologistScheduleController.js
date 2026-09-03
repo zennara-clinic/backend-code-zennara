@@ -36,7 +36,9 @@ const fail = (res, code, message) => res.status(code).json({ success: false, mes
  */
 async function canEdit(req, doctorId) {
   const role = req.admin?.role;
-  if (role === 'super_admin') return true;
+  if (role === 'super_admin' || req.admin?.isSuperAdmin) return true;
+  // Any staff role holding the permission the route already requires.
+  if (req.admin?.permissions instanceof Set && req.admin.permissions.has('dermatologists.manage')) return true;
   if (role !== 'doctor') return false;
   const mine = await require('../utils/doctorIdentity').resolveDoctorForAdmin(req);
   return !!mine && mine.doctorId === doctorId;

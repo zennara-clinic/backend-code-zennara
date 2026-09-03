@@ -1,5 +1,12 @@
 const Booking = require('../models/Booking');
 const zenotiWrite = require('../services/zenotiWriteService');
+
+/** A dermatologist login only ever sees its own diary, whatever specialistId it asks for. */
+async function scopeToOwnDiary(req, query) {
+  if (req.admin?.role !== 'doctor') return;
+  const mine = await require('../utils/doctorIdentity').resolveDoctorForAdmin(req).catch(() => null);
+  query.specialistId = mine ? mine.doctorId : '__none__';
+}
 const { publicEmail, isPlaceholderEmail } = require('../config/zenoti');
 const { buildBookingQuery } = require('../utils/listFilters');
 const visitCodes = require('../utils/visitCodes');
@@ -938,6 +945,7 @@ exports.getAllBookingsAdmin = async (req, res) => {
 
     // Filters + sort are shared with the export endpoint (utils/listFilters).
     const { query, sort } = await buildBookingQuery(req.query);
+    await scopeToOwnDiary(req, query);
 
     // Pagination is opt-in (`limit`) so existing callers keep the full list.
     const perPage = limit ? Math.min(500, Math.max(1, parseInt(limit, 10))) : null;
@@ -1003,6 +1011,7 @@ exports.getAllBookingsAdmin = async (req, res) => {
 exports.exportBookingsAdmin = async (req, res) => {
   try {
     const { query, sort } = await buildBookingQuery(req.query);
+    await scopeToOwnDiary(req, query);
     const limit = Math.min(20000, Math.max(1, parseInt(req.query.limit || '20000', 10)));
     const bookings = await Booking.find(query)
       .populate('consultationId', 'name category type price')

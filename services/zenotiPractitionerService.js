@@ -49,7 +49,9 @@ async function syncPractitioners({ trigger = 'schedule', repair = true } = {}) {
 
     if (!byId.size && results.some((result) => result.status === 'rejected')) return { trigger, seen: 0, repaired: 0 };
 
-    const doctors = await Doctor.find({}).select('doctorId name tier').lean();
+    // Only a live app dermatologist may claim a Zenoti identity; a retired
+    // profile must not keep absorbing the clinic's visits and revenue.
+    const doctors = await Doctor.find({ isActive: { $ne: false } }).select('doctorId name tier').lean();
     const matchDoctor = buildDoctorMatcher(doctors);
     const now = new Date();
     const ops = [...byId.values()].map((employee) => {
@@ -176,4 +178,125 @@ async function repairBookingAttribution({ doctors = null } = {}) {
 
 function isRunning() { return running; }
 
-module.exports = { syncPractitioners, repairBookingAttribution, isRunning, looksLikeDoctor };
+/* ---------------------------------------------------------------------------
+ * Zenoti roster → app availability.
+ *
+ * The app's slot engine reads DermatologistSchedule (hours set in the panel).
+ * Zenoti's employee schedule is the clinic's actual roster. This pass lets the
+ * roster NARROW app availability, never extend it and never close a day:
+ *   - a day where Zenoti has the doctor Working at a centre keeps the panel
+ *     hours, clipped to the Zenoti shift (so the app cannot sell 18:30 when
+ *     Zenoti rosters them until 18:00);
+ *   - a day with no Working shift is left to the panel hours. Zenoti uses the
+ *     same "NotScheduled" for "off that day" and "roster not published yet",
+ *     and the clinic publishes day by day — closing on silence blanked three
+ *     doctors for two weeks on 2026-09-03. Days off are set in the panel.
+ * Overrides it writes are tagged source:'zenoti' and rewritten each pass;
+ * manual overrides (leave, one-off hours) always win and are never touched.
+ * ------------------------------------------------------------------------- */
+const SHIFT_WINDOW_DAYS = 14;
+let shiftSyncRunning = false;
+
+function clip(ranges, shifts) {
+  const out = [];
+  for (const r of ranges) for (const sft of shifts) {
+    const start = r.start > sft.start ? r.start : sft.start;
+    const end = r.end < sft.end ? r.end : sft.end;
+    if (start < end) out.push({ start, end });
+  }
+  return out;
+}
+const hhmm = (iso) => (String(iso || '').match(/T(\d{2}:\d{2})/) || [])[1] || null;
+const dayKey = (iso) => String(iso || '').slice(0, 10);
+
+async function syncDoctorShiftsFromZenoti({ trigger = 'schedule' } = {}) {
+  if (!zenoti.isConfigured() || shiftSyncRunning) return null;
+  shiftSyncRunning = true;
+  const summary = { trigger, doctors: 0, applied: 0, clippedDays: 0, skippedUnpublished: 0 };
+  try {
+    const DermatologistSchedule = require('../models/DermatologistSchedule');
+    const Branch = require('../models/Branch');
+    const linked = await ZenotiPractitioner.find({ active: true, onboardedDoctorId: { $ne: null } }).lean();
+    if (!linked.length) return summary;
+    const clinics = Object.entries(CENTERS).filter(([, c]) => c.isClinic);
+    const branches = await Branch.find({ isActive: true }).select('_id name').lean();
+    const branchByName = new Map(branches.map((b) => [b.name, b]));
+    const istDay = (ms) => new Date(ms).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    const from = istDay(Date.now());
+    const to = istDay(Date.now() + SHIFT_WINDOW_DAYS * 864e5);
+    // One schedules call per clinic (not per doctor) — the rate budget is shared with production.
+    const perCenter = new Map();
+    for (const [centerId, c] of clinics) {
+      const rows = await zenoti.getCenterEmployeeSchedules(centerId, { from, to }).catch(() => null);
+      if (rows) perCenter.set(centerId, { center: c, rows: new Map(rows.map((r) => [r.employeeId, r])) });
+    }
+    for (const practitioner of linked) {
+      summary.doctors += 1;
+      const schedule = await DermatologistSchedule.findOne({ doctorId: practitioner.onboardedDoctorId });
+      if (!schedule) continue;
+      // Working shifts for this doctor, per centre, per day.
+      const working = new Map(); // `${day}|${branchId}` -> [{start,end}]
+      let anyWorking = false;
+      for (const [, { center, rows }] of perCenter) {
+        const branch = branchByName.get(center.branchName);
+        const row = rows.get(practitioner.zenotiEmployeeId);
+        if (!branch || !row) continue;
+        for (const sft of row.shifts) {
+          if (Number(sft.status) !== 0) continue;
+          const start = hhmm(sft.start), end = hhmm(sft.end);
+          if (!start || !end) continue;
+          const key = `${dayKey(sft.date)}|${branch._id}`;
+          if (!working.has(key)) working.set(key, []);
+          working.get(key).push({ start, end });
+          anyWorking = true;
+        }
+      }
+      // Centres where Zenoti has actually rostered this doctor in the window.
+      // A centre with no Working shift at all is treated as "not published
+      // there" and left to the panel hours — partial publishing (one clinic
+      // done, another not) must not close a doctor's days elsewhere.
+      const publishedBranches = new Set([...working.keys()].map((k) => k.split('|')[1]));
+      const manual = (schedule.overrides || []).filter((o) => o.source !== 'zenoti');
+      if (!anyWorking) {
+        // Roster not published for this doctor: drop stale zenoti overrides, keep panel hours.
+        summary.skippedUnpublished += 1;
+        if (manual.length !== (schedule.overrides || []).length) { schedule.overrides = manual; await schedule.save(); }
+        continue;
+      }
+      const manualDays = new Set(manual.map((o) => `${o.date}|${o.branchId || ''}`));
+      const generated = [];
+      for (let i = 0; i <= SHIFT_WINDOW_DAYS; i += 1) {
+        const day = istDay(Date.now() + i * 864e5);
+        const weekday = new Date(`${day}T12:00:00Z`).getUTCDay(); // weekday of that calendar date, 0 = Sunday
+        const weeklyRows = (schedule.weekly || []).filter((w) => w.day === weekday);
+        for (const branch of branches) {
+          if (!publishedBranches.has(String(branch._id))) continue; // roster not published at this centre
+          if (manualDays.has(`${day}|${branch._id}`) || manualDays.has(`${day}|`)) continue; // manual wins
+          const shifts = working.get(`${day}|${branch._id}`) || [];
+          const rowsForBranch = weeklyRows.filter((w) => !w.branchId || String(w.branchId) === String(branch._id));
+          const panelRanges = rowsForBranch.flatMap((w) => (w.ranges || []).map((r) => ({ start: r.start, end: r.end })));
+          if (!panelRanges.length) continue; // the panel never opened this day/centre; nothing to restrict
+          if (!shifts.length) continue; // Zenoti is silent about this day: panel hours stand
+          const clipped = clip(panelRanges, shifts);
+          const same = clipped.length === panelRanges.length && clipped.every((r, idx) => r.start === panelRanges[idx].start && r.end === panelRanges[idx].end);
+          if (!same) {
+            generated.push({ date: day, branchId: branch._id, unavailable: !clipped.length, ranges: clipped, note: 'Clipped to the Zenoti shift', source: 'zenoti' });
+            summary.clippedDays += 1;
+          }
+        }
+      }
+      schedule.overrides = [...manual, ...generated];
+      await schedule.save();
+      summary.applied += 1;
+    }
+    logger.info('Zenoti roster applied to app availability', summary);
+    return summary;
+  } catch (error) {
+    logger.warn('Zenoti roster → availability sync failed', { error: error.message });
+    return summary;
+  } finally {
+    shiftSyncRunning = false;
+  }
+}
+
+module.exports = { syncPractitioners, repairBookingAttribution, syncDoctorShiftsFromZenoti, clipRangesToShifts: clip, isRunning, looksLikeDoctor };

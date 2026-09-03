@@ -271,6 +271,39 @@ exports.listPractitioners = async (_req, res) => {
   }
 };
 
+// POST /api/admin/zenoti/practitioners/:employeeId/onboard — create the app
+// dermatologist for a Zenoti doctor and link the two identities.
+exports.onboardPractitioner = async (req, res) => {
+  try {
+    const row = await ZenotiPractitioner.findOne({ zenotiEmployeeId: String(req.params.employeeId).toLowerCase() });
+    if (!row) return res.status(404).json({ success: false, message: 'Zenoti doctor not found' });
+    if (row.onboardedDoctorId) return res.status(409).json({ success: false, message: `Already linked to ${row.onboardedDoctorId}` });
+    const name = String(req.body?.name || row.name).replace(/^\s*dr\.?\s*/i, '').replace(/\s*\.\s*$/, '').trim();
+    const doctorController = require('./doctorController');
+    let created = null;
+    const fakeRes = { status(code) { this.code = code; return this; }, json(body) { created = { code: this.code || 200, body }; } };
+    await doctorController.createDoctor({
+      admin: req.admin,
+      body: {
+        name,
+        tier: req.body?.tier || 'dermatologist',
+        availableCentres: Array.isArray(req.body?.availableCentres) && req.body.availableCentres.length ? req.body.availableCentres : row.centerNames,
+        email: req.body?.email || undefined,
+        password: req.body?.password || undefined,
+        isActive: true,
+      },
+    }, fakeRes);
+    if (!created || created.code >= 400) return res.status(created?.code || 500).json(created?.body || { success: false, message: 'Could not create the dermatologist' });
+    const doctor = created.body?.data;
+    row.onboardedDoctorId = doctor?.doctorId || null;
+    await row.save();
+    logger.info('Zenoti doctor onboarded as app dermatologist', { adminId: req.admin?._id, employeeId: row.zenotiEmployeeId, doctorId: row.onboardedDoctorId });
+    res.status(201).json({ success: true, data: { doctor, practitioner: row } });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 // POST /api/admin/zenoti/practitioners/sync
 exports.syncPractitioners = async (_req, res) => {
   if (practitionerSync.isRunning()) return res.status(409).json({ success: false, message: 'The practitioner roster is already refreshing.' });

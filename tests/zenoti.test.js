@@ -215,3 +215,13 @@ test('a Zenoti-booked appointment can never be cancelled, rescheduled or no-show
   const write = require('fs').readFileSync(require('path').join(__dirname, '../services/zenotiWriteService.js'), 'utf8');
   assert.ok(write.includes("booking.source === 'zenoti' && !['In Progress', 'Completed'].includes(booking.status)"), 'write-back policy for Zenoti rows must be attendance-only');
 });
+
+test('Zenoti shifts only narrow panel hours; they never extend them', () => {
+  const { clipRangesToShifts } = require('../services/zenotiPractitionerService');
+  assert.deepEqual(clipRangesToShifts([{ start: '10:00', end: '13:00' }, { start: '14:00', end: '19:00' }], [{ start: '10:00', end: '18:00' }]),
+    [{ start: '10:00', end: '13:00' }, { start: '14:00', end: '18:00' }]);
+  assert.deepEqual(clipRangesToShifts([{ start: '11:00', end: '14:00' }], [{ start: '09:00', end: '20:00' }]), [{ start: '11:00', end: '14:00' }]);
+  assert.deepEqual(clipRangesToShifts([{ start: '11:00', end: '14:00' }], [{ start: '15:00', end: '17:00' }]), []);
+  const src = require('fs').readFileSync(require('path').join(__dirname, '../services/zenotiPractitionerService.js'), 'utf8');
+  assert.ok(!/unavailable: true, ranges: \[\], note: 'Not rostered/.test(src), 'the roster sync must never close a day on Zenoti silence');
+});
