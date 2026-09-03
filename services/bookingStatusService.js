@@ -2,6 +2,14 @@ const Booking = require('../models/Booking');
 const emailService = require('../utils/emailService');
 const { bookingScheduledAt, formatClinicDate } = require('../utils/bookingTime');
 
+/**
+ * How long after the slot an app booking with no check-in is treated as a no
+ * show and the guest is emailed. 15 minutes was aggressive for a clinic where
+ * late arrivals are checked in by hand; two hours is the default now, and the
+ * desk can always mark a no-show earlier from the panel.
+ */
+const NO_SHOW_GRACE_MINUTES = Math.max(15, Number(process.env.NO_SHOW_GRACE_MINUTES) || 120);
+
 class BookingStatusService {
   /**
    * Check and update bookings that should be marked as "No Show"
@@ -46,7 +54,7 @@ class BookingStatusService {
         if (!appointmentDateTime) continue;
 
         // Check if appointment time has passed (with 15-minute grace period)
-        const gracePeriodMinutes = 15;
+        const gracePeriodMinutes = NO_SHOW_GRACE_MINUTES;
         const cutoffTime = new Date(appointmentDateTime.getTime() + (gracePeriodMinutes * 60 * 1000));
         
         if (now > cutoffTime && !booking.checkInTime) {
@@ -123,7 +131,7 @@ class BookingStatusService {
       if (!appointmentDateTime) return false;
 
       // Check if appointment time has passed (with 15-minute grace period)
-      const gracePeriodMinutes = 15;
+      const gracePeriodMinutes = NO_SHOW_GRACE_MINUTES;
       const cutoffTime = new Date(appointmentDateTime.getTime() + (gracePeriodMinutes * 60 * 1000));
       
       if (now > cutoffTime && !booking.checkInTime) {

@@ -448,11 +448,15 @@ bookingSchema.post('save', function (doc) {
   if (doc.$locals?.skipZenotiWrite || doc._wasNew || !doc._zenotiOperationalChanged) return;
   if (!doc.zenotiAppointmentId && !doc.zenotiInvoiceId) return;
   // An appointment booked in Zenoti is Zenoti's to run. Its mirrored Booking
-  // may change state here (reception, auto jobs) but must never write back.
-  if (doc.source === 'zenoti') return;
+  // may change state here, but only an explicit decision by a person at the
+  // desk (zenotiStaffAction) may ever be offered for write-back — and the
+  // service still requires ZENOTI_LIFECYCLE_WRITEBACK=true. Automated jobs
+  // never reach Zenoti.
+  const staffAction = Boolean(doc.$locals?.zenotiStaffAction);
+  if (doc.source === 'zenoti' && !staffAction) return;
   setImmediate(() => {
     try {
-      require('../services/zenotiWriteService').syncBookingState(doc._id).catch(() => {});
+      require('../services/zenotiWriteService').syncBookingState(doc._id, { staffAction }).catch(() => {});
     } catch (_) { /* lifecycle updates remain best-effort */ }
   });
 });

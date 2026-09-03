@@ -1,4 +1,5 @@
 const Booking = require('../models/Booking');
+const zenotiWrite = require('../services/zenotiWriteService');
 const { publicEmail, isPlaceholderEmail } = require('../config/zenoti');
 const { buildBookingQuery } = require('../utils/listFilters');
 const visitCodes = require('../utils/visitCodes');
@@ -358,6 +359,16 @@ exports.cancelBooking = async (req, res) => {
       });
     }
 
+    // An appointment booked in Zenoti is changed in Zenoti. Until lifecycle
+    // write-back is switched on, a change made only here would leave the
+    // clinic's diary expecting the guest (see ZENOTI-NO-SHOW-INCIDENT).
+    if (booking.source === 'zenoti' && !zenotiWrite.lifecycleWritebackEnabled()) {
+      return res.status(409).json({
+        success: false,
+        code: 'CLINIC_BOOKING_CHANGE_AT_CLINIC',
+        message: 'This appointment was booked at the clinic. Please call the clinic to change or cancel it — changes made there appear here within a few minutes.'
+      });
+    }
     const cancellableStatuses = ['Awaiting Confirmation', 'Confirmed', 'Rescheduled'];
     if (!cancellableStatuses.includes(booking.status)) {
       return res.status(400).json({
@@ -484,6 +495,16 @@ exports.rescheduleBooking = async (req, res) => {
       });
     }
 
+    // An appointment booked in Zenoti is changed in Zenoti. Until lifecycle
+    // write-back is switched on, a change made only here would leave the
+    // clinic's diary expecting the guest (see ZENOTI-NO-SHOW-INCIDENT).
+    if (booking.source === 'zenoti' && !zenotiWrite.lifecycleWritebackEnabled()) {
+      return res.status(409).json({
+        success: false,
+        code: 'CLINIC_BOOKING_CHANGE_AT_CLINIC',
+        message: 'This appointment was booked at the clinic. Please call the clinic to change or cancel it — changes made there appear here within a few minutes.'
+      });
+    }
     const reschedulableStatuses = ['Confirmed', 'Rescheduled'];
     if (!reschedulableStatuses.includes(booking.status)) {
       return res.status(400).json({
@@ -1083,6 +1104,7 @@ exports.confirmBooking = async (req, res) => {
     // Keep the diary's primary field in step for calendar-booked consults.
     if (booking.slotTime) booking.slotTime = confirmedTime || booking.slotTime;
 
+    booking.$locals.zenotiStaffAction = true; // a person at the desk decided this
     await booking.save();
 
     // Populate consultation details for email
@@ -1182,6 +1204,7 @@ exports.markNoShow = async (req, res) => {
     }
 
     booking.status = 'No Show';
+    booking.$locals.zenotiStaffAction = true; // a person at the desk decided this
     await booking.save();
 
     // Populate consultation details for email
@@ -1323,6 +1346,7 @@ exports.checkInBookingAdmin = async (req, res) => {
     // Populate consultation details for email
     await booking.populate('consultationId', 'name');
     await visitCodes.deliver(booking, 'checkout', { by: req.admin });
+    booking.$locals.zenotiStaffAction = true; // a person at the desk decided this
     await booking.save();
     await notifyManualCheck(booking, 'checkin');
 
@@ -1422,6 +1446,7 @@ exports.checkOutBookingAdmin = async (req, res) => {
     }
     applySessionFromBody(booking, req);
 
+    booking.$locals.zenotiStaffAction = true; // a person at the desk decided this
     await booking.save();
     await booking.populate('consultationId', 'name');
     await notifyManualCheck(booking, 'checkout');
@@ -1758,6 +1783,7 @@ exports.verifyCheckInCode = async (req, res) => {
     // The session has started: issue the check-out code now and send it, so a
     // guest without the app already has it when the treatment ends.
     await visitCodes.deliver(booking, 'checkout', { by: req.admin });
+    booking.$locals.zenotiStaffAction = true; // a person at the desk decided this
     await booking.save();
 
     try {
@@ -1824,6 +1850,7 @@ exports.verifyCheckOutCode = async (req, res) => {
     booking.checkOutCode = null;
     booking.checkOutCodeAt = null;
     applySessionFromBody(booking, req);
+    booking.$locals.zenotiStaffAction = true; // a person at the desk decided this
     await booking.save();
     await booking.populate('consultationId', 'name');
 
@@ -1882,6 +1909,15 @@ exports.cancelBookingAdmin = async (req, res) => {
       });
     }
 
+    // Zenoti-booked: the diary of record is Zenoti. Without lifecycle
+    // write-back, cancel/reschedule it there; it syncs here within 2 minutes.
+    if (booking.source === 'zenoti' && !zenotiWrite.lifecycleWritebackEnabled()) {
+      return res.status(409).json({
+        success: false,
+        code: 'ZENOTI_OWNED_APPOINTMENT',
+        message: 'This appointment was booked in Zenoti. Cancel or reschedule it in Zenoti — the change appears here within 2 minutes. Check-in, check-out, completion and no-show can be recorded here.'
+      });
+    }
     // The desk can cancel anything that has not already ended.
     if (['Cancelled', 'Completed', 'No Show'].includes(booking.status)) {
       return res.status(400).json({
@@ -1895,6 +1931,7 @@ exports.cancelBookingAdmin = async (req, res) => {
     booking.cancelledAt = new Date();
     booking.cancelledBy = 'admin';
 
+    booking.$locals.zenotiStaffAction = true; // a person at the desk decided this
     await booking.save();
 
     // Populate consultation details for email
@@ -2252,6 +2289,15 @@ exports.rescheduleBookingAdmin = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Booking not found' });
     }
 
+    // Zenoti-booked: the diary of record is Zenoti. Without lifecycle
+    // write-back, cancel/reschedule it there; it syncs here within 2 minutes.
+    if (booking.source === 'zenoti' && !zenotiWrite.lifecycleWritebackEnabled()) {
+      return res.status(409).json({
+        success: false,
+        code: 'ZENOTI_OWNED_APPOINTMENT',
+        message: 'This appointment was booked in Zenoti. Cancel or reschedule it in Zenoti — the change appears here within 2 minutes. Check-in, check-out, completion and no-show can be recorded here.'
+      });
+    }
     if (['Cancelled', 'Completed', 'No Show'].includes(booking.status)) {
       return res.status(400).json({
         success: false,
@@ -2310,6 +2356,7 @@ exports.rescheduleBookingAdmin = async (req, res) => {
       booking.adminNotes = `${booking.adminNotes ? `${booking.adminNotes}\n` : ''}Rescheduled: ${reason}`;
     }
 
+    booking.$locals.zenotiStaffAction = true; // a person at the desk decided this
     await booking.save();
     await booking.populate('consultationId', 'name category price image');
     await booking.populate('userId', 'fullName email phone patientId');

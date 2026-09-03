@@ -77,6 +77,75 @@ function localStatus(appointment) {
   return 'Confirmed';
 }
 
+/**
+ * Reconcile Zenoti's view of an appointment with what staff recorded here.
+ *
+ * Zenoti is the system of record for an appointment booked in Zenoti, but the
+ * desk may check a guest in, out, or mark them completed in THIS panel while
+ * Zenoti still shows the visit as merely booked. Without this rule the next
+ * two-minute poll would push that visit straight back to "Confirmed" (that
+ * regression is exactly the kind of glitch that made the day book untrustworthy).
+ *
+ *  - Zenoti's terminal states (Cancelled, No Show, Completed) always win.
+ *  - Otherwise, if Zenoti's own status/progress has NOT changed since we last
+ *    read it, a state the desk advanced locally is kept.
+ *  - As soon as Zenoti moves (checked in, closed, cancelled…), Zenoti wins.
+ */
+const STATUS_RANK = { 'Awaiting Confirmation': 0, Confirmed: 1, Rescheduled: 1, 'In Progress': 2, Completed: 3 };
+const ZENOTI_TERMINAL = new Set(['Cancelled', 'No Show', 'Completed']);
+function mergeStatus(booking, appointment, zenotiStatus, isNew) {
+  if (isNew || !booking.status) return zenotiStatus;
+  const prev = booking.zenotiSource || {};
+  const zenotiChanged = !('status' in prev)
+    || String(prev.status ?? '') !== String(appointment.status ?? '')
+    || Number(prev.progress ?? 0) !== Number(appointment.progress ?? 0);
+  if (ZENOTI_TERMINAL.has(zenotiStatus)) return zenotiStatus;
+  if (zenotiChanged) return zenotiStatus;
+  const local = booking.status;
+  if (local === 'Cancelled' || local === 'No Show') return local; // desk decision, Zenoti unchanged
+  if ((STATUS_RANK[local] ?? 0) > (STATUS_RANK[zenotiStatus] ?? 0)) return local;
+  return zenotiStatus;
+}
+
+/**
+ * Appointments that were deleted or moved in Zenoti simply stop appearing in
+ * the centre feed (cancelled and no-show ones still appear, because we ask
+ * for them). Left alone, such a row would sit in our diary for ever as a
+ * confirmed visit nobody is coming to — and block a dermatologist slot. Mark
+ * those rows cancelled locally. Never writes to Zenoti, never emails.
+ */
+async function retireVanishedAppointments({ centerId, from, to, seenIds, runStartedAt, feedCount }) {
+  // An empty feed for a whole window is more likely an API hiccup than a
+  // clinic with no appointments at all — refuse to retire anything on it.
+  if (!feedCount) return 0;
+  const dayStart = new Date(`${from}T00:00:00+05:30`);
+  const dayEnd = new Date(`${to}T23:59:59.999+05:30`);
+  const filter = {
+    source: 'zenoti',
+    'zenotiSource.centerId': centerId,
+    status: { $in: ['Awaiting Confirmation', 'Confirmed', 'Rescheduled', 'In Progress'] },
+    preferredDate: { $gte: dayStart, $lte: dayEnd },
+    zenotiAppointmentId: { $nin: [...seenIds] },
+    zenotiLastInboundAt: { $lt: runStartedAt },
+  };
+  const result = await Booking.updateMany(filter, {
+    $set: {
+      status: 'Cancelled',
+      cancellationReason: 'Removed from the clinic diary in Zenoti',
+      cancelledAt: new Date(),
+      slotHeld: false,
+      // A distinct marker so that, should the appointment reappear in the
+      // feed, mergeStatus sees Zenoti "changed" and restores Zenoti's status.
+      'zenotiSource.status': 'vanished',
+      'zenotiSource.vanishedAt': new Date(),
+      zenotiSyncStatus: 'synced',
+      zenotiSyncError: null,
+      zenotiLastInboundAt: new Date(),
+    },
+  });
+  return result.modifiedCount || 0;
+}
+
 async function lookupContext() {
   const [consultations, branches, doctors, practitioners] = await Promise.all([
     Consultation.find({}).select('_id name slug').lean(),
@@ -199,6 +268,7 @@ async function upsertAppointment(appointment, { user = null, context = null } = 
   // finished visit, not something "in progress" today — the app's Upcoming
   // list and the panel's day book must not keep showing it as live.
   if (status === 'In Progress' && parts.day < clinicDay()) status = 'Completed';
+  status = mergeStatus(booking, appointment, status, isNew);
   booking.userId = owner._id;
   if (consultation) booking.consultationId = consultation._id;
   const ownerName = owner.fullName || guest?.fullName || null;
@@ -356,9 +426,13 @@ async function reconcileWindow(from, to, { trigger = 'schedule', mode = 'increme
       zenoti.getCenterAppointments(centerId, { from, to, includeCancelled: true })
     ));
     const rows = [];
+    const runStartedAt = new Date();
+    const fulfilledCenters = [];
     centerResults.forEach((result, index) => {
-      if (result.status === 'fulfilled') rows.push(...result.value);
-      else {
+      if (result.status === 'fulfilled') {
+        rows.push(...result.value);
+        fulfilledCenters.push({ centerId: clinics[index][0], feedCount: result.value.length });
+      } else {
         tally.failed += 1;
         logger.warn('Zenoti appointment center reconciliation failed', { center: clinics[index][1].name, error: result.reason?.message });
       }
@@ -392,6 +466,19 @@ async function reconcileWindow(from, to, { trigger = 'schedule', mode = 'increme
       }
       if (tally.processed % 50 === 0) await run.updateOne(tally);
     }
+
+    // Rows that left the diary (deleted / moved in Zenoti).
+    let retired = 0;
+    for (const { centerId, feedCount } of fulfilledCenters) {
+      const seenIds = new Set(rows.filter((r) => r.centerId === centerId).map((r) => String(r.id)));
+      try {
+        retired += await retireVanishedAppointments({ centerId, from, to, seenIds, runStartedAt, feedCount });
+      } catch (error) {
+        logger.warn('Zenoti vanished-appointment pass failed', { centerId, error: error.message });
+      }
+    }
+    if (retired) logger.info('Zenoti: retired appointments no longer in the clinic diary', { from, to, retired });
+    tally.retired = retired;
     await run.updateOne({ ...tally, status: 'completed', finishedAt: new Date() });
     return tally;
   } catch (error) {
@@ -452,6 +539,7 @@ function isAppointmentSyncRunning() {
 module.exports = {
   appointmentLocalParts,
   localStatus,
+  mergeStatus,
   uniqueZenotiReference,
   // Exported so bulk backfills can build the lookup maps once instead of
   // rebuilding them (four collection reads) for every appointment row.

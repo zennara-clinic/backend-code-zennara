@@ -590,17 +590,17 @@ function existingRecordWritebackEnabled() {
   return String(process.env.ZENOTI_EDIT_EXISTING_WRITEBACK || 'false').toLowerCase() === 'true';
 }
 
-async function syncBookingState(bookingId) {
+async function syncBookingState(bookingId, { staffAction = false } = {}) {
   const Booking = require('../models/Booking');
   const User = require('../models/User');
   const booking = await Booking.findById(bookingId);
   if (!booking || isOff() || (!booking.zenotiAppointmentId && !booking.zenotiInvoiceId)) return;
-  if (booking.source === 'zenoti') {
-    logger.info('Zenoti lifecycle write-back refused for a Zenoti-owned appointment', { bookingId, status: booking.status });
-    return;
-  }
   if (!lifecycleWritebackEnabled()) {
     logger.info('Zenoti lifecycle write-back disabled (ZENOTI_LIFECYCLE_WRITEBACK != true)', { bookingId, status: booking.status });
+    return;
+  }
+  if (booking.source === 'zenoti' && !staffAction) {
+    logger.info('Zenoti lifecycle write-back refused: Zenoti-owned appointment changed by an automated path', { bookingId, status: booking.status });
     return;
   }
 
