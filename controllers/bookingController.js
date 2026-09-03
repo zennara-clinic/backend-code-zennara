@@ -942,12 +942,16 @@ exports.getAllBookingsAdmin = async (req, res) => {
     const perPage = limit ? Math.min(500, Math.max(1, parseInt(limit, 10))) : null;
     const pageNo = Math.max(1, parseInt(page || '1', 10));
 
+    // Plain objects: the populated Branch carries virtuals that assume a full
+    // document and throw on this partial projection, which took the whole
+    // bookings page down when rows were serialised with virtuals.
     let find = Booking.find(query)
       .populate('consultationId', 'name category price image')
       .populate('userId', 'fullName email phone patientId')
       .populate('branchId', 'name address')
       .sort(sort)
-      .select('-__v');
+      .select('-__v')
+      .lean();
     if (perPage) find = find.skip((pageNo - 1) * perPage).limit(perPage);
 
     const [bookings, total, statusCounts] = await Promise.all([
@@ -963,8 +967,7 @@ exports.getAllBookingsAdmin = async (req, res) => {
     // Guest identity comes from the account, never from an internal
     // placeholder: fill a blank/placeholder name, phone or email from the
     // populated user so the panel always shows who the visit is for.
-    const rows = bookings.map((b) => {
-      const o = b.toObject({ virtuals: true });
+    const rows = bookings.map((o) => {
       const u = o.userId && typeof o.userId === 'object' ? o.userId : null;
       if (u) {
         if ((!o.fullName || o.fullName === 'Zennara Guest') && u.fullName) o.fullName = u.fullName;

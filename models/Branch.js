@@ -188,7 +188,10 @@ branchSchema.virtual('fullAddress').get(function() {
 
 // Virtual for formatted phone numbers
 branchSchema.virtual('formattedPhone').get(function() {
-  return this.contact.phone.map(phone => {
+  // A populated Branch on a booking is a partial projection (name/address
+  // only); virtuals must never assume the full document.
+  const phones = Array.isArray(this.contact?.phone) ? this.contact.phone : [];
+  return phones.map(phone => {
     if (phone.startsWith('+91')) return phone;
     return `+91 ${phone}`;
   }).join(' / ');

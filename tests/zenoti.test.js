@@ -192,3 +192,10 @@ test('the automatic no-show job never considers Zenoti-linked bookings', () => {
   assert.ok(src.includes('zenotiAppointmentId: null'), 'query must exclude Zenoti-linked rows');
   assert.ok(src.includes('booking.$locals.skipZenotiWrite = true'), 'auto no-show must never write to Zenoti');
 });
+
+test('Branch virtuals tolerate the partial projection used when populating bookings', () => {
+  const Branch = require('../models/Branch');
+  const partial = new Branch({ name: 'Jubilee Hills' });
+  assert.doesNotThrow(() => partial.toObject({ virtuals: true }));
+  assert.equal(partial.formattedPhone, '');
+});
