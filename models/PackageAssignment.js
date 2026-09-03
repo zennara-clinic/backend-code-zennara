@@ -240,6 +240,7 @@ const packageAssignmentSchema = new mongoose.Schema({
   },
   zenotiPackageId: { type: String, default: null },
   zenotiInvoiceId: { type: String, default: null },
+  zenotiInvoiceNumber: { type: String, default: null },
   zenotiSyncStatus: {
     type: String,
     enum: ['pending', 'synced', 'failed', 'skipped', 'dryrun', null],

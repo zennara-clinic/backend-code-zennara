@@ -455,8 +455,16 @@ async function syncPackageAssignment(assignmentId) {
     const centerId = clinicCenterIdForBranch(assignment.preferredLocation || user?.location);
     const localPackage = assignment.packageId ? await Package.findById(assignment.packageId).lean().catch(() => null) : null;
     const packageId = await resolvePackageId(centerId, localPackage || { name: assignment.packageDetails?.packageName });
-    // Documented: POST /Catalog/SeriesPackages/CreateInvoice?CenterId&userId&packageIds
-    const payload = { CenterId: centerId, userId: guestId, packageIds: packageId };
+    // Documented ("Ability to sell series regular packages in API"):
+    // POST /v1/invoices/packages { guest_id, center_id, notes, package_details:[{id}] }
+    // → { invoice_id, invoice_number }. Verified live that this route exists
+    // here (it validates the guest); the legacy /Catalog/SeriesPackages path 404s.
+    const payload = {
+      guest_id: guestId,
+      center_id: centerId,
+      notes: `Zennara package ${assignment.assignmentId}`,
+      package_details: packageId ? [{ id: packageId }] : [],
+    };
     assignment.zenotiPackageId = packageId;
     if (!guestId || !packageId) {
       assignment.zenotiSyncStatus = isLive() ? 'skipped' : 'dryrun';
@@ -468,9 +476,10 @@ async function syncPackageAssignment(assignmentId) {
       assignment.zenotiSyncError = null;
       logWrite('createPackageInvoice', payload, { assignmentId: assignment._id });
     } else {
-      const result = await liveWrite('createPackageInvoice', () => zenoti.request('/Catalog/SeriesPackages/CreateInvoice', { method: 'POST', query: payload, body: {} }));
-      assignment.zenotiInvoiceId = result?.Invoice?.Id || result?.invoice?.id || result?.invoice_id || result?.id || null;
-      if (!assignment.zenotiInvoiceId) throw new Error(result?.Error?.Message || 'Zenoti package invoice returned no id.');
+      const result = await liveWrite('createPackageInvoice', () => zenoti.request('/v1/invoices/packages', { method: 'POST', body: payload }));
+      assignment.zenotiInvoiceId = result?.invoice_id || result?.id || result?.Invoice?.Id || null;
+      if (!assignment.zenotiInvoiceId) throw new Error(result?.Error?.Message || result?.error?.message || 'Zenoti package invoice returned no id.');
+      assignment.zenotiInvoiceNumber = result?.invoice_number || null;
       assignment.zenotiSyncStatus = 'synced';
       assignment.zenotiSyncError = null;
       assignment.zenotiSyncedAt = new Date();
