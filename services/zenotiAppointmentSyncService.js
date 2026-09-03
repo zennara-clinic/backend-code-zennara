@@ -304,7 +304,9 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
   else if (booking.mobileNumber === undefined) booking.mobileNumber = '';
   const ownerEmail = publicEmail(owner.email) || publicEmail(guest?.email) || null;
   if (ownerEmail) booking.email = ownerEmail;
-  else if (!booking.email || isPlaceholderEmail(booking.email)) booking.email = '';
+  // Only a Zenoti-owned row may carry an empty email (its schema allows it);
+  // an app/reception booking keeps whatever it was created with.
+  else if (booking.source === 'zenoti' && (!booking.email || isPlaceholderEmail(booking.email))) booking.email = '';
   booking.branchId = branch?._id || null;
   booking.preferredLocation = branch?.name || branchName;
   booking.preferredDate = parts.date;

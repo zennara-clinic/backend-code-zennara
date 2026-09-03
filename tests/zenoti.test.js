@@ -230,3 +230,8 @@ test('centre diary reads ask Zenoti for one day past the inclusive window (end_d
   const src = require('fs').readFileSync(require('path').join(__dirname, '../services/zenotiService.js'), 'utf8');
   assert.ok(src.includes('endExclusive.setUTCDate(endExclusive.getUTCDate() + 1)'), 'getCenterAppointments must add a day to end_date');
 });
+
+test('inbound reconcile never blanks the email of an app booking', () => {
+  const src = require('fs').readFileSync(require('path').join(__dirname, '../services/zenotiAppointmentSyncService.js'), 'utf8');
+  assert.ok(src.includes("booking.source === 'zenoti' && (!booking.email || isPlaceholderEmail(booking.email))"), 'blank email only for Zenoti-owned rows');
+});
