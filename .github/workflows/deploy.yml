@@ -30,10 +30,14 @@ jobs:
           host: ${{ secrets.EC2_HOST }}
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
+          # Leave EC2_PORT unset for the default 22. A non-numeric value here
+          # made every deploy since 2026-08-23 fail before connecting.
           port: ${{ secrets.EC2_PORT || 22 }}
           script_stop: true
           script: |
             export PATH="$HOME/.nvm/versions/node/$(ls $HOME/.nvm/versions/node 2>/dev/null | tail -1)/bin:$PATH:/usr/local/bin"
             export APP_DIR="${{ secrets.EC2_APP_DIR }}"
             cd "$APP_DIR"
+            # scripts/deploy.sh is versioned; if an old checkout lacks it, pull first.
+            [ -f scripts/deploy.sh ] || { git fetch --prune origin && git reset --hard origin/main; }
             bash scripts/deploy.sh

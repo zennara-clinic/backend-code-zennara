@@ -286,7 +286,7 @@ exports.onboardPractitioner = async (req, res) => {
       admin: req.admin,
       body: {
         name,
-        tier: req.body?.tier || 'dermatologist',
+        tier: req.body?.tier || (require('../models/Doctor').schema.path('tier').enumValues || []).find((t) => !/senior/i.test(t)) || 'dermatologist',
         availableCentres: Array.isArray(req.body?.availableCentres) && req.body.availableCentres.length ? req.body.availableCentres : row.centerNames,
         email: req.body?.email || undefined,
         password: req.body?.password || undefined,
