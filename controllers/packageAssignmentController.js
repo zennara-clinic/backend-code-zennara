@@ -1180,13 +1180,20 @@ exports.getUserPackages = async (req, res) => {
   try {
     const userId = req.user._id;
 
-    const assignments = await PackageAssignment.find({ userId })
-      .sort({ createdAt: -1 })
-      .populate('packageId', 'name description price duration benefits originalPrice discount');
+    const [assignments, clinic] = await Promise.all([
+      PackageAssignment.find({ userId })
+        .sort({ createdAt: -1 })
+        .populate('packageId', 'name description price duration benefits originalPrice discount'),
+      // Packages bought at the clinic (Zenoti) — listed on the same screen so a
+      // clinic customer never sees "No packages yet" while holding sessions.
+      require('../services/zenotiImportService').customerClinicData(userId, ['packages']).catch(() => null),
+    ]);
 
     res.status(200).json({
       success: true,
-      data: assignments
+      data: assignments,
+      clinicPackages: clinic?.packages || [],
+      clinicSyncedAt: clinic?.syncedAt || null,
     });
   } catch (error) {
     console.error('Get user packages error:', error);

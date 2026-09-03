@@ -20,6 +20,8 @@ const {
   normalizeIndianMobile,
   isZenMembership,
   isActiveMembershipStatus,
+  placeholderEmail,
+  isPlaceholderEmail,
 } = require('../config/zenoti');
 const logger = require('../utils/logger');
 
@@ -52,11 +54,6 @@ async function resolveBranchNameUncached(preferredName) {
 
 function escapeRegExp(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/** A stable placeholder email when a Zenoti guest has none on file. */
-function placeholderEmail(guestId) {
-  return `zenoti_${guestId}@guest.zennara.in`.toLowerCase();
 }
 
 /**
@@ -121,7 +118,14 @@ async function provisionUserFromGuest(guest, opts = {}) {
     const before = user.toObject();
     Object.assign(user, synced);
     // Only fill identity gaps; never clobber values the customer set in-app.
+    // A placeholder address IS a gap: when Zenoti now has a real email for
+    // this guest, adopt it (unless another account already holds it — the
+    // unique index would reject the save and the whole sync would fail).
     if (!user.email) user.email = email;
+    else if (isPlaceholderEmail(user.email) && guest.email && !isPlaceholderEmail(email)) {
+      const taken = pre ? Boolean(pre.byEmail.get(email)) : await User.exists({ email, _id: { $ne: user._id } });
+      if (!taken) user.email = email;
+    }
     if (!user.phone && phone) user.phone = phone;
     if (!user.location) user.location = location;
     const changed = ['fullName', 'gender', 'dateOfBirth', 'zenotiGuestId', 'zenotiCenterId', 'location', 'email', 'phone']
@@ -276,6 +280,7 @@ async function syncLinkedUser(user) {
 }
 
 module.exports = {
+  placeholderEmail,
   isMembershipCurrentlyActive,
   provisionUserFromGuest,
   findOrProvisionByPhone,

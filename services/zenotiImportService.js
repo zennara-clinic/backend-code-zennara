@@ -231,6 +231,19 @@ async function syncGuestDetails(user) {
   if (profileResult.status === 'fulfilled' && profileResult.value) {
     const { _raw, ...safeProfile } = profileResult.value;
     saveResult('profile', { status: 'fulfilled', value: safeProfile });
+    // The full profile is the freshest identity we have (name, mobile, email,
+    // gender, DOB, home centre). Reflect it on the local account too, so a
+    // guest who added an email at the front desk stops carrying a placeholder
+    // and the panel/app show what Zenoti shows. Never throws; never clobbers
+    // a real value with an empty one (provisionUserFromGuest fills gaps only).
+    try {
+      const refreshed = await provisionUserFromGuest(profileResult.value, { quiet: true });
+      if (refreshed) {
+        user = typeof user.save === 'function' ? refreshed : { ...user, fullName: refreshed.fullName, phone: refreshed.phone, email: refreshed.email, zenotiCenterId: refreshed.zenotiCenterId };
+      }
+    } catch (err) {
+      errors.push(`identity: ${err.message}`);
+    }
   } else {
     saveResult('profile', profileResult);
   }
@@ -315,6 +328,22 @@ async function getGuestDetails(user, { maxAgeMs = DETAIL_TTL_MS, refresh = false
 }
 
 /**
+ * After a customer signs in, bring their mirror (and therefore their Bookings,
+ * packages, purchases and Zen membership) up to date in the background when it
+ * is older than a few minutes. The 2-minute appointment poll already covers the
+ * live diary; this covers purchases/packages made at the desk since the last
+ * daily crawl. Fire-and-forget: login never waits on Zenoti.
+ */
+const LOGIN_REFRESH_MAX_AGE_MS = 10 * 60 * 1000;
+function refreshOnLogin(user) {
+  if (!user?.zenotiGuestId || !zenoti.isConfigured()) return;
+  setImmediate(() => {
+    getGuestDetails(user, { maxAgeMs: LOGIN_REFRESH_MAX_AGE_MS })
+      .catch((err) => logger.warn('Zenoti login refresh failed', { userId: user._id, error: err.message }));
+  });
+}
+
+/**
  * Sync the `limit` stalest guests. Called every few minutes by the scheduler;
  * with ~4 Zenoti calls per guest and a 50/min budget, 40 guests ≈ 3–4 minutes.
  */
@@ -327,7 +356,7 @@ async function crawlDetails({ limit = 40, trigger = 'schedule', force = false, m
     run = await ZenotiSyncRun.create({ type: 'details', trigger, mode, startedBy: adminId });
     // Users linked to Zenoti but with no mirror row yet come first, then the stalest.
     const linked = await User.find({ zenotiGuestId: { $exists: true, $ne: null } })
-      .select('_id zenotiGuestId zenotiCenterId totalVisits totalSpent memberType zenMembershipStartDate zenMembershipExpiryDate')
+      .select('_id zenotiGuestId zenotiCenterId fullName phone email totalVisits totalSpent memberType zenMembershipStartDate zenMembershipExpiryDate')
       .lean();
     const mirrors = await ZenotiGuestData.find({ userId: { $in: linked.map((u) => u._id) } })
       .select('userId syncedAt lastError').lean();
@@ -432,11 +461,43 @@ async function getStatus() {
   };
 }
 
+/**
+ * A customer's clinic packages/purchases/memberships in the shape the app
+ * lists them next to app-native records. Reads the mirror (kept fresh by the
+ * crawl, the 2-minute diary poll and the login refresh); never a live call on
+ * a list screen.
+ */
+async function customerClinicData(userId, fields = ['packages', 'orders', 'memberships']) {
+  const doc = await ZenotiGuestData.findOne({ userId })
+    .select([...fields, 'syncedAt', 'branchName'].join(' '))
+    .lean();
+  if (!doc) return null;
+  const out = { syncedAt: doc.syncedAt || null };
+  if (fields.includes('packages')) {
+    out.packages = (doc.packages || []).map((p) => ({
+      ...p,
+      source: 'zenoti',
+      isActive: isActivePackage(p),
+      centerName: p.centerName || doc.branchName || null,
+    }));
+  }
+  if (fields.includes('orders')) {
+    out.orders = (doc.orders || []).map((o) => ({ ...o, source: 'zenoti', centerName: o.centerName || doc.branchName || null }));
+  }
+  if (fields.includes('memberships')) {
+    out.memberships = (doc.memberships || []).map((m) => ({ ...m, source: 'zenoti', isActive: isMembershipCurrentlyActive(m) }));
+  }
+  return out;
+}
+
 module.exports = {
+  customerClinicData,
+  isActivePackage,
   importRoster,
   fullImport,
   syncGuestDetails,
   getGuestDetails,
+  refreshOnLogin,
   crawlDetails,
   getStatus,
   isRosterRunning,

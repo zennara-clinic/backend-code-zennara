@@ -1,4 +1,5 @@
 const Booking = require('../models/Booking');
+const { publicEmail, isPlaceholderEmail } = require('../config/zenoti');
 const { buildBookingQuery } = require('../utils/listFilters');
 const visitCodes = require('../utils/visitCodes');
 const Doctor = require('../models/Doctor');
@@ -938,13 +939,29 @@ exports.getAllBookingsAdmin = async (req, res) => {
       ]),
     ]);
 
+    // Guest identity comes from the account, never from an internal
+    // placeholder: fill a blank/placeholder name, phone or email from the
+    // populated user so the panel always shows who the visit is for.
+    const rows = bookings.map((b) => {
+      const o = b.toObject({ virtuals: true });
+      const u = o.userId && typeof o.userId === 'object' ? o.userId : null;
+      if (u) {
+        if ((!o.fullName || o.fullName === 'Zennara Guest') && u.fullName) o.fullName = u.fullName;
+        if (!o.mobileNumber && u.phone) o.mobileNumber = u.phone;
+        if ((!o.email || isPlaceholderEmail(o.email)) && publicEmail(u.email)) o.email = publicEmail(u.email);
+        u.email = publicEmail(u.email);
+      }
+      if (isPlaceholderEmail(o.email)) o.email = '';
+      return o;
+    });
+
     res.status(200).json({
       success: true,
-      count: bookings.length,
+      count: rows.length,
       total,
       statusCounts: Object.fromEntries(statusCounts.map((r) => [r._id, r.n])),
       pagination: perPage ? { currentPage: pageNo, totalPages: Math.ceil(total / perPage), total } : undefined,
-      data: bookings
+      data: rows
     });
   } catch (error) {
     console.error('❌ Get all bookings admin error:', error);

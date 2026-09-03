@@ -15,7 +15,7 @@ const User = require('../models/User');
 const ZenotiSyncRun = require('../models/ZenotiSyncRun');
 const zenoti = require('./zenotiService');
 const { provisionUserFromGuest } = require('./zenotiSyncService');
-const { CENTERS, branchNameForCenter } = require('../config/zenoti');
+const { CENTERS, branchNameForCenter, publicEmail, isPlaceholderEmail } = require('../config/zenoti');
 const Doctor = require('../models/Doctor');
 const ZenotiPractitioner = require('../models/ZenotiPractitioner');
 const { buildDoctorMatcher, canonicalName, tierTitle } = require('../utils/dermatologistMatch');
@@ -142,8 +142,15 @@ async function uniqueZenotiReference(appointmentId) {
 async function upsertAppointment(appointment, { user = null, context = null } = {}) {
   if (!appointment?.id) return { outcome: 'skipped', reason: 'missing appointment id' };
   const guest = appointment.guest;
-  const owner = user || (guest ? await provisionUserFromGuest(guest, { quiet: true }) : null);
+  let owner = user || (guest ? await provisionUserFromGuest(guest, { quiet: true }) : null);
   if (!owner) return { outcome: 'skipped', reason: 'missing guest' };
+  // The guest-history crawl used to hand over a projection without name/phone/
+  // email, so every mirrored visit was saved as "Zennara Guest" with a blank
+  // number — and re-saved that way on every pass. Load the identity once.
+  if (!owner.fullName || owner.phone === undefined || owner.email === undefined) {
+    const full = await User.findById(owner._id).select('fullName phone email zenotiCenterId').lean();
+    if (full) owner = { ...(typeof owner.toObject === 'function' ? owner.toObject() : owner), ...full };
+  }
 
   const ctx = context || await lookupContext();
   const branchName = appointment.branchName || branchNameForCenter(appointment.centerId || owner.zenotiCenterId);
@@ -187,12 +194,22 @@ async function upsertAppointment(appointment, { user = null, context = null } = 
     });
   }
 
-  const status = localStatus(appointment);
+  let status = localStatus(appointment);
+  // A visit checked in on a past clinic day but never closed in Zenoti is a
+  // finished visit, not something "in progress" today — the app's Upcoming
+  // list and the panel's day book must not keep showing it as live.
+  if (status === 'In Progress' && parts.day < clinicDay()) status = 'Completed';
   booking.userId = owner._id;
   if (consultation) booking.consultationId = consultation._id;
-  booking.fullName = owner.fullName || guest?.fullName || 'Zennara Guest';
-  booking.mobileNumber = owner.phone || guest?.phone || '';
-  booking.email = owner.email || guest?.email || '';
+  const ownerName = owner.fullName || guest?.fullName || null;
+  if (ownerName) booking.fullName = ownerName;
+  else if (!booking.fullName) booking.fullName = 'Zennara Guest';
+  const ownerPhone = owner.phone || guest?.phone || null;
+  if (ownerPhone) booking.mobileNumber = ownerPhone;
+  else if (booking.mobileNumber === undefined) booking.mobileNumber = '';
+  const ownerEmail = publicEmail(owner.email) || publicEmail(guest?.email) || null;
+  if (ownerEmail) booking.email = ownerEmail;
+  else if (!booking.email || isPlaceholderEmail(booking.email)) booking.email = '';
   booking.branchId = branch?._id || null;
   booking.preferredLocation = branch?.name || branchName;
   booking.preferredDate = parts.date;

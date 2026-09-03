@@ -1,4 +1,5 @@
 const User = require('../models/User');
+const { publicEmail } = require('../config/zenoti');
 const { clinicDateKey, clinicDayStart } = require('../utils/bookingTime');
 const { buildUserFilter } = require('../utils/listFilters');
 const DeletedAccountArchive = require('../models/DeletedAccountArchive');
@@ -49,7 +50,7 @@ exports.getAllUsers = async (req, res) => {
       patientId: user.patientId || `PAT${String(user._id).slice(-6).toUpperCase()}`, // Use new patientId or fallback
       name: user.fullName,
       fullName: user.fullName,
-      email: user.email,
+      email: publicEmail(user.email),
       phone: user.phone,
       location: user.location,
       memberType: user.memberType,
@@ -128,7 +129,7 @@ exports.getUserById = async (req, res) => {
       patientId: user.patientId || `PAT${String(user._id).slice(-6).toUpperCase()}`,
       name: user.fullName,
       fullName: user.fullName,
-      email: user.email,
+      email: publicEmail(user.email),
       phone: user.phone,
       location: user.location,
       memberType: user.memberType,
@@ -261,7 +262,7 @@ exports.updateUser = async (req, res) => {
         _id: user._id,
         name: user.fullName,
         fullName: user.fullName,
-        email: user.email,
+        email: publicEmail(user.email),
         phone: user.phone,
         location: user.location,
         memberType: user.memberType,
@@ -445,7 +446,7 @@ exports.createUser = async (req, res) => {
       patientId: user.patientId,
       name: user.fullName,
       fullName: user.fullName,
-      email: user.email,
+      email: publicEmail(user.email),
       phone: user.phone,
       location: user.location,
       memberType: user.memberType,
@@ -733,7 +734,7 @@ exports.exportUsers = async (req, res) => {
     const formattedData = users.map(user => ({
       'Patient ID': user.patientId || `PAT${String(user._id).slice(-6).toUpperCase()}`,
       'Full Name': user.fullName,
-      'Email': /@guest\.zennara\.in$/i.test(user.email || '') ? '' : user.email,
+      'Email': publicEmail(user.email) || '',
       'Phone': user.phone,
       'Centre': user.location || '',
       'Source': user.source === 'zenoti' ? 'Clinic (Zenoti)' : 'App',

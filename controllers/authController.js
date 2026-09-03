@@ -11,13 +11,16 @@ const { sendOTPEmail, sendWelcomeEmail, sendDataExportEmail } = require('../util
 const { uploadToCloudinary, deleteFromCloudinary } = require('../middleware/upload');
 const whatsappService = require('../services/whatsappService');
 const zenotiSync = require('../services/zenotiSyncService');
+const { publicEmail } = require('../config/zenoti');
 const logger = require('../utils/logger');
 const { filterFields, validateOwnership } = require('../middleware/securityMiddleware');
 const accountDeletion = require('../services/accountDeletionService');
 
 const serializeUser = (user) => ({
   id: user._id,
-  email: user.email,
+  // A clinic guest with no email in Zenoti carries an internal placeholder;
+  // the app must see "no email", never that key.
+  email: publicEmail(user.email),
   fullName: user.fullName,
   phone: user.phone,
   location: user.location,
@@ -461,7 +464,7 @@ exports.login = async (req, res) => {
         success: true,
         message: 'Demo account - Use OTP: 9876',
         data: {
-          email: user.email,
+          email: publicEmail(user.email),
           phone: user.phone ? `******${user.phone.slice(-4)}` : null,
           expiresIn: '5 minutes',
           isDemoAccount: true
@@ -649,7 +652,12 @@ exports.verifyOTP = async (req, res) => {
     // background so profile changes made at the clinic show up after login.
     // Never block the login response on it.
     if (user.zenotiGuestId) {
-      zenotiSync.syncLinkedUser(user).catch(() => {});
+      // Profile + Zen membership first (two calls, fast), then the full
+      // history mirror when it is stale so appointments, packages and
+      // purchases made at the clinic are on screen by the time the app loads.
+      zenotiSync.syncLinkedUser(user)
+        .catch(() => {})
+        .finally(() => require('../services/zenotiImportService').refreshOnLogin(user));
     }
 
     res.status(200).json({
@@ -745,7 +753,7 @@ exports.resendOTP = async (req, res) => {
         success: true,
         message: 'OTP resent successfully to your email and WhatsApp',
         data: {
-          email: user.email,
+          email: publicEmail(user.email),
           phone: user.phone ? `******${user.phone.slice(-4)}` : null,
           expiresIn: '5 minutes'
         }
@@ -1405,7 +1413,7 @@ const buildUserExport = async (userId) => {
       personalInformation: {
         patientId: user.patientId,
         fullName: user.fullName,
-        email: user.email,
+        email: publicEmail(user.email),
         phone: user.phone,
         dateOfBirth: user.dateOfBirth,
         gender: user.gender,

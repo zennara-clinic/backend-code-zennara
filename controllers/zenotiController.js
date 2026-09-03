@@ -9,6 +9,7 @@
 const User = require('../models/User');
 const Booking = require('../models/Booking');
 const ProductOrder = require('../models/ProductOrder');
+const ZenotiGuestData = require('../models/ZenotiGuestData');
 const zenoti = require('../services/zenotiService');
 const zenotiSync = require('../services/zenotiSyncService');
 const zenotiWrite = require('../services/zenotiWriteService');
@@ -132,15 +133,19 @@ exports.getOverview = async (req, res) => {
     const centerId = linked.centerId || profile?.centerId || null;
 
     // The rest in parallel; tolerate individual failures so one missing section
-    // doesn't blank the whole screen.
+    // doesn't blank the whole screen — a section Zenoti cannot serve right now
+    // falls back to the local mirror instead of showing as empty.
+    const mirror = await ZenotiGuestData.findOne({ userId: req.user._id })
+      .select('profile appointments orders memberships packages syncedAt').lean().catch(() => null);
+    const withFallback = (key, promise) => promise.catch(() => mirror?.[key] || []);
     const [appointments, orders, memberships, packages] = await Promise.all([
-      zenoti.getGuestAppointments(guestId).catch(() => []),
-      zenoti.getGuestProducts(guestId).catch(() => []),
-      zenoti.getGuestMemberships(guestId, centerId).catch(() => []),
-      zenoti.getGuestPackages(guestId).catch(() => []),
+      withFallback('appointments', zenoti.getGuestAppointments(guestId)),
+      withFallback('orders', zenoti.getGuestProducts(guestId)),
+      withFallback('memberships', zenoti.getGuestMemberships(guestId, centerId)),
+      withFallback('packages', zenoti.getGuestPackages(guestId)),
     ]);
 
-    const safeProfile = profile ? (({ _raw, ...rest }) => rest)(profile) : null;
+    const safeProfile = profile ? (({ _raw, ...rest }) => rest)(profile) : (mirror?.profile || null);
     res.status(200).json({
       success: true,
       data: { profile: safeProfile, appointments, orders, memberships, packages },

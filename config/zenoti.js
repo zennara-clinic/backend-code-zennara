@@ -134,8 +134,31 @@ function normalizeIndianMobile(raw) {
   return null;
 }
 
+/**
+ * Guests with no email on file in Zenoti get a deterministic placeholder so the
+ * unique email index still works. It is an internal key, never an address a
+ * person uses — every API response must hide it and every "do we have an
+ * email?" check must treat it as empty.
+ */
+const PLACEHOLDER_EMAIL_DOMAIN = '@guest.zennara.in';
+function placeholderEmail(guestId) {
+  return `zenoti_${guestId}${PLACEHOLDER_EMAIL_DOMAIN}`.toLowerCase();
+}
+function isPlaceholderEmail(email) {
+  const value = String(email || '').toLowerCase();
+  return value.endsWith(PLACEHOLDER_EMAIL_DOMAIN) || value.endsWith('@zennara.local');
+}
+/** The email to show/send to: null when the account only holds a placeholder. */
+function publicEmail(email) {
+  return email && !isPlaceholderEmail(email) ? email : null;
+}
+
 module.exports = {
   ZENOTI_API_BASE,
+  PLACEHOLDER_EMAIL_DOMAIN,
+  placeholderEmail,
+  isPlaceholderEmail,
+  publicEmail,
   RATE_LIMIT_PER_MINUTE,
   CENTERS,
   DEFAULT_BRANCH_NAME,

@@ -256,12 +256,19 @@ exports.getUserOrders = async (req, res) => {
       ordersQuery = ordersQuery.limit(parseInt(limit));
     }
     
-    const orders = await ordersQuery;
-    
+    const [orders, clinic] = await Promise.all([
+      ordersQuery,
+      // Retail purchases made at the clinic counter (Zenoti invoices), so the
+      // Orders screen holds the customer's complete product history.
+      require('../services/zenotiImportService').customerClinicData(req.user._id, ['orders']).catch(() => null),
+    ]);
+
     res.json({
       success: true,
       data: orders,
-      count: orders.length
+      count: orders.length,
+      clinicPurchases: clinic?.orders || [],
+      clinicSyncedAt: clinic?.syncedAt || null,
     });
   } catch (error) {
     console.error('Get user orders error:', error);

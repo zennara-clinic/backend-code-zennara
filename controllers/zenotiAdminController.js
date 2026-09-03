@@ -231,7 +231,11 @@ async function listUnwound(field, { match = {}, sort, page, limit, branchName, s
   pipeline.push({
     $lookup: {
       from: 'users', localField: 'userId', foreignField: '_id', as: 'user',
-      pipeline: [{ $project: { patientId: 1, fullName: 1, email: 1, phone: 1, location: 1, memberType: 1, source: 1 } }],
+      pipeline: [{ $project: {
+        patientId: 1, fullName: 1, phone: 1, location: 1, memberType: 1, source: 1,
+        // Placeholder addresses are internal keys, not something staff should see.
+        email: { $cond: [{ $regexMatch: { input: { $ifNull: ['$email', ''] }, regex: /@guest\.zennara\.in$|@zennara\.local$/i } }, null, '$email'] },
+      } }],
     },
   });
   pipeline.push({ $unwind: '$user' });
