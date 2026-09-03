@@ -561,20 +561,59 @@ async function cachedPaged(key, fetchPage) {
   return all;
 }
 
-/** All bookable services for a centre → [{ id, code, name }]. */
+/** All services for a centre → [{ id, code, name, canBook, price, categoryName }]. */
 async function getCenterServices(centerId) {
   if (!centerId) return [];
   return cachedPaged(`services:${centerId}`, async (page) => {
     const json = await request(`/v1/centers/${centerId}/services`, {
-      query: { page, size: 100 },
+      query: { page, size: 100, expand: 'catalog_info' },
     });
     const list = json?.services || json?.Services || [];
     return list.map((s) => ({
-      id: pick(s, 'id', 'Id'),
+      id: String(pick(s, 'id', 'Id') || '').toLowerCase(),
       code: pick(s, 'code', 'Code'),
       name: pick(s, 'name', 'Name'),
+      canBook: s.catalog_info ? Boolean(s.catalog_info.can_book) : null,
+      price: s.price_info?.sale_price ?? s.price?.sales ?? null,
+      durationMinutes: s.duration ?? null,
+      categoryName: pick(s.category || {}, 'name') || null,
     }));
   });
+}
+
+/** Series/day packages sold at a centre → [{ id, code, name, type, active }]. */
+async function getCenterPackages(centerId) {
+  if (!centerId) return [];
+  return cachedPaged(`packages:${centerId}`, async (page) => {
+    const json = await request(`/v1/centers/${centerId}/packages`, { query: { page, size: 100 } });
+    const list = json?.packages || json?.Packages || [];
+    return list.map((p) => ({
+      id: String(pick(p, 'id', 'Id') || '').toLowerCase(),
+      code: pick(p, 'code', 'Code'),
+      name: pick(p, 'name', 'Name'),
+      type: p.type ?? null,
+      active: p.active !== false,
+    }));
+  });
+}
+
+/**
+ * Shift status per employee for a centre/date range. Zenoti: -1 NotScheduled,
+ * 0 Working (verified live). Used only for the readiness report.
+ */
+async function getCenterEmployeeSchedules(centerId, { from, to } = {}) {
+  if (!centerId) return [];
+  const json = await request(`/v1/centers/${centerId}/employee_schedules`, {
+    query: { start_date: from || isoDaysFromNow(0), end_date: to || isoDaysFromNow(6) },
+  });
+  const rows = json?.employee_schedules || json?.schedules || [];
+  return rows.map((row) => ({
+    employeeId: String(row.employee_id || '').toLowerCase(),
+    name: row.employee_name || null,
+    shifts: (row.schedules || []).flatMap((day) => (day.shifts || []).map((shift) => ({
+      date: day.date, start: shift.start_time, end: shift.end_time, status: shift.status,
+    }))),
+  }));
 }
 
 /** All retail products for a centre → [{ id, code, name }]. */
@@ -809,6 +848,8 @@ module.exports = {
   request,
   getCenters,
   getCenterServices,
+  getCenterPackages,
+  getCenterEmployeeSchedules,
   getCenterProducts,
   findGuestByPhone,
   findGuestByEmail,

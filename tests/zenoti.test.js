@@ -168,13 +168,13 @@ test('a Zenoti appointment counts as attended on check-in, start or close', () =
   assert.equal(appointmentAttended({ status: -2, progress: 0 }), false);
 });
 
-test('lifecycle and existing-record write-back are off unless explicitly enabled', () => {
+test('desk write-back is on by default and can be paused; editing existing Zenoti records stays off unless enabled', () => {
   const prev = { l: process.env.ZENOTI_LIFECYCLE_WRITEBACK, e: process.env.ZENOTI_EDIT_EXISTING_WRITEBACK };
   delete process.env.ZENOTI_LIFECYCLE_WRITEBACK; delete process.env.ZENOTI_EDIT_EXISTING_WRITEBACK;
-  assert.equal(zenotiWrite.lifecycleWritebackEnabled(), false);
-  assert.equal(zenotiWrite.existingRecordWritebackEnabled(), false);
-  process.env.ZENOTI_LIFECYCLE_WRITEBACK = 'true';
   assert.equal(zenotiWrite.lifecycleWritebackEnabled(), true);
+  assert.equal(zenotiWrite.existingRecordWritebackEnabled(), false);
+  process.env.ZENOTI_LIFECYCLE_WRITEBACK = 'false';
+  assert.equal(zenotiWrite.lifecycleWritebackEnabled(), false);
   if (prev.l === undefined) delete process.env.ZENOTI_LIFECYCLE_WRITEBACK; else process.env.ZENOTI_LIFECYCLE_WRITEBACK = prev.l;
   if (prev.e === undefined) delete process.env.ZENOTI_EDIT_EXISTING_WRITEBACK; else process.env.ZENOTI_EDIT_EXISTING_WRITEBACK = prev.e;
 });
@@ -198,4 +198,11 @@ test('Branch virtuals tolerate the partial projection used when populating booki
   const partial = new Branch({ name: 'Jubilee Hills' });
   assert.doesNotThrow(() => partial.toObject({ virtuals: true }));
   assert.equal(partial.formattedPhone, '');
+});
+
+test('service resolution ignores tier words but package resolution never guesses', () => {
+  const { looseKey } = zenotiWrite;
+  assert.equal(looseKey('Senior Dermatologist Consultation'), 'consultation');
+  assert.equal(looseKey('Dr. Rickson Consultations'), 'rickson consultations');
+  assert.notEqual(looseKey('Glow Before the Vow'), looseKey('3 Facials'));
 });

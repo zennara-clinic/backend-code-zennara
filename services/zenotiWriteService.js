@@ -117,23 +117,71 @@ function parseJsonEnv(name) {
 }
 
 const norm = (s) => String(s || '').trim().toLowerCase();
+/** Loose name key: case, punctuation, spacing and tier words ignored. */
+const looseKey = (s) => norm(s)
+  .replace(/\b(senior|junior|dermatologist|dr\.?|doctor|treatment|session|the)\b/g, ' ')
+  .replace(/[^a-z0-9]+/g, ' ')
+  .trim();
 
 /**
  * Resolve one of our consultations to a Zenoti service id for a centre.
- * Order: explicit override map (by consultation id/slug/name) → code → name.
+ * Order: the mapping chosen in the panel (zenotiServiceId) → env override map
+ * → code → exact name → loose name → for a consultation-type entry, Zenoti's
+ * generic "Consultation". Bookable (catalog) services are preferred.
  */
 async function resolveServiceId(centerId, consultation) {
   if (!consultation) return null;
+  if (consultation.zenotiServiceId) return String(consultation.zenotiServiceId).toLowerCase();
   const overrides = parseJsonEnv('ZENOTI_SERVICE_MAP');
   const keys = [consultation._id?.toString(), consultation.slug, consultation.name].filter(Boolean);
   for (const k of keys) if (overrides[k]) return overrides[k];
 
   const services = await zenoti.getCenterServices(centerId).catch(() => []);
   if (!services.length) return null;
-  const byCode = consultation.code && services.find((s) => norm(s.code) === norm(consultation.code));
+  const preferBookable = (list) => list.find((s) => s.canBook !== false) || list[0] || null;
+  const byCode = consultation.code && services.filter((s) => norm(s.code) === norm(consultation.code));
+  if (byCode && byCode.length) return preferBookable(byCode).id;
+  const exact = services.filter((s) => norm(s.name) === norm(consultation.name));
+  if (exact.length) return preferBookable(exact).id;
+  const loose = services.filter((s) => looseKey(s.name) && looseKey(s.name) === looseKey(consultation.name));
+  if (loose.length) return preferBookable(loose).id;
+  const isConsultation = /^consultations?$/i.test(String(consultation.category || '').trim()) || /consultation/i.test(consultation.name || '');
+  if (isConsultation) {
+    const generic = services.filter((s) => norm(s.name) === 'consultation' || norm(s.code) === 'consultation');
+    if (generic.length) return preferBookable(generic).id;
+  }
+  return null;
+}
+
+/** Resolve a local Package (or assignment snapshot) to a Zenoti package id. */
+async function resolvePackageId(centerId, pkg) {
+  if (!pkg) return null;
+  if (pkg.zenotiPackageId) return String(pkg.zenotiPackageId).toLowerCase();
+  const overrides = parseJsonEnv('ZENOTI_PACKAGE_MAP');
+  const keys = [pkg._id?.toString(), pkg.id, pkg.name].filter(Boolean);
+  for (const k of keys) if (overrides[k]) return overrides[k];
+  const packages = await zenoti.getCenterPackages(centerId).catch(() => []);
+  const active = packages.filter((p) => p.active);
+  const byCode = pkg.code && active.find((p) => norm(p.code) === norm(pkg.code));
   if (byCode) return byCode.id;
-  const byName = services.find((s) => norm(s.name) === norm(consultation.name));
-  return byName ? byName.id : null;
+  // Exact name only: a loose guess could sell the guest the wrong package.
+  const exact = active.find((p) => norm(p.name) === norm(pkg.name));
+  return exact ? exact.id : null;
+}
+
+/** The Zenoti employee to book/update with for a booking's dermatologist, if linked. */
+async function resolveTherapistId(booking) {
+  if (booking.zenotiTherapistId) return booking.zenotiTherapistId;
+  if (!booking.specialistId) return null;
+  const ZenotiPractitioner = require('../models/ZenotiPractitioner');
+  const row = await ZenotiPractitioner.findOne({ onboardedDoctorId: String(booking.specialistId).toLowerCase(), active: true }).select('zenotiEmployeeId').lean();
+  return row?.zenotiEmployeeId || null;
+}
+
+/** Who Zenoti records as the updater: env, else the visit's own provider. */
+async function resolveUpdatedById(booking) {
+  if (process.env.ZENOTI_UPDATED_BY_ID) return process.env.ZENOTI_UPDATED_BY_ID;
+  return resolveTherapistId(booking);
 }
 
 /** Resolve one of our products to a Zenoti product id for a centre. */
@@ -403,26 +451,26 @@ async function syncPackageAssignment(assignmentId) {
   try {
     const user = await User.findById(assignment.userId);
     const guestId = await ensureGuest(user);
-    const packageMap = parseJsonEnv('ZENOTI_PACKAGE_MAP');
-    const packageId = packageMap[String(assignment.packageId)] || packageMap[assignment.packageDetails?.packageName] || null;
-    const payload = {
-      guest_id: guestId,
-      center_id: user?.zenotiCenterId || clinicCenterIdForBranch(assignment.preferredLocation || user?.location),
-      notes: `Zennara package ${assignment.assignmentId}`,
-      package_details: packageId ? [{ id: packageId }] : [],
-    };
+    const Package = require('../models/Package');
+    const centerId = clinicCenterIdForBranch(assignment.preferredLocation || user?.location);
+    const localPackage = assignment.packageId ? await Package.findById(assignment.packageId).lean().catch(() => null) : null;
+    const packageId = await resolvePackageId(centerId, localPackage || { name: assignment.packageDetails?.packageName });
+    // Documented: POST /Catalog/SeriesPackages/CreateInvoice?CenterId&userId&packageIds
+    const payload = { CenterId: centerId, userId: guestId, packageIds: packageId };
     assignment.zenotiPackageId = packageId;
     if (!guestId || !packageId) {
       assignment.zenotiSyncStatus = isLive() ? 'skipped' : 'dryrun';
-      assignment.zenotiSyncError = `unresolved: ${!guestId ? 'guestId' : 'ZENOTI_PACKAGE_MAP'}`;
+      assignment.zenotiSyncError = !guestId
+        ? 'unresolved: guest is not in Zenoti yet'
+        : `No Zenoti package is mapped to "${assignment.packageDetails?.packageName || 'this package'}" — choose one on the package in the panel.`;
     } else if (!isLive()) {
       assignment.zenotiSyncStatus = 'dryrun';
       assignment.zenotiSyncError = null;
       logWrite('createPackageInvoice', payload, { assignmentId: assignment._id });
     } else {
-      const result = await liveWrite('createPackageInvoice', () => zenoti.request('/v1/invoices/packages', { method: 'POST', body: payload }));
-      assignment.zenotiInvoiceId = result?.invoice_id || result?.id || result?.invoice?.id || result?.Invoice?.Id || null;
-      if (!assignment.zenotiInvoiceId) throw new Error('Zenoti package invoice returned no id.');
+      const result = await liveWrite('createPackageInvoice', () => zenoti.request('/Catalog/SeriesPackages/CreateInvoice', { method: 'POST', query: payload, body: {} }));
+      assignment.zenotiInvoiceId = result?.Invoice?.Id || result?.invoice?.id || result?.invoice_id || result?.id || null;
+      if (!assignment.zenotiInvoiceId) throw new Error(result?.Error?.Message || 'Zenoti package invoice returned no id.');
       assignment.zenotiSyncStatus = 'synced';
       assignment.zenotiSyncError = null;
       assignment.zenotiSyncedAt = new Date();
@@ -462,6 +510,7 @@ async function syncBooking(bookingId) {
       ? await Consultation.findById(booking.consultationId).lean()
       : null;
     const serviceId = await resolveServiceId(centerId, consultation);
+    const therapistId = await resolveTherapistId(booking);
 
     // Prefer the confirmed date/time, else the requested one.
     const date = clinicDay(booking.confirmedDate || booking.preferredDate || new Date());
@@ -473,10 +522,11 @@ async function syncBooking(bookingId) {
       guests: [
         {
           id: guestId,
-          items: [{ item: { id: serviceId } }],
+          // Booking therapist gender enum: 0 any, 3 = this specific employee.
+          items: [{ item: { id: serviceId }, ...(therapistId ? { therapist: { id: therapistId, gender: 3 } } : {}) }],
         },
       ],
-      notes: `Zennara app booking ${booking.referenceNumber || booking._id}`,
+      notes: `Zennara ${booking.source === 'reception' ? 'reception' : 'app'} booking ${booking.referenceNumber || booking._id}`,
     };
 
     // Can't proceed without a guest + service mapping.
@@ -485,7 +535,9 @@ async function syncBooking(bookingId) {
     if (!serviceId) missing.push('serviceId');
     if (missing.length) {
       booking.zenotiSyncStatus = isLive() ? 'skipped' : 'dryrun';
-      booking.zenotiSyncError = `unresolved: ${missing.join(', ')}`;
+      booking.zenotiSyncError = missing.includes('serviceId')
+        ? `No Zenoti service is mapped to "${consultation?.name || 'this service'}" — choose one on the service in the panel.`
+        : 'Guest is not in Zenoti yet.';
       await booking.save({ validateModifiedOnly: true }).catch(() => {});
       logWrite('bookAppointment(skipped)', payload, { bookingId: booking._id, missing });
       return;
@@ -511,9 +563,9 @@ async function syncBooking(bookingId) {
       ? slotValue(slots.find((slot) => String(slotValue(slot) || '').includes(`T${wantedTime}`)))
       : slotValue(slots[0]);
     if (!slotTime) {
-      throw new Error(wantedTime
-        ? `Requested Zenoti slot ${wantedTime} is unavailable on ${date}`
-        : `Zenoti returned no available slot on ${date}`);
+      throw new Error(slots.length
+        ? `Zenoti has no free slot at ${wantedTime || 'the requested time'} on ${date} (${slots.filter((x) => x.Available ?? x.available).length} other slots free).`
+        : `Zenoti offers no slots on ${date}: staff shifts are not published in Zenoti (NotScheduled). Publish schedules in Zenoti, then push again.`);
     }
 
     await liveWrite('reserveSlot', () => zenoti.request(`/v1/bookings/${zBookingId}/slots/reserve`, {
@@ -630,7 +682,8 @@ async function rescheduleLinkedBooking(booking, user) {
  * Zenoti. See Technical Documentation/ZENOTI-NO-SHOW-INCIDENT-2026-09-03.md.
  */
 function lifecycleWritebackEnabled() {
-  return String(process.env.ZENOTI_LIFECYCLE_WRITEBACK || 'false').toLowerCase() === 'true';
+  // On by default (desk attendance must reach Zenoti); set to false to pause.
+  return String(process.env.ZENOTI_LIFECYCLE_WRITEBACK || 'true').toLowerCase() !== 'false';
 }
 /**
  * Editing an EXISTING Zenoti record (guest profile, an existing note) is a
@@ -654,11 +707,21 @@ async function syncBookingState(bookingId, { staffAction = false } = {}) {
     logger.info('Zenoti lifecycle write-back refused: Zenoti-owned appointment changed by an automated path', { bookingId, status: booking.status });
     return;
   }
+  // Policy for appointments the CLINIC booked in Zenoti: the desk may record
+  // attendance here (check-in, completion) and that is written to Zenoti;
+  // cancelling, moving, confirming or no-showing them is done in Zenoti only.
+  if (booking.source === 'zenoti' && !['In Progress', 'Completed'].includes(booking.status)) {
+    booking.zenotiSyncStatus = 'skipped';
+    booking.zenotiSyncError = `Not written: a Zenoti-booked appointment is ${booking.status.toLowerCase()} in Zenoti itself, never from here.`;
+    booking.$locals.skipZenotiWrite = true;
+    await booking.save({ validateModifiedOnly: true }).catch(() => {});
+    return;
+  }
 
   try {
     await hydrateAppointmentIds(booking);
     const user = await User.findById(booking.userId).select('zenotiGuestId');
-    const updatedById = process.env.ZENOTI_UPDATED_BY_ID;
+    const updatedById = await resolveUpdatedById(booking);
     const invoiceId = booking.zenotiInvoiceId || booking.zenotiAppointmentId;
     const groupId = booking.zenotiAppointmentGroupId;
     const action = `bookingState:${booking.status}`;
@@ -690,7 +753,7 @@ async function syncBookingState(bookingId, { staffAction = false } = {}) {
       }
       booking.zenotiSyncStatus = 'synced';
     } else if (booking.status === 'Completed') {
-      if (!updatedById) throw new Error('ZENOTI_UPDATED_BY_ID is required to complete appointments in Zenoti.');
+      if (!updatedById) throw new Error('Zenoti needs an updater employee to complete a service: set ZENOTI_UPDATED_BY_ID or link the dermatologist to Zenoti.');
       await liveWrite('progressComplete', () => zenoti.request(`/v1/appointments/${booking.zenotiAppointmentId}/progress`, {
         method: 'PUT', body: { updated_by_id: updatedById, progress: 2, ...(booking.zenotiAppointmentSegmentId ? { appointment_segment_id: booking.zenotiAppointmentSegmentId } : {}) },
       }));
@@ -818,4 +881,7 @@ module.exports = {
   syncOrder,
   resolveServiceId,
   resolveProductId,
+  resolvePackageId,
+  resolveTherapistId,
+  looseKey,
 };

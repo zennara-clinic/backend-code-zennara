@@ -48,7 +48,7 @@ ZENOTI_APPLICATION_ID=...   # reserved for future OAuth token flows
 ZENOTI_SECRET=...           # reserved for future OAuth token flows
 # write-back:
 ZENOTI_WRITE_MODE=dryrun     # off | dryrun | live  (default dryrun) — creating NEW Zenoti records only
-ZENOTI_LIFECYCLE_WRITEBACK=false      # confirm/check-in/complete/cancel/no-show of OUR bookings → Zenoti (default off; never for Zenoti-booked rows)
+ZENOTI_LIFECYCLE_WRITEBACK=true       # desk actions → Zenoti: full lifecycle for OUR bookings; check-in/complete only for Zenoti-booked ones (default on; false pauses)
 ZENOTI_EDIT_EXISTING_WRITEBACK=false  # PUT an existing Zenoti guest profile / note from Zennara (default off)
 ZENOTI_WRITE_LIMIT_15MIN=15           # safety breaker: more live writes than this in 15 min pauses ALL Zenoti writes
 ZENOTI_WRITE_LIMIT_HOUR=40            # …or than this in an hour (reset: POST /api/admin/zenoti/write-breaker/reset)

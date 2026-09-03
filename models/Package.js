@@ -78,7 +78,9 @@ const packageSchema = new mongoose.Schema({
   bookingsCount: {
     type: Number,
     default: 0
-  }
+  },
+  /** The Zenoti series package sold when this package is assigned (chosen in the panel). */
+  zenotiPackageId: { type: String, default: null, trim: true, lowercase: true }
 }, {
   timestamps: true
 });

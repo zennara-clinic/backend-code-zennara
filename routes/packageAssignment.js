@@ -67,6 +67,7 @@ router.post('/:id/cancel/verify-otp', protectAdmin, MANAGE, packageAssignmentCon
 
 // Update assignment
 router.put('/:id', protectAdmin, MANAGE, packageAssignmentController.updateAssignment);
+router.post('/:id/zenoti-push', protectAdmin, MANAGE, packageAssignmentController.pushToZenoti);
 
 // Delete assignment
 router.delete('/:id', protectAdmin, MANAGE, packageAssignmentController.deleteAssignment);

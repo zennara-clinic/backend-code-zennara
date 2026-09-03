@@ -93,6 +93,91 @@ exports.syncAppointments = async (_req, res) => {
   return res.status(202).json({ success: true, message: 'Refreshing all clinic appointment books now.' });
 };
 
+// GET /api/admin/zenoti/catalog/services?branchId|branch — for the service mapping picker
+exports.listCatalogServices = async (req, res) => {
+  try {
+    const { clinicCenterIdForBranch } = require('../config/zenoti');
+    const zenoti = require('../services/zenotiService');
+    const branchName = await branchNameFrom(req.query);
+    const centerId = clinicCenterIdForBranch(branchName);
+    const rows = await zenoti.getCenterServices(centerId);
+    res.json({ success: true, data: rows.sort((a, b) => String(a.name).localeCompare(String(b.name))) });
+  } catch (error) {
+    res.status(502).json({ success: false, message: error.message });
+  }
+};
+
+// GET /api/admin/zenoti/catalog/packages?branchId|branch — for the package mapping picker
+exports.listCatalogPackages = async (req, res) => {
+  try {
+    const { clinicCenterIdForBranch } = require('../config/zenoti');
+    const zenoti = require('../services/zenotiService');
+    const branchName = await branchNameFrom(req.query);
+    const centerId = clinicCenterIdForBranch(branchName);
+    const rows = (await zenoti.getCenterPackages(centerId)).filter((p) => p.active);
+    res.json({ success: true, data: rows.sort((a, b) => String(a.name).localeCompare(String(b.name))) });
+  } catch (error) {
+    res.status(502).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * GET /api/admin/zenoti/readiness — can what is created here actually reach
+ * Zenoti? One honest checklist instead of silent 'skipped' rows.
+ */
+let readinessCache = { at: 0, data: null };
+exports.getReadiness = async (_req, res) => {
+  try {
+    if (readinessCache.data && Date.now() - readinessCache.at < 5 * 60 * 1000) return res.json({ success: true, data: readinessCache.data });
+    const zenoti = require('../services/zenotiService');
+    const zenotiWrite = require('../services/zenotiWriteService');
+    const { CENTERS } = require('../config/zenoti');
+    const Consultation = require('../models/Consultation');
+    const Package = require('../models/Package');
+    const clinics = Object.entries(CENTERS).filter(([, c]) => c.isClinic);
+    const [consultations, packages] = await Promise.all([
+      Consultation.find({ isActive: { $ne: false } }).select('name slug category zenotiServiceId').lean(),
+      Package.find({ isActive: { $ne: false } }).select('name zenotiPackageId').lean(),
+    ]);
+    const perClinic = await Promise.all(clinics.map(async ([centerId, c]) => {
+      const [schedules, services, catalogPackages] = await Promise.all([
+        zenoti.getCenterEmployeeSchedules(centerId).catch(() => null),
+        zenoti.getCenterServices(centerId).catch(() => []),
+        zenoti.getCenterPackages(centerId).catch(() => []),
+      ]);
+      const shifts = schedules ? schedules.flatMap((e) => e.shifts) : [];
+      const working = shifts.filter((sft) => Number(sft.status) === 0).length;
+      let resolvedServices = 0;
+      for (const item of consultations) if (await zenotiWrite.resolveServiceId(centerId, item)) resolvedServices += 1;
+      let resolvedPackages = 0;
+      for (const item of packages) if (await zenotiWrite.resolvePackageId(centerId, item)) resolvedPackages += 1;
+      return {
+        centerId, name: c.name,
+        schedulesPublished: schedules ? working > 0 : null,
+        shiftsWorking: working, shiftsTotal: shifts.length,
+        servicesInCatalogue: services.length, bookableServices: services.filter((x) => x.canBook).length,
+        servicesResolved: resolvedServices, servicesTotal: consultations.length,
+        packagesResolved: resolvedPackages, packagesTotal: packages.length, zenotiPackages: catalogPackages.length,
+      };
+    }));
+    const data = {
+      writeMode: zenotiWrite.mode(),
+      lifecycleWriteback: zenotiWrite.lifecycleWritebackEnabled(),
+      breaker: zenotiWrite.breakerStatus(),
+      updatedByConfigured: Boolean(process.env.ZENOTI_UPDATED_BY_ID),
+      referralSourceConfigured: Boolean(process.env.ZENOTI_REFERRAL_SOURCE_ID),
+      unmappedServices: consultations.filter((c) => !c.zenotiServiceId).map((c) => c.name),
+      unmappedPackages: packages.filter((p) => !p.zenotiPackageId).map((p) => p.name),
+      clinics: perClinic,
+      checkedAt: new Date(),
+    };
+    readinessCache = { at: Date.now(), data };
+    res.json({ success: true, data });
+  } catch (error) {
+    res.status(502).json({ success: false, message: error.message });
+  }
+};
+
 // POST /api/admin/zenoti/write-breaker/reset
 exports.resetWriteBreaker = async (req, res) => {
   require('../services/zenotiWriteService').resetBreaker();

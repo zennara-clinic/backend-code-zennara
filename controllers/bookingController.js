@@ -2452,3 +2452,23 @@ exports.refreshFromZenotiAdmin = async (req, res) => {
     res.status(error.status || 502).json({ success: false, message: error.message || 'Could not refresh from Zenoti.' });
   }
 };
+
+// @desc    Push this booking to Zenoti now: create the appointment if it has
+//          none, otherwise write its current desk state (a staff action).
+// @route   POST /api/bookings/admin/:id/zenoti-push
+// @access  Private (Admin)
+exports.pushToZenotiAdmin = async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id).select('zenotiAppointmentId zenotiInvoiceId source');
+    if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
+    if (booking.zenotiAppointmentId || booking.zenotiInvoiceId) await zenotiWrite.syncBookingState(booking._id, { staffAction: true });
+    else if (booking.source === 'zenoti') return res.status(400).json({ success: false, message: 'This appointment already lives in Zenoti.' });
+    else await zenotiWrite.syncBooking(booking._id);
+    const fresh = await Booking.findById(booking._id)
+      .populate('consultationId', 'name category price image').populate('userId', 'fullName email phone patientId').lean();
+    const ok = fresh.zenotiSyncStatus === 'synced';
+    res.status(200).json({ success: ok, message: ok ? 'Written to Zenoti.' : (fresh.zenotiSyncError || `Zenoti write ${fresh.zenotiSyncStatus || 'not performed'} (mode ${zenotiWrite.mode()}).`), data: fresh });
+  } catch (error) {
+    res.status(502).json({ success: false, message: error.message || 'Could not write to Zenoti.' });
+  }
+};

@@ -129,6 +129,8 @@ const consultationSchema = new mongoose.Schema({
     default: true,
     index: true
   },
+  /** The Zenoti service this treatment/consultation is booked as (chosen in the panel). */
+  zenotiServiceId: { type: String, default: null, trim: true, lowercase: true },
   showPriceInApp: {
     type: Boolean,
     default: false,

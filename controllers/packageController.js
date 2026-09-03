@@ -53,7 +53,8 @@ exports.createPackage = async (req, res) => {
       price,
       image,
       media,
-      customPrices  // Object mapping serviceId to custom price
+      customPrices,  // Object mapping serviceId to custom price
+      zenotiPackageId,
     } = req.body;
 
     // Validate required fields
@@ -88,7 +89,8 @@ exports.createPackage = async (req, res) => {
       image: image || '',
       media: media || [],
       isActive: req.body.isActive !== undefined ? !!req.body.isActive : true,
-      isPopular: req.body.isPopular !== undefined ? !!req.body.isPopular : false
+      isPopular: req.body.isPopular !== undefined ? !!req.body.isPopular : false,
+      zenotiPackageId: zenotiPackageId || null
     });
 
     res.status(201).json({
@@ -185,6 +187,7 @@ exports.updatePackage = async (req, res) => {
       media,
       isActive,
       isPopular,
+      zenotiPackageId,
       customPrices  // Object mapping serviceId to custom price
     } = req.body;
 
@@ -213,6 +216,7 @@ exports.updatePackage = async (req, res) => {
     if (media !== undefined) packageData.media = media;
     if (isActive !== undefined) packageData.isActive = isActive;
     if (isPopular !== undefined) packageData.isPopular = isPopular;
+    if (zenotiPackageId !== undefined) packageData.zenotiPackageId = zenotiPackageId || null;
 
     await packageData.save();
 

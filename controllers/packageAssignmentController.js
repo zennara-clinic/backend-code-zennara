@@ -1298,3 +1298,20 @@ exports.getUserServiceCards = async (req, res) => {
     });
   }
 };
+
+// @desc    Sell this assignment's package in Zenoti now (creates the package invoice)
+// @route   POST /api/package-assignments/:id/zenoti-push
+// @access  Private (Admin)
+exports.pushToZenoti = async (req, res) => {
+  try {
+    const zenotiWrite = require('../services/zenotiWriteService');
+    const assignment = await PackageAssignment.findById(req.params.id).select('_id');
+    if (!assignment) return res.status(404).json({ success: false, message: 'Assignment not found' });
+    await zenotiWrite.syncPackageAssignment(assignment._id);
+    const fresh = await PackageAssignment.findById(assignment._id).lean();
+    const ok = fresh.zenotiSyncStatus === 'synced';
+    res.status(200).json({ success: ok, message: ok ? 'Package sold in Zenoti.' : (fresh.zenotiSyncError || `Zenoti write ${fresh.zenotiSyncStatus || 'not performed'} (mode ${zenotiWrite.mode()}).`), data: fresh });
+  } catch (error) {
+    res.status(502).json({ success: false, message: error.message });
+  }
+};
