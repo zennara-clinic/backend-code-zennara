@@ -121,6 +121,14 @@ const productSchema = new mongoose.Schema({
     branchName: { type: String, default: '', trim: true },
     quantity: { type: Number, default: 0, min: 0 },
   }],
+  /** Zenoti's MRP (max_retail_price). Informational; `price` stays the app's selling price. */
+  mrp: { type: Number, default: null },
+  /** Pack size as Zenoti records it, e.g. "1 ML", "30 GM". */
+  packSize: { type: String, default: null, trim: true },
+  hsn: { type: String, default: null, trim: true },
+  productSubCategory: { type: String, default: null, trim: true },
+  /** Zenoti's split: retail (sold to guests) vs consumable (used in treatment). */
+  isRetail: { type: Boolean, default: null },
   /** Below this, the availability view reports "low stock" rather than "in stock". */
   lowStockThreshold: {
     type: Number,

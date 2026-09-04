@@ -89,7 +89,9 @@ const packageSchema = new mongoose.Schema({
    * can no longer be booked and the assignment is marked Expired nightly.
    * 12 = one year, 6 = six months.
    */
-  validityMonths: { type: Number, default: 12, min: 1, max: 60 }
+  validityMonths: { type: Number, default: 12, min: 1, max: 60 },
+  /** Zenoti's series terms (validity, schedule, freeze count, T&Cs), stored raw. */
+  zenotiSeriesTerms: { type: mongoose.Schema.Types.Mixed, default: null }
 }, {
   timestamps: true
 });

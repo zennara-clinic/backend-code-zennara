@@ -16,7 +16,9 @@
  *     hundreds of unpriced items in front of customers.
  *   · It never overwrites commercial fields (price, gstPercentage, image,
  *     description, isActive). Those are Zennara's, set in the panel. Only
- *     identity and quantity come from Zenoti.
+ *     identity and attributes (brand, category, MRP, pack size, HSN) come from
+ *     Zenoti. STOCK IS NOT IN THIS FEED (verified 2026-09-04) — see
+ *     zenotiService.getCenterProducts — so stock is never written from here.
  *   · Matching is by zenotiProductId, then by SKU/code, then by exact name.
  *     Anything else risks merging two different products.
  */
@@ -88,8 +90,13 @@ async function syncProducts({ trigger = 'manual' } = {}) {
         sku: row.code || null,
         brand: row.brand || null,
         productCategory: row.category || null,
+        productSubCategory: row.subCategory || null,
         productType: row.productType || null,
-        formulation: row.formulation || null,
+        formulation: row.packSize || null,
+        mrp: row.mrp ?? null,
+        packSize: row.packSize || null,
+        hsn: row.hsn || null,
+        isRetail: row.isRetail === true ? true : row.isConsumable === true ? false : null,
         isActive: truthy(row.isActive),
         branchStock: [],
         total: 0,
@@ -106,8 +113,10 @@ async function syncProducts({ trigger = 'manual' } = {}) {
       // stock for every account; treating "absent" as 0 would zero the app
       // store's stock for every matched product on the first run and show
       // every item as out of stock. Absent quantities leave stock untouched.
-      const qty = Number(row.quantity);
-      const hasQuantity = row.quantity !== null && row.quantity !== undefined && Number.isFinite(qty) && qty >= 0;
+      // Stock on hand is not in this feed (verified 2026-09-04); `quantity` is
+      // the pack size. Only an explicit stockOnHand number ever touches stock.
+      const qty = Number(row.stockOnHand);
+      const hasQuantity = row.stockOnHand !== null && row.stockOnHand !== undefined && Number.isFinite(qty) && qty >= 0;
       if (hasQuantity) {
         entry.branchStock.push({
           branchId: branch?._id || null,
@@ -156,7 +165,12 @@ async function syncProducts({ trigger = 'manual' } = {}) {
       if (entry.sku) product.sku = entry.sku;
       if (entry.brand) product.brand = entry.brand;
       if (entry.productCategory) product.productCategory = entry.productCategory;
+      if (entry.productSubCategory) product.productSubCategory = entry.productSubCategory;
       if (entry.productType) product.productType = entry.productType;
+      if (entry.mrp !== null) product.mrp = entry.mrp;
+      if (entry.packSize) product.packSize = entry.packSize;
+      if (entry.hsn) product.hsn = entry.hsn;
+      if (entry.isRetail !== null) product.isRetail = entry.isRetail;
       if (entry.hasQuantity) {
         product.branchStock = entry.branchStock;
         product.stock = entry.total;

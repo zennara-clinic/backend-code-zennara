@@ -569,13 +569,26 @@ async function getCenterServices(centerId) {
       query: { page, size: 100, expand: 'catalog_info' },
     });
     const list = json?.services || json?.Services || [];
+    // Field map verified against the live API on 2026-09-04. The service row
+    // carries NO category link; categories are a separate endpoint
+    // (/centers/{id}/categories?type=service) with no join key back, so
+    // categoryName is null from this feed.
     return list.map((s) => ({
       id: String(pick(s, 'id', 'Id') || '').toLowerCase(),
       code: pick(s, 'code', 'Code'),
       name: pick(s, 'name', 'Name'),
+      description: pick(s, 'description') || null,
       canBook: s.catalog_info ? Boolean(s.catalog_info.can_book) : null,
+      showInCatalog: s.catalog_info ? Boolean(s.catalog_info.show_in_catalog) : null,
+      showPrice: s.catalog_info ? Boolean(s.catalog_info.show_price) : null,
+      displayOrder: s.catalog_info?.display_order ?? null,
+      displayName: s.catalog_info?.display_name || null,
       price: s.price_info?.sale_price ?? s.price?.sales ?? null,
+      finalPrice: s.price_info?.final_price ?? null,
+      tax: s.price_info?.tax ?? null,
       durationMinutes: s.duration ?? null,
+      recoveryMinutes: s.recovery_time ?? null,
+      allowedGenders: pick(s, 'allowed_genders') || null,
       categoryName: pick(s.category || {}, 'name') || null,
     }));
   });
@@ -587,12 +600,24 @@ async function getCenterPackages(centerId) {
   return cachedPaged(`packages:${centerId}`, async (page) => {
     const json = await request(`/v1/centers/${centerId}/packages`, { query: { page, size: 100 } });
     const list = json?.packages || json?.Packages || [];
+    // Field map verified 2026-09-04. Line items (which services, how many
+    // sessions) are NOT on this list and the detail endpoints are refused for
+    // this key, so a mirrored package is a shell the panel completes.
     return list.map((p) => ({
       id: String(pick(p, 'id', 'Id') || '').toLowerCase(),
       code: pick(p, 'code', 'Code'),
       name: pick(p, 'name', 'Name'),
+      description: pick(p, 'description') || null,
       type: p.type ?? null,
       active: p.active !== false,
+      categoryId: pick(p, 'category_id') || null,
+      durationMinutes: p.time ?? null,
+      series: p.series_package ? {
+        validity: p.series_package.validity ?? null,
+        schedule: p.series_package.schedule ?? null,
+        freezeCount: p.series_package.freeze_count ?? null,
+        terms: p.series_package.terms_and_conditions ?? null,
+      } : null,
     }));
   });
 }
@@ -635,16 +660,36 @@ async function getCenterProducts(centerId) {
      * and left null when absent. `raw` is kept so a mapping gap can be
      * diagnosed from a stored document rather than by re-calling the API.
      */
+    /*
+     * Field map verified against the live API on 2026-09-04 (see
+     * Technical Documentation/ZENOTI-DATA-MAP-2026-09-04.md). Note that
+     * `quantity` is the PACK SIZE ({ value, unit }, e.g. 1 ML), not stock on
+     * hand — Zenoti exposes no stock figure on this endpoint and the inventory
+     * endpoint is not reachable with this key. `stockOnHand` is therefore
+     * always null here and the mirror never writes stock from this feed.
+     */
     return list.map((p) => ({
       id: pick(p, 'id', 'Id'),
-      code: pick(p, 'code', 'Code', 'sku', 'SKU'),
+      code: pick(p, 'code', 'Code'),
       name: pick(p, 'name', 'Name'),
-      brand: pick(p, 'brand', 'Brand', 'brand_name', 'BrandName'),
-      category: pick(p, 'category', 'Category', 'category_name', 'CategoryName'),
-      productType: pick(p, 'type', 'Type', 'product_type', 'ProductType'),
-      formulation: pick(p, 'formulation', 'Formulation', 'unit_type', 'UnitType'),
-      quantity: pick(p, 'quantity', 'Quantity', 'stock', 'Stock', 'available_quantity', 'AvailableQuantity', 'qoh', 'QOH'),
-      isActive: pick(p, 'active', 'Active', 'is_active', 'IsActive'),
+      description: pick(p, 'description') || null,
+      brand: pick(p, 'brand_name') || null,
+      brandCode: pick(p, 'brand_code') || null,
+      category: pick(p, 'category_name') || null,
+      subCategory: pick(p, 'subcategory_name') || null,
+      categoryId: pick(p, 'category_id') || null,
+      // Zenoti's own split: sold to guests vs. used in the treatment room.
+      isRetail: p.retail === true,
+      isConsumable: p.consummable === true,
+      productType: p.retail === true ? 'Retail' : p.consummable === true ? 'Consumable' : null,
+      packSize: p.quantity && typeof p.quantity === 'object'
+        ? `${p.quantity.value ?? ''} ${p.quantity.unit ?? ''}`.trim() || null
+        : null,
+      mrp: Number.isFinite(Number(p.max_retail_price)) ? Number(p.max_retail_price) : null,
+      hsn: pick(p, 'hsn') || null,
+      barcodes: Array.isArray(p.barcodes) ? p.barcodes : [],
+      isKit: p.is_product_kit === true,
+      stockOnHand: null,
       raw: p,
     }));
   });

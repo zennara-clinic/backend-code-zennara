@@ -79,10 +79,13 @@ async function syncServices(stats) {
           slug,
           name: svc.name,
           category: svc.categoryName || 'Uncategorised',
-          summary: `${svc.name} — synced from Zenoti. Add the description in the panel before publishing.`,
-          about: `${svc.name} is available at ${svc.centres.join(', ')}.`,
-          price: Number(svc.price) >= 0 ? Number(svc.price) : 0,
+          summary: svc.description || `${svc.name} — synced from Zenoti. Add the description in the panel before publishing.`,
+          about: svc.description || `${svc.name} is available at ${svc.centres.join(', ')}.`,
+          // Tax-inclusive figure when Zenoti gives one, else the sale price.
+          price: Number(svc.finalPrice) >= 0 ? Number(svc.finalPrice) : Number(svc.price) >= 0 ? Number(svc.price) : 0,
           duration_minutes: Number(svc.durationMinutes) > 0 ? Number(svc.durationMinutes) : null,
+          showPriceInApp: svc.showPrice !== false,
+          displayOrder: Number(svc.displayOrder) || 0,
           zenotiServiceId: svc.id,
           isActive: false,
         });
@@ -91,7 +94,10 @@ async function syncServices(stats) {
         const before = JSON.stringify([doc.zenotiServiceId, doc.duration_minutes, doc.price]);
         doc.zenotiServiceId = svc.id;
         if (Number(svc.durationMinutes) > 0) doc.duration_minutes = Number(svc.durationMinutes);
-        if (syncPrices() && Number(svc.price) >= 0) doc.price = Number(svc.price);
+        if (syncPrices()) {
+          const zp = Number(svc.finalPrice) >= 0 ? Number(svc.finalPrice) : Number(svc.price);
+          if (zp >= 0) doc.price = zp;
+        }
         if (before === JSON.stringify([doc.zenotiServiceId, doc.duration_minutes, doc.price])) { stats.services.unchanged += 1; continue; }
         stats.services.updated += 1;
       }
@@ -122,11 +128,14 @@ async function syncPackages(stats) {
         doc = new Package({
           id: `pkg-${Date.now()}-${stats.packages.created + 1}`,
           name: pkg.name,
-          description: `${pkg.name} — synced from Zenoti. Add the sessions and price in the panel before publishing.`,
+          description: pkg.description || `${pkg.name} — synced from Zenoti. Add the sessions and price in the panel before publishing.`,
           services: [],
           price: 0,
           zenotiPackageId: pkg.id,
           isActive: false,
+          // Zenoti's series validity is stored raw for the panel to read; its
+          // unit is not documented, so it is not turned into validityMonths.
+          zenotiSeriesTerms: pkg.series || null,
         });
         stats.packages.created += 1;
       } else if (doc.zenotiPackageId !== pkg.id) {
