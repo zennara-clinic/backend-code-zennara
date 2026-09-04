@@ -2491,3 +2491,66 @@ exports.pushToZenotiAdmin = async (req, res) => {
     res.status(502).json({ success: false, message: error.message || 'Could not write to Zenoti.' });
   }
 };
+
+/**
+ * PATCH /api/bookings/admin/:id/stage — move a consultation through its
+ * clinical lifecycle.
+ *
+ * Separate from the booking-status endpoints on purpose (see
+ * Booking.consultationStage): this never touches `status`, so it can never
+ * disturb the diary, the slot engine or the Zenoti mirror. It records who made
+ * the change, which matters for a clinical record.
+ *
+ * The follow-up decision is captured here too, because "consultation complete,
+ * follow-up in six weeks" is one action for the dermatologist, not two.
+ */
+exports.updateConsultationStage = async (req, res) => {
+  try {
+    const { stage, followUp } = req.body || {};
+    const allowed = Booking.schema.path('consultationStage').enumValues;
+    if (stage !== undefined && stage !== null && !allowed.includes(stage)) {
+      return res.status(400).json({
+        success: false,
+        message: `Unknown consultation stage. Expected one of: ${allowed.join(', ')}`,
+      });
+    }
+
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) return res.status(404).json({ success: false, message: 'Appointment not found' });
+
+    if (stage !== undefined) {
+      booking.consultationStage = stage;
+      booking.consultationStageHistory.push({
+        stage,
+        at: new Date(),
+        by: req.admin?._id || null,
+        byName: req.admin?.name || '',
+      });
+    }
+
+    if (followUp && typeof followUp === 'object') {
+      booking.followUp = {
+        ...(booking.followUp ? booking.followUp.toObject?.() ?? booking.followUp : {}),
+        ...(followUp.required !== undefined ? { required: Boolean(followUp.required) } : {}),
+        ...(followUp.dueDate !== undefined ? { dueDate: followUp.dueDate ? new Date(followUp.dueDate) : null } : {}),
+        ...(followUp.notes !== undefined ? { notes: String(followUp.notes || '').slice(0, 1000) } : {}),
+      };
+    }
+
+    // The clinical stage is not an operational change, so the Zenoti
+    // write-back hooks stay out of it (they key off status/date/time only).
+    await booking.save({ validateModifiedOnly: true });
+
+    return res.json({
+      success: true,
+      data: {
+        _id: booking._id,
+        consultationStage: booking.consultationStage,
+        followUp: booking.followUp,
+      },
+    });
+  } catch (error) {
+    console.error('updateConsultationStage failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not update the consultation stage' });
+  }
+};

@@ -104,7 +104,31 @@ exports.saveNote = async (req, res) => {
     const {
       bookingId, complaint, examination, assessment, plan, sketch,
       prescription, assignedServices, followUpDate, status,
+      primaryDiagnosis, secondaryDiagnosis,
+      skinCareAdvice, lifestyleAdvice, precautions,
     } = req.body;
+
+    /*
+     * Signing is a clinical act.
+     *
+     * Reception may prepare a prescription — that is a real part of the
+     * workflow — but marking it Completed is what makes it printable, sendable
+     * and legally the dermatologist's. So the permission is checked here, on
+     * the server, rather than by hiding a button: a request that sets
+     * status:'Completed' without prescriptions.sign is refused outright.
+     */
+    const canSign = Boolean(
+      req.admin?.isSuperAdmin
+      || req.admin?.permissions?.has?.('prescriptions.sign')
+      || req.admin?.role === 'doctor',
+    );
+    if (status === 'Completed' && !canSign) {
+      return res.status(403).json({
+        success: false,
+        code: 'SIGNATURE_REQUIRED',
+        message: 'A prescription can only be signed by the dermatologist. Save it as a draft for them to review.',
+      });
+    }
 
     if (!bookingId) {
       return res.status(400).json({ success: false, message: 'bookingId is required' });
@@ -144,13 +168,43 @@ exports.saveNote = async (req, res) => {
     if (Array.isArray(prescription)) note.prescription = prescription;
     if (Array.isArray(assignedServices)) note.assignedServices = assignedServices;
     if (followUpDate !== undefined) note.followUpDate = followUpDate ? new Date(followUpDate) : null;
+    if (primaryDiagnosis !== undefined) note.primaryDiagnosis = primaryDiagnosis;
+    if (secondaryDiagnosis !== undefined) note.secondaryDiagnosis = secondaryDiagnosis;
+    if (skinCareAdvice !== undefined) note.skinCareAdvice = skinCareAdvice;
+    if (lifestyleAdvice !== undefined) note.lifestyleAdvice = lifestyleAdvice;
+    if (precautions !== undefined) note.precautions = precautions;
+
+    /*
+     * An edit to a signed prescription revokes the signature.
+     *
+     * Otherwise reception could adjust a dose on a document that still carries
+     * the dermatologist's name — a signature must only ever attest to the text
+     * that was actually approved. The note drops back to Draft and has to be
+     * signed again.
+     */
+    const clinicalChanged = [
+      'prescription', 'primaryDiagnosis', 'secondaryDiagnosis', 'assessment',
+      'plan', 'skinCareAdvice', 'lifestyleAdvice', 'precautions', 'followUpDate',
+    ].some((path) => note.isModified(path));
+    if (note.prescriptionSigned && clinicalChanged && status !== 'Completed') {
+      note.prescriptionSigned = false;
+      note.prescriptionSignedAt = null;
+      note.prescriptionSignedBy = null;
+      note.prescriptionSignedByName = null;
+      note.status = 'Draft';
+    }
 
     note.savedBy = req.admin?._id || null;
     if (!note.doctorName && req.admin?.name) note.doctorName = req.admin.name;
 
-    if (status === 'Completed' && note.status !== 'Completed') {
+    if (status === 'Completed') {
+      // Re-signing after an edit is legitimate and must refresh the stamp.
       note.status = 'Completed';
-      note.completedAt = new Date();
+      note.completedAt = note.completedAt || new Date();
+      note.prescriptionSigned = true;
+      note.prescriptionSignedAt = new Date();
+      note.prescriptionSignedBy = req.admin?._id || null;
+      note.prescriptionSignedByName = req.admin?.name || note.doctorName || null;
     } else if (status) {
       note.status = status;
     }
@@ -203,7 +257,7 @@ exports.sendPrescription = async (req, res) => {
     const note = await ConsultationNote.findById(req.params.id)
       .populate('userId', 'fullName email phone patientId dateOfBirth gender');
     if (!note) return res.status(404).json({ success: false, message: 'Consultation note not found' });
-    if (note.status !== 'Completed') {
+    if (note.status !== 'Completed' || !note.prescriptionSigned) {
       return res.status(400).json({ success: false, message: 'Sign the consultation first — only a signed prescription can be sent.' });
     }
     if (!(note.prescription || []).length) {

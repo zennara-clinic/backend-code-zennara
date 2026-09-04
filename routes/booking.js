@@ -58,6 +58,9 @@ router.put('/admin/:id/no-show', protectAdmin, auditLog('BOOKING_NO_SHOW', 'BOOK
 router.put('/admin/:id/cancel', protectAdmin, auditLog('BOOKING_CANCELLED', 'BOOKING'), cancelBookingAdmin);
 router.put('/admin/:id/payment', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.updateBookingPaymentAdmin);
 router.put('/admin/:id/notes', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.addBookingNoteAdmin);
+// Clinical lifecycle (waiting → started → completed → prescribed → follow-up).
+// Never touches `status`, so it cannot disturb the diary or the Zenoti mirror.
+router.patch('/admin/:id/stage', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.updateConsultationStage);
 router.post('/admin/:id/zenoti-refresh', protectAdmin, VIEW, bookingController.refreshFromZenotiAdmin);
 router.post('/admin/:id/zenoti-push', protectAdmin, requirePermission('bookings.manage'), auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.pushToZenotiAdmin);
 router.put('/admin/:id/reschedule', protectAdmin, auditLog('BOOKING_RESCHEDULED', 'BOOKING'), rescheduleBookingAdmin);

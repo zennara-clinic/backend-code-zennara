@@ -16,10 +16,24 @@ const prescriptionItemSchema = new mongoose.Schema(
   {
     /** Free text as the doctor selected or typed it, e.g. "Tab Doxybond LB". */
     medicine: { type: String, required: true, trim: true },
+    /** "500 mg", "0.1%" — the strength, kept apart from the dose. */
+    strength: { type: String, default: null, trim: true },
+    /** Tablet, cream, serum, gel — as the clinic dispenses it. */
+    formulation: { type: String, default: null, trim: true },
     dosage: { type: String, default: null, trim: true },
     frequency: { type: String, default: null, trim: true },
     duration: { type: String, default: null, trim: true },
+    /** Morning / night / after food — when to take it. */
+    timing: { type: String, default: null, trim: true },
     instructions: { type: String, default: null, trim: true },
+    /**
+     * Set when the line is a Zennara retail product rather than a drug, so
+     * the printed slip can separate "recommended products" from medicines and
+     * the pharmacy knows what to dispense.
+     */
+    productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null },
+    /** Availability at the time of prescribing — informational, never a price. */
+    availableQuantity: { type: Number, default: null },
     /** Schedule H drugs need a doctor's signature on the printed slip. */
     isScheduleH: { type: Boolean, default: false },
   },
@@ -83,6 +97,18 @@ const consultationNoteSchema = new mongoose.Schema(
       },
     ],
 
+    /* --- Diagnosis (2026-09 prescription builder) ------------------------
+     * Structured rather than folded into `assessment`, so a diagnosis can be
+     * reported on and carried onto the printed slip in its own right.
+     */
+    primaryDiagnosis: { type: String, default: '', trim: true },
+    secondaryDiagnosis: { type: String, default: '', trim: true },
+
+    /* --- Advice ---------------------------------------------------------- */
+    skinCareAdvice: { type: String, default: '', trim: true },
+    lifestyleAdvice: { type: String, default: '', trim: true },
+    precautions: { type: String, default: '', trim: true },
+
     followUpDate: { type: Date, default: null },
 
     status: {
@@ -92,6 +118,26 @@ const consultationNoteSchema = new mongoose.Schema(
       index: true,
     },
     completedAt: { type: Date, default: null },
+
+    /*
+     * Signing — the clinical/operational boundary.
+     *
+     * Reception may PREPARE a prescription (drug names, dosages, the
+     * operational detail), but only an authorised dermatologist may sign it.
+     * That distinction is enforced server-side by the prescriptions.sign
+     * permission, never by hiding a button: an unsigned prescription must not
+     * be printable or sendable, and a signed one must not be silently edited.
+     *
+     * Any edit after signing clears the signature and returns the document to
+     * unsigned, so a signature can never end up attached to text the
+     * dermatologist did not approve.
+     */
+    prescriptionSigned: { type: Boolean, default: false, index: true },
+    prescriptionSignedAt: { type: Date, default: null },
+    prescriptionSignedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', default: null },
+    prescriptionSignedByName: { type: String, default: null, trim: true },
+    /** The registration number printed under the signature. */
+    prescriptionSignedByRegistration: { type: String, default: null, trim: true },
 
     // Zenoti guest-note mirror for the clinical record/prescription.
     zenotiNoteId: { type: String, default: null, index: true },
@@ -121,6 +167,8 @@ consultationNoteSchema.index({ userId: 1, createdAt: -1 });
 consultationNoteSchema.pre('save', function (next) {
   this._clinicalChanged = [
     'complaint', 'examination', 'assessment', 'plan', 'prescription',
+    'primaryDiagnosis', 'secondaryDiagnosis',
+    'skinCareAdvice', 'lifestyleAdvice', 'precautions',
     'followUpDate', 'doctorName', 'status',
   ].some((path) => this.isModified(path));
   next();

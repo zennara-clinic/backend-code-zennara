@@ -173,6 +173,57 @@ const bookingSchema = new mongoose.Schema({
     index: true
   },
 
+  /**
+   * The CLINICAL lifecycle of a consultation, alongside the operational
+   * `status` above.
+   *
+   * Deliberately a second field rather than more values in `status`:
+   *
+   *   · `status` is the diary state. The slot engine's LIVE_STATUSES, the
+   *     app's Upcoming/Past tabs, analytics buckets and the Zenoti mirror all
+   *     switch on it exhaustively; adding "Prescription Created" there would
+   *     silently drop those bookings out of every one of those lists.
+   *   · Zenoti has no concept of a prescription or a follow-up decision, so
+   *     these values can never be written back to it. Keeping them separate
+   *     makes that structural rather than a rule someone has to remember.
+   *
+   * Reception, the dermatologist panel, admin and the patient app all read
+   * this; only the consult room writes it.
+   */
+  consultationStage: {
+    type: String,
+    enum: [
+      'booked',
+      'confirmed',
+      'checked_in',
+      'waiting',
+      'consultation_started',
+      'consultation_completed',
+      'prescription_created',
+      'treatment_recommended',
+      'follow_up_required',
+      'no_follow_up',
+    ],
+    default: null,
+    index: true,
+  },
+  /** Audit trail of stage changes, so "who moved this and when" is answerable. */
+  consultationStageHistory: [{
+    _id: false,
+    stage: String,
+    at: { type: Date, default: Date.now },
+    by: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+    byName: String,
+  }],
+  /** The follow-up decision taken at the end of the consultation. */
+  followUp: {
+    required: { type: Boolean, default: false },
+    dueDate: { type: Date, default: null },
+    notes: { type: String, default: '', trim: true, maxlength: 1000 },
+    /** Set when the follow-up appointment is actually made. */
+    bookingId: { type: mongoose.Schema.Types.ObjectId, ref: 'Booking', default: null },
+  },
+
   // Session Details (for Confirmed and later statuses)
   confirmedDate: Date,
   confirmedTime: String,
