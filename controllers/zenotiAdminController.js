@@ -135,10 +135,21 @@ exports.getReadiness = async (_req, res) => {
     const Consultation = require('../models/Consultation');
     const Package = require('../models/Package');
     const clinics = Object.entries(CENTERS).filter(([, c]) => c.isClinic);
-    const [consultations, packages] = await Promise.all([
+    const Doctor = require('../models/Doctor');
+    const ZenotiPractitioner = require('../models/ZenotiPractitioner');
+    const [consultations, packages, doctors, practitioners] = await Promise.all([
       Consultation.find({ isActive: { $ne: false } }).select('name slug category zenotiServiceId').lean(),
       Package.find({ isActive: { $ne: false } }).select('name zenotiPackageId').lean(),
+      Doctor.find({ isActive: { $ne: false } }).select('name doctorId').lean(),
+      ZenotiPractitioner.find({ active: true, onboardedDoctorId: { $ne: null } }).select('onboardedDoctorId').lean(),
     ]);
+    // A confirmed booking names its dermatologist; Zenoti needs that person as
+    // an employee id, or the appointment is refused. This is the commonest
+    // reason a booking shows "Not in Zenoti".
+    const linked = new Set(practitioners.map((p) => String(p.onboardedDoctorId || '').toLowerCase()));
+    const unlinkedDermatologists = doctors
+      .filter((d) => !linked.has(String(d.doctorId || '').toLowerCase()))
+      .map((d) => d.name);
     const perClinic = await Promise.all(clinics.map(async ([centerId, c]) => {
       const [schedules, services, catalogPackages] = await Promise.all([
         zenoti.getCenterEmployeeSchedules(centerId).catch(() => null),
@@ -168,6 +179,7 @@ exports.getReadiness = async (_req, res) => {
       referralSourceConfigured: Boolean(process.env.ZENOTI_REFERRAL_SOURCE_ID),
       unmappedServices: consultations.filter((c) => !c.zenotiServiceId).map((c) => c.name),
       unmappedPackages: packages.filter((p) => !p.zenotiPackageId).map((p) => p.name),
+      unlinkedDermatologists,
       clinics: perClinic,
       checkedAt: new Date(),
     };
