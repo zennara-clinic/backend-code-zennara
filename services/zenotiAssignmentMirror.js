@@ -113,6 +113,12 @@ async function mirrorGuestPackages(user, packages) {
       a.assignedByName = a.assignedByName || 'Zenoti (clinic purchase)';
       a.$locals.skipZenotiWrite = true;
       await a.save({ validateModifiedOnly: true });
+      // The purchase happened on Zenoti's date, not on the mirror run. createdAt is
+      // immutable through Mongoose, so it is set through the driver.
+      const purchasedAt = a.payment?.receivedDate || a.validFrom || null;
+      if (purchasedAt && Math.abs((a.createdAt?.getTime() || 0) - new Date(purchasedAt).getTime()) > 60_000) {
+        await PackageAssignment.collection.updateOne({ _id: a._id }, { $set: { createdAt: new Date(purchasedAt) } });
+      }
       if (isNew) stats.created += 1; else stats.updated += 1;
     } catch (error) {
       stats.failed += 1;
@@ -166,7 +172,9 @@ async function mirrorGuestOrders(user, orders) {
       await order.save();
       // The sale happened on Zenoti's date, not today's — history must sort truthfully.
       if (zo.saleDate && !Number.isNaN(new Date(zo.saleDate).getTime())) {
-        await ProductOrder.updateOne({ _id: order._id }, { $set: { createdAt: new Date(zo.saleDate) } }, { timestamps: false });
+        // Through the driver: Mongoose silently drops a $set on the immutable createdAt,
+        // which is why every clinic sale had been dated on the day it was mirrored.
+        await ProductOrder.collection.updateOne({ _id: order._id }, { $set: { createdAt: new Date(zo.saleDate) } });
       }
       stats.created += 1;
     } catch (error) {
