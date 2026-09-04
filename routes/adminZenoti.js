@@ -23,6 +23,8 @@ router.get('/catalog/packages', requirePermission('zenoti.view', 'services.view'
 router.get('/readiness', VIEW, z.getReadiness);
 router.get('/practitioners', requirePermission('zenoti.view', 'patients.view', 'bookings.view'), z.listPractitioners);
 router.post('/practitioners/sync', requirePermission('zenoti.manage'), z.syncPractitioners);
+// Catalogue + per-centre stock mirror. Read-only against Zenoti.
+router.post('/products/sync', requirePermission('zenoti.manage', 'inventory.manage'), z.syncProducts);
 router.post('/practitioners/:employeeId/onboard', requirePermission('dermatologists.manage'), z.onboardPractitioner);
 
 router.get('/packages', VIEW, z.listPackages);

@@ -526,3 +526,18 @@ exports.listForms = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+/**
+ * POST /api/admin/zenoti/products/sync — run the catalogue/stock mirror now.
+ * Read-only against Zenoti; see services/zenotiProductSyncService.js.
+ */
+exports.syncProducts = async (req, res) => {
+  try {
+    const stats = await require('../services/zenotiProductSyncService')
+      .syncProducts({ trigger: `admin:${req.admin?.email || 'unknown'}` });
+    return res.json({ success: true, data: stats });
+  } catch (error) {
+    console.error('Zenoti product sync failed:', error);
+    return res.status(500).json({ success: false, message: error.message || 'Product sync failed' });
+  }
+};

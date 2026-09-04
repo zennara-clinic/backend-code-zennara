@@ -42,6 +42,16 @@ function startZenotiScheduler() {
     practitionerSync.syncPractitioners({ trigger: 'schedule' }).catch(() => {});
   });
 
+  /*
+   * Zenoti catalogue + per-centre stock → Product, hourly.
+   *
+   * Read-only and hourly rather than every few minutes: stock does not move
+   * fast enough to justify the API budget, and this walks every centre.
+   */
+  cron.schedule('20 * * * *', () => {
+    require('../services/zenotiProductSyncService').syncProducts({ trigger: 'schedule' }).catch(() => {});
+  });
+
   // Panel working hours → Zenoti shifts, daily at 03:15 IST, so Zenoti's slot
   // engine can accept app bookings (see zenotiScheduleWriteService).
   cron.schedule('15 3 * * *', () => {

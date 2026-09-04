@@ -84,7 +84,7 @@ exports.uploadPhotos = async (req, res) => {
       }));
     }
 
-    await audit(req, 'CREATE', { count: created.length, userId, bookingId: bookingId || null, phase }, created[0]?._id);
+    await audit(req, 'PATIENT_PHOTO_ADDED', { count: created.length, userId, bookingId: bookingId || null, phase }, created[0]?._id);
     return res.status(201).json({ success: true, count: created.length, data: created });
   } catch (error) {
     console.error('uploadPhotos failed:', error);
@@ -138,7 +138,7 @@ exports.updatePhoto = async (req, res) => {
       { new: true },
     );
     if (!photo) return res.status(404).json({ success: false, message: 'Photograph not found' });
-    await audit(req, 'UPDATE', { fields: Object.keys(set) }, photo._id);
+    await audit(req, 'PATIENT_PHOTO_UPDATED', { fields: Object.keys(set) }, photo._id);
     return res.json({ success: true, data: photo });
   } catch (error) {
     console.error('updatePhoto failed:', error);
@@ -162,7 +162,7 @@ exports.deletePhoto = async (req, res) => {
     if (hard) {
       if (photo.url) await deleteFromS3(photo.url).catch(() => {});
       await photo.deleteOne();
-      await audit(req, 'DELETE', { hard: true, userId: photo.userId }, photo._id);
+      await audit(req, 'PATIENT_PHOTO_DELETED', { hard: true, userId: photo.userId }, photo._id);
       return res.json({ success: true, message: 'Photograph permanently removed' });
     }
 
@@ -170,7 +170,7 @@ exports.deletePhoto = async (req, res) => {
     photo.deletedAt = new Date();
     photo.deletedBy = req.admin?._id || null;
     await photo.save();
-    await audit(req, 'DELETE', { hard: false, userId: photo.userId }, photo._id);
+    await audit(req, 'PATIENT_PHOTO_DELETED', { hard: false, userId: photo.userId }, photo._id);
     return res.json({ success: true, message: 'Photograph removed' });
   } catch (error) {
     console.error('deletePhoto failed:', error);

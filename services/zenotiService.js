@@ -624,10 +624,28 @@ async function getCenterProducts(centerId) {
       query: { page, size: 100 },
     });
     const list = json?.products || json?.Products || [];
+    /*
+     * Widened 2026-09 for the inventory mirror. This used to project only
+     * id/code/name, which was enough to map a product for a write but not
+     * enough to answer "is it in stock at this centre" — the whole point of
+     * the doctor-facing availability view.
+     *
+     * Zenoti's product payload is not consistent across accounts, so every
+     * field beyond the first three is read through a list of plausible keys
+     * and left null when absent. `raw` is kept so a mapping gap can be
+     * diagnosed from a stored document rather than by re-calling the API.
+     */
     return list.map((p) => ({
       id: pick(p, 'id', 'Id'),
-      code: pick(p, 'code', 'Code'),
+      code: pick(p, 'code', 'Code', 'sku', 'SKU'),
       name: pick(p, 'name', 'Name'),
+      brand: pick(p, 'brand', 'Brand', 'brand_name', 'BrandName'),
+      category: pick(p, 'category', 'Category', 'category_name', 'CategoryName'),
+      productType: pick(p, 'type', 'Type', 'product_type', 'ProductType'),
+      formulation: pick(p, 'formulation', 'Formulation', 'unit_type', 'UnitType'),
+      quantity: pick(p, 'quantity', 'Quantity', 'stock', 'Stock', 'available_quantity', 'AvailableQuantity', 'qoh', 'QOH'),
+      isActive: pick(p, 'active', 'Active', 'is_active', 'IsActive'),
+      raw: p,
     }));
   });
 }

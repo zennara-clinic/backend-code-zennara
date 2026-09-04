@@ -91,6 +91,16 @@ const AdminAuditLogSchema = new mongoose.Schema({
       'VENDOR_UPDATED',
       'VENDOR_DELETED',
 
+      // Procurement (purchase orders and goods receipt)
+      'PURCHASE_ORDER_CREATED',
+      'PURCHASE_ORDER_UPDATED',
+      'PURCHASE_ORDER_STATUS_CHANGED',
+      'GOODS_RECEIVED',
+
+      // Bulk import / export
+      'BULK_IMPORT',
+      'BULK_EXPORT',
+
       // Reviews & support
       'REVIEW_APPROVED',
       'REVIEW_REJECTED',
@@ -101,6 +111,10 @@ const AdminAuditLogSchema = new mongoose.Schema({
       'PRESCRIPTION_SAVED',
       'CONSENT_SIGNED',
       'FORM_STATUS_CHANGED',
+      'FORM_TEMPLATE_UPDATED',
+      'PATIENT_PHOTO_ADDED',
+      'PATIENT_PHOTO_UPDATED',
+      'PATIENT_PHOTO_DELETED',
 
       // Settings
       'SETTINGS_UPDATED',
