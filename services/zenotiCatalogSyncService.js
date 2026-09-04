@@ -21,6 +21,7 @@
 const Consultation = require('../models/Consultation');
 const Package = require('../models/Package');
 const ZenotiSyncRun = require('../models/ZenotiSyncRun');
+const ZenotiGuestData = require('../models/ZenotiGuestData');
 const zenoti = require('./zenotiService');
 const { CENTERS } = require('../config/zenoti');
 const logger = require('../utils/logger');
@@ -112,6 +113,44 @@ async function syncServices(stats) {
   stats.services.missingFromZenoti = gone.map((g) => g.name);
 }
 
+
+/**
+ * Fill a mirrored package's line items and price from a real sale.
+ *
+ * Zenoti's catalogue list does not expose which services a package contains,
+ * and its detail endpoint refuses our key. But every package a guest has
+ * BOUGHT comes through the guest feed with its services and session counts.
+ * So for a package we hold as an empty shell, the most recent purchase of the
+ * same package is the truth about what is in it — and what it cost.
+ *
+ * Only fills gaps: a package the panel has already given services or a price
+ * is never overwritten.
+ */
+async function fillPackageFromPurchases(doc, stats) {
+  if ((doc.services || []).length && Number(doc.price) > 0) return false;
+  const escaped = doc.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const guest = await ZenotiGuestData.findOne({ 'packages.name': new RegExp(`^${escaped}$`, 'i') })
+    .sort({ updatedAt: -1 }).select('packages').lean();
+  const sale = (guest?.packages || []).find((g) => norm(g?.name) === norm(doc.name));
+  if (!sale) return false;
+
+  let changed = false;
+  if (!(doc.services || []).length && Array.isArray(sale.services) && sale.services.length) {
+    const lines = [];
+    for (const svc of sale.services) {
+      if (!svc?.name) continue;
+      const c = await Consultation.findOne({ name: new RegExp(`^${String(svc.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') })
+        .select('id name price').lean();
+      if (!c) { stats.packages.unmatchedServices = (stats.packages.unmatchedServices || []).concat(`${doc.name} → ${svc.name}`); continue; }
+      lines.push({ serviceId: c.id, serviceName: c.name, servicePrice: c.price || 0, sessions: Math.max(1, Number(svc.total) || 1) });
+    }
+    if (lines.length) { doc.services = lines; changed = true; }
+  }
+  if (!(Number(doc.price) > 0) && Number(sale.price) > 0) { doc.price = Number(sale.price); changed = true; }
+  if (changed) stats.packages.filledFromSales = (stats.packages.filledFromSales || 0) + 1;
+  return changed;
+}
+
 async function syncPackages(stats) {
   const { rows } = await collect((c) => zenoti.getCenterPackages(c));
   const seenIds = new Set();
@@ -141,10 +180,12 @@ async function syncPackages(stats) {
       } else if (doc.zenotiPackageId !== pkg.id) {
         doc.zenotiPackageId = pkg.id;
         stats.packages.updated += 1;
-      } else {
+      } else if (!(await fillPackageFromPurchases(doc, stats))) {
         stats.packages.unchanged += 1;
         continue;
       }
+      // A freshly created or newly linked shell also gets its contents from sales.
+      if (!(doc.services || []).length || !(Number(doc.price) > 0)) await fillPackageFromPurchases(doc, stats);
       await doc.save({ validateModifiedOnly: true });
     } catch (error) {
       stats.packages.failed += 1;

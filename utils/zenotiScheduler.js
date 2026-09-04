@@ -39,7 +39,10 @@ function startZenotiScheduler() {
   });
 
   cron.schedule('*/5 * * * *', () => {
-    practitionerSync.syncPractitioners({ trigger: 'schedule' }).catch(() => {});
+    practitionerSync.syncPractitioners({ trigger: 'schedule' })
+      // A doctor added in Zenoti appears in the panel (hidden) on the next pass.
+      .then(() => practitionerSync.autoOnboardAll())
+      .catch(() => {});
   });
 
   /*

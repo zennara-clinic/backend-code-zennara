@@ -26,6 +26,46 @@ const updateManyIfChanged = (filter, set) => ({
  * not create or update a Doctor profile and therefore cannot publish anyone to
  * the customer app.
  */
+
+/**
+ * Create the app dermatologist for a Zenoti doctor who has none.
+ *
+ * A doctor added in Zenoti used to sit in "In Zenoti, not yet in the app"
+ * until somebody pressed Onboard. Now they arrive automatically — HIDDEN
+ * (isActive:false), on the standard tier, at the centres Zenoti rosters them
+ * at — so the panel shows them straight away and a person only has to add a
+ * photo, bio and fee and publish. Disable with ZENOTI_AUTO_ONBOARD_DOCTORS=false.
+ */
+async function autoOnboard(row) {
+  if (String(process.env.ZENOTI_AUTO_ONBOARD_DOCTORS || 'true').toLowerCase() === 'false') return null;
+  if (row.onboardedDoctorId) return row.onboardedDoctorId;
+  const doctorController = require('../controllers/doctorController');
+  const Doctor = require('../models/Doctor');
+  const name = String(row.name || '').replace(/^\s*dr\.?\s*/i, '').replace(/\s*\.\s*$/, '').trim();
+  if (!name) return null;
+  // Same person already in the app under this name (e.g. added by hand): link, don't duplicate.
+  const existing = await Doctor.findOne({ name: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }).select('doctorId').lean();
+  if (existing?.doctorId) { row.onboardedDoctorId = existing.doctorId; await row.save(); return existing.doctorId; }
+
+  let created = null;
+  const fakeRes = { status(code) { this.code = code; return this; }, json(body) { created = { code: this.code || 200, body }; } };
+  await doctorController.createDoctor({
+    admin: { _id: null, email: 'zenoti-sync', role: 'super_admin', isSuperAdmin: true, permissions: new Set() },
+    body: {
+      name,
+      tier: (Doctor.schema.path('tier').enumValues || []).find((t) => !/senior/i.test(t)) || 'dermatologist',
+      availableCentres: row.centerNames || [],
+      isActive: false,
+    },
+  }, fakeRes);
+  const doctorId = created && created.code < 400 ? created.body?.data?.doctorId : null;
+  if (!doctorId) { logger.warn('Auto-onboard failed', { employeeId: row.zenotiEmployeeId, name, error: created?.body?.message }); return null; }
+  row.onboardedDoctorId = doctorId;
+  await row.save();
+  logger.info('Zenoti doctor auto-onboarded (hidden) as app dermatologist', { employeeId: row.zenotiEmployeeId, doctorId });
+  return doctorId;
+}
+
 async function syncPractitioners({ trigger = 'schedule', repair = true } = {}) {
   if (!zenoti.isConfigured() || running) return null;
   running = true;
@@ -299,4 +339,12 @@ async function syncDoctorShiftsFromZenoti({ trigger = 'schedule' } = {}) {
   }
 }
 
-module.exports = { syncPractitioners, repairBookingAttribution, syncDoctorShiftsFromZenoti, clipRangesToShifts: clip, isRunning, looksLikeDoctor };
+/** Onboard every active Zenoti doctor that has no app dermatologist yet. */
+async function autoOnboardAll() {
+  const rows = await ZenotiPractitioner.find({ active: true, onboardedDoctorId: null });
+  let n = 0;
+  for (const row of rows) { if (await autoOnboard(row).catch(() => null)) n += 1; }
+  return n;
+}
+
+module.exports = { syncPractitioners, repairBookingAttribution, syncDoctorShiftsFromZenoti, clipRangesToShifts: clip, isRunning, looksLikeDoctor, autoOnboard, autoOnboardAll };
