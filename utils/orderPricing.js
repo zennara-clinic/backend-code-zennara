@@ -126,7 +126,9 @@ async function computeOrderPricing({ items, couponCode, city }) {
     if (!product.isActive) {
       return { ok: false, status: 400, message: `Product is not available: ${product.name}` };
     }
-    if (product.stock < item.quantity) {
+    // trackStock false = no count exists for this product (Zenoti-mirrored);
+    // the sale goes through and nothing is decremented.
+    if (product.trackStock !== false && product.stock < item.quantity) {
       return {
         ok: false,
         status: 400,

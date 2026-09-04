@@ -368,6 +368,30 @@ async function syncDoctorShiftsFromZenoti({ trigger = 'schedule' } = {}) {
         if (manual.length !== (schedule.overrides || []).length) { schedule.overrides = manual; await schedule.save(); }
         continue;
       }
+      /*
+       * Zenoti is the schedule of record. Its shifts BECOME this doctor's
+       * weekly pattern at every centre where a roster is published: rows
+       * marked source:'zenoti' are rebuilt each pass, and the panel's own
+       * rows are kept only for centres Zenoti says nothing about. Nothing is
+       * written back to Zenoti here.
+       */
+      const zenotiWeekly = new Map(); // `${weekday}|${branchId}` -> {day, branchId, ranges, firstDate}
+      for (const [key, shifts] of working) {
+        const [date, branchId] = key.split('|');
+        const weekday = new Date(`${date}T12:00:00Z`).getUTCDay();
+        const wk = `${weekday}|${branchId}`;
+        // The earliest dated week defines the pattern; later weeks are exceptions.
+        if (!zenotiWeekly.has(wk) || zenotiWeekly.get(wk).firstDate > date) {
+          zenotiWeekly.set(wk, { day: weekday, branchId, ranges: shifts.map((r) => ({ start: r.start, end: r.end })), firstDate: date, source: 'zenoti' });
+        }
+      }
+      const keptPanelWeekly = (schedule.weekly || []).filter((w) => w.source !== 'zenoti'
+        && (!w.branchId || !publishedBranches.has(String(w.branchId))));
+      schedule.weekly = [
+        ...keptPanelWeekly,
+        ...[...zenotiWeekly.values()].map(({ day, branchId, ranges, source }) => ({ day, branchId, ranges, source })),
+      ];
+
       const manualDays = new Set(manual.map((o) => `${o.date}|${o.branchId || ''}`));
       const generated = [];
       for (let i = 0; i <= SHIFT_WINDOW_DAYS; i += 1) {

@@ -171,6 +171,8 @@ async function syncProducts({ trigger = 'manual' } = {}) {
 
       if (!product) {
         product = new Product({
+          // No stock feed from Zenoti: don't let a zero read as sold out.
+          trackStock: false,
           name: entry.name,
           // Required by the schema, and meaningless until the panel fills them
           // in. A synced product is a stock record first and a listing second.
@@ -202,6 +204,10 @@ async function syncProducts({ trigger = 'manual' } = {}) {
       if (entry.hasQuantity) {
         product.branchStock = entry.branchStock;
         product.stock = entry.total;
+        product.trackStock = true;
+      } else if (product.isNew || (product.stock === 0 && product.trackStock !== false && !product.branchStock?.length)) {
+        // Mirrored with no count and none recorded here: not tracked.
+        product.trackStock = false;
       }
       product.zenotiSyncedAt = new Date();
 

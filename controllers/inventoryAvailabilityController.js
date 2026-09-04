@@ -20,7 +20,7 @@ const Inventory = require('../models/Inventory');
 const PRODUCT_FIELDS = [
   'name', 'sku', 'code', 'formulation', 'productType', 'productCategory',
   'brand', 'OrgName', 'image', 'stock', 'branchStock', 'lowStockThreshold',
-  'isActive', 'zenotiProductId', 'zenotiSyncedAt',
+  'isActive', 'zenotiProductId', 'zenotiSyncedAt', 'trackStock',
 ].join(' ');
 
 const INVENTORY_FIELDS = [
@@ -30,7 +30,10 @@ const INVENTORY_FIELDS = [
 ].join(' ');
 
 /** in stock / low stock / out of stock, from a quantity and its reorder level. */
-function stockStatus(quantity, threshold) {
+function stockStatus(quantity, threshold, tracked = true) {
+  // No count is kept for this item (mirrored from Zenoti, which exposes no
+  // stock). It is orderable; the desk checks the shelf.
+  if (tracked === false) return 'available';
   const qty = Number(quantity) || 0;
   const low = Number(threshold) || 0;
   if (qty <= 0) return 'out_of_stock';
@@ -90,7 +93,7 @@ exports.getAvailability = async (req, res) => {
           /** At the selected branch; null when no branch was requested. */
           branchQuantity: perBranch,
           quantity,
-          status: stockStatus(quantity, p.lowStockThreshold),
+          status: stockStatus(quantity, p.lowStockThreshold, p.trackStock),
           syncedFromZenoti: Boolean(p.zenotiProductId),
           zenotiSyncedAt: p.zenotiSyncedAt || null,
         };

@@ -28,7 +28,10 @@ const HORIZON_DAYS = Math.max(1, Number(process.env.ZENOTI_PUBLISH_HOURS_DAYS) |
 let running = false;
 
 function enabled() {
-  return String(process.env.ZENOTI_PUBLISH_DOCTOR_HOURS || 'true').toLowerCase() !== 'false';
+  // OFF unless explicitly enabled. Zenoti holds the roster the clinic actually
+  // runs on; shifts flow Zenoti → Zennara (syncDoctorShiftsFromZenoti), and a
+  // change made here must not silently rewrite Zenoti's schedule.
+  return String(process.env.ZENOTI_PUBLISH_DOCTOR_HOURS || 'false').toLowerCase() === 'true';
 }
 
 /** What we would publish: one entry per doctor/centre/day with the panel span. */

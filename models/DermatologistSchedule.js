@@ -66,6 +66,8 @@ const weeklySchema = new mongoose.Schema(
       default: null,
     },
     ranges: [rangeSchema],
+    /** 'zenoti' rows are rewritten from Zenoti's roster on every pass. */
+    source: { type: String, enum: ['manual', 'zenoti'], default: 'manual' },
   },
   { _id: false },
 );

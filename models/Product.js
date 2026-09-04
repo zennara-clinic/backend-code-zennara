@@ -129,6 +129,16 @@ const productSchema = new mongoose.Schema({
   productSubCategory: { type: String, default: null, trim: true },
   /** Zenoti's split: retail (sold to guests) vs consumable (used in treatment). */
   isRetail: { type: Boolean, default: null },
+  /**
+   * Whether `stock` means anything for this product.
+   *
+   * Zenoti's API exposes no stock figure (verified 2026-09-04), so a product
+   * mirrored from Zenoti has nothing to count. With trackStock false the store
+   * neither blocks a sale on `stock` nor decrements it, and the availability
+   * view reports "available" rather than "out of stock". Turn it on in the
+   * panel once the clinic starts recording counts here (or a stock feed exists).
+   */
+  trackStock: { type: Boolean, default: true },
   /** Below this, the availability view reports "low stock" rather than "in stock". */
   lowStockThreshold: {
     type: Number,

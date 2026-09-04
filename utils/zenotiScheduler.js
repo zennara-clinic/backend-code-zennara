@@ -75,9 +75,10 @@ function startZenotiScheduler() {
     require('../services/zenotiScheduleWriteService').publishDoctorHours({ trigger: 'schedule' }).catch(() => {});
   }, { timezone: 'Asia/Kolkata' });
 
-  // Zenoti roster → app availability (narrow-only; see zenotiPractitionerService).
-  // Opt-in: it changes what the app sells based on Zenoti's published shifts.
-  if (String(process.env.ZENOTI_ROSTER_TO_AVAILABILITY || 'false').toLowerCase() === 'true') {
+  // Zenoti roster → app availability. ON by default: Zenoti holds the roster
+  // the clinic actually runs on, so the dermatologists' bookable hours follow
+  // it. Set ZENOTI_ROSTER_TO_AVAILABILITY=false to keep panel-only hours.
+  if (String(process.env.ZENOTI_ROSTER_TO_AVAILABILITY || 'true').toLowerCase() !== 'false') {
     cron.schedule('7,37 * * * *', () => {
       practitionerSync.syncDoctorShiftsFromZenoti({ trigger: 'schedule' }).catch(() => {});
     });
