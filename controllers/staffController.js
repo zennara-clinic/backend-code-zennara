@@ -309,7 +309,29 @@ exports.updateStaff = async (req, res) => {
     }
 
     const previousRole = admin.role;
-    const { phone, branchId, branchIds, customRoleId, permissions } = req.body;
+    const { phone, branchId, branchIds, customRoleId, permissions, email } = req.body;
+
+    /*
+     * The email IS the login now (the one-time code is sent to it), so it has
+     * to be changeable here — an auto-onboarded therapist starts with a
+     * placeholder address. A change ends every open session for the account:
+     * whoever holds the old address must sign in again from the new one.
+     */
+    let emailChanged = false;
+    if (email !== undefined) {
+      const next = String(email || '').trim().toLowerCase();
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(next)) {
+        return res.status(400).json({ success: false, message: 'Enter a valid email address' });
+      }
+      if (next !== admin.email) {
+        if (await Admin.exists({ email: next, _id: { $ne: admin._id } })) {
+          return res.status(409).json({ success: false, message: 'That email already belongs to another staff login' });
+        }
+        admin.email = next;
+        admin.sessionVersion = (admin.sessionVersion || 1) + 1;
+        emailChanged = true;
+      }
+    }
     if (name !== undefined) admin.name = name;
     if (role !== undefined) admin.role = role;
     if (doctorId !== undefined) admin.doctorId = doctorId || null;
@@ -333,6 +355,9 @@ exports.updateStaff = async (req, res) => {
     // Moving an account onto an admin-panel role retires its password, so the
     // clinical panels cannot still be entered with the old credentials.
     await admin.save();
+    if (emailChanged) {
+      await Token.updateMany({ userId: admin._id, userType: 'Admin', isActive: true }, { $set: { isActive: false } }).catch(() => {});
+    }
 
     if (role && role !== previousRole) {
       await AdminAuditLog.logAction({
