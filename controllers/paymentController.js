@@ -578,10 +578,25 @@ exports.verifyProductPayment = async (req, res) => {
 // @access  Private
 exports.createMembershipPayment = async (req, res) => {
   try {
-    // The membership price is a clinic setting (App Studio → Membership), not a literal.
+    /*
+     * The membership price is a clinic setting (App Studio → Membership).
+     *
+     * `priceInr` is the ONE authority for the charge. The card also carries
+     * basePriceInr / salePriceInr, but those are presentation — a struck-through
+     * "was" figure and the offer beside it. Charging from a second field is how
+     * consultation pricing ended up living in four places that only agreed by
+     * accident, so the amount is read from `priceInr` and nowhere else.
+     */
     const AppCustomization = require('../models/AppCustomization');
     const settings = await AppCustomization.getSettings();
     const amount = Number(settings?.membership?.priceInr) > 0 ? Number(settings.membership.priceInr) : 110000;
+
+    if (settings?.membership?.isActive === false) {
+      return res.status(409).json({
+        success: false,
+        message: 'The membership is not on sale at the moment. Please speak to the clinic.',
+      });
+    }
     
     console.log('👑 Creating membership payment for user:', req.user._id);
     

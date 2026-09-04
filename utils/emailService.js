@@ -838,3 +838,13 @@ exports.sendManualCheckNotice = async (email, fullName, { kind, treatment, locat
   </div>`;
   return sendEmail(email, `${title} — Zennara${referenceNumber ? ` [${referenceNumber}]` : ''}`, html);
 };
+
+/**
+ * Send an already-rendered HTML email.
+ *
+ * The module otherwise exposes one function per message type, each owning its
+ * own template. The daily clinic summary builds its body from live data rather
+ * than a fixed template, so it needs the plain sender — exported here rather
+ * than reaching into the module's internals.
+ */
+exports.sendRawEmail = (to, subject, htmlContent) => sendEmail(to, subject, htmlContent);

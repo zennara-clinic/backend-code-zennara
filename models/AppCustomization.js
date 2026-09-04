@@ -184,6 +184,28 @@ const appCustomizationSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.Mixed,
     default: {},
   },
+  /**
+   * One clinic-wide contact number (the IVR line).
+   *
+   * Branches each carry their own `contact.phone`, which is right when the
+   * clinics answer separately. Zennara routes every call through a single IVR
+   * number instead, so this overrides them app-wide when set — one edit rather
+   * than one per centre, and no chance of three branches drifting apart.
+   *
+   * Left EMPTY on purpose. The number dictated for this change ("994332242")
+   * is nine digits, and an Indian mobile is ten; nothing should be published
+   * until the exact callable sequence is confirmed. While this is blank the
+   * app falls back to the branch number, then to the bundled support number,
+   * exactly as before.
+   */
+  contact: {
+    /** Clinic-wide phone shown on the header call button and Help screen. */
+    phone: { type: String, default: '', trim: true },
+    /** WhatsApp number, when it differs from the call line. */
+    whatsapp: { type: String, default: '', trim: true },
+    email: { type: String, default: '', trim: true },
+  },
+
   /** Help & Support screen — panel-managed FAQs (empty = the app's bundled set). */
   helpScreen: {
     faqs: [{
@@ -191,15 +213,62 @@ const appCustomizationSchema = new mongoose.Schema({
       a: { type: String, required: true, trim: true },
     }],
   },
+  /**
+   * The Zen membership card, editable end to end from the panel.
+   *
+   * `priceInr` remains the ONE authority for what Razorpay charges — see
+   * resolveMembershipAmount() in controllers/paymentController.js. `basePrice`
+   * and `salePrice` below are presentation: a struck-through "was" figure and
+   * the offer beside it. Deriving the charge from a second field is exactly
+   * the four-way price drift that had to be undone for consultations, so the
+   * charge is read from `priceInr` and nowhere else.
+   */
   membership: {
+    /** Card name, e.g. "Zen Membership". Empty = the app's bundled wording. */
+    name: { type: String, default: '', trim: true },
+    tagline: { type: String, default: '', trim: true },
+    description: { type: String, default: '', trim: true },
+
     /** "What's included" list on the membership screen (empty = bundled set). */
     benefits: [{
       title: { type: String, required: true, trim: true },
       copy: { type: String, default: '', trim: true },
     }],
+
     discountPercent: { type: Number, default: 15, min: 0, max: 100 },
-    priceInr: { type: Number, default: 110000 },
-    durationMonths: { type: Number, default: 12 }
+
+    /** AUTHORITATIVE. What the member is actually charged, in rupees. */
+    priceInr: { type: Number, default: 110000, min: 0 },
+    /** Struck-through "was" price. 0/absent = show nothing. */
+    basePriceInr: { type: Number, default: 0, min: 0 },
+    /** Displayed offer price. Presentation only; priceInr still charges. */
+    salePriceInr: { type: Number, default: 0, min: 0 },
+    /** What a renewal costs. 0 = the same as priceInr. */
+    renewalPriceInr: { type: Number, default: 0, min: 0 },
+    currency: { type: String, default: 'INR', trim: true },
+    /** GST or equivalent, for the breakdown shown on the card. */
+    taxPercent: { type: Number, default: 0, min: 0, max: 100 },
+
+    durationMonths: { type: Number, default: 12, min: 1 },
+
+    /** Artwork and call to action. */
+    image: { type: String, default: '', trim: true },
+    icon: { type: String, default: '', trim: true },
+    ctaText: { type: String, default: '', trim: true },
+    /** In-app route the CTA opens, e.g. "/profile/membership". */
+    ctaDestination: { type: String, default: '', trim: true },
+
+    /** Merchandising. */
+    featured: { type: Boolean, default: false },
+    isActive: { type: Boolean, default: true },
+    displayOrder: { type: Number, default: 0 },
+
+    terms: { type: String, default: '', trim: true },
+    /**
+     * Branch names where the membership can be bought. Empty = everywhere,
+     * which is the current reality and must stay the default.
+     */
+    branchAvailability: { type: [String], default: [] },
   },
 
   // Consultations Screen

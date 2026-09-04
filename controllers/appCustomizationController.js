@@ -57,7 +57,7 @@ exports.getAdminCustomizationSettings = async (req, res) => {
  * `appStudio.manage`, so a content editor cannot restyle the app.
  */
 const CONTENT_FIELDS = new Set([
-  'copy', 'membership', 'consultationsScreen', 'appointmentsScreen',
+  'copy', 'membership', 'contact', 'consultationsScreen', 'appointmentsScreen',
   'productsScreen', 'profileScreen', 'helpScreen', 'termsOfService', 'privacyPolicy',
 ]);
 

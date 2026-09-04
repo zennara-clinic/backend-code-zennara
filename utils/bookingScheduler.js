@@ -238,6 +238,22 @@ const startBookingScheduler = () => {
 
   console.log('📦 Package session scheduler started - runs every 15 minutes');
 
+  /*
+   * The daily clinic summary, 20:00 IST — after the last 18:00 slot has run,
+   * so the day's completions and no-shows are already recorded.
+   *
+   * Pinned to Asia/Kolkata rather than the server's own clock: an EC2 box on
+   * UTC would otherwise send this at 01:30 IST and report the wrong day.
+   * Silently does nothing while DAILY_SUMMARY_RECIPIENTS is unset.
+   */
+  cron.schedule('0 20 * * *', () => {
+    require('../services/dailySummaryService')
+      .sendDailySummary({ trigger: 'schedule' })
+      .catch(() => {});
+  }, { timezone: 'Asia/Kolkata' });
+
+  console.log('✉️  Daily clinic summary scheduled - 20:00 IST');
+
   // Also run both immediately on server start
   cleanupExpiredBookings();
   createDuePackageBookings();

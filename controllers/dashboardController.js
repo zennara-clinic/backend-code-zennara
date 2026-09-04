@@ -313,3 +313,29 @@ exports.getDashboard = async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to build the dashboard' });
   }
 };
+
+/**
+ * GET /api/admin/analytics/daily-summary?date=YYYY-MM-DD&send=true
+ *
+ * Preview exactly what the 20:00 email will say — and, with `send=true`,
+ * deliver it now. Having a preview matters: the recipient list is a config
+ * value, so without this the only way to check the report is to wait for the
+ * evening and ask whether it looked right.
+ */
+exports.dailySummary = async (req, res) => {
+  try {
+    const service = require('../services/dailySummaryService');
+    const date = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date || '')) ? String(req.query.date) : undefined;
+
+    if (String(req.query.send || '') === 'true') {
+      const result = await service.sendDailySummary({ dateKey: date, trigger: `admin:${req.admin?.email || 'unknown'}` });
+      return res.json({ success: true, data: result });
+    }
+
+    const summary = await service.buildSummary(date);
+    return res.json({ success: true, data: { summary, html: service.renderHtml(summary) } });
+  } catch (error) {
+    console.error('dailySummary failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not build the daily summary' });
+  }
+};

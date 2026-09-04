@@ -36,6 +36,12 @@ router.get(
   require('../controllers/dashboardController').getDashboard,
 );
 router.get('/inventory', requirePermission('inventory.view', 'analytics.view'), getInventoryAnalytics);
+// Preview (or send now) the automated 20:00 IST clinic summary.
+router.get(
+  '/daily-summary',
+  requirePermission('overview.view', 'analytics.view'),
+  require('../controllers/dashboardController').dailySummary,
+);
 
 // Clinic-wide numbers belong to the admin panel, not clinical/floor logins.
 router.use(requirePermission('analytics.view'));
