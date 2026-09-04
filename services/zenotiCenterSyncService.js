@@ -26,7 +26,7 @@ const norm = (v) => String(v || '').trim().toLowerCase();
 /** The schema's street-line field under `address` (named differently across builds). */
 function addressLinePath() {
   const paths = Object.keys(Branch.schema.paths).filter((p) => p.startsWith('address.'));
-  const known = new Set(['address.city', 'address.state', 'address.pincode', 'address.country']);
+  const known = new Set(['address.city', 'address.state', 'address.pincode', 'address.country', 'address.line2']);
   return paths.find((p) => !known.has(p)) || null;
 }
 
@@ -53,8 +53,10 @@ async function syncCenters({ trigger = 'schedule', adminId = null } = {}) {
         branch.zenotiCenterId = id;
 
         const addr = c.address_info || {};
-        const line = [addr.address_1, addr.address_2].filter((x) => x && String(x).trim()).join(', ');
-        if (linePath && line) branch.set(linePath, line);
+        // Branch has line1/line2; map Zenoti's two address lines one-to-one
+        // rather than squashing both into the first.
+        if (addr.address_1 && String(addr.address_1).trim()) branch.set(linePath || 'address.line1', String(addr.address_1).trim());
+        if (Branch.schema.path('address.line2') && addr.address_2 !== undefined) branch.set('address.line2', String(addr.address_2 || '').trim());
         if (addr.city) branch.set('address.city', addr.city);
         if (c.state?.name || c.state?.short_name) branch.set('address.state', c.state.name || c.state.short_name);
         if (addr.zip_code) branch.set('address.pincode', String(addr.zip_code));
