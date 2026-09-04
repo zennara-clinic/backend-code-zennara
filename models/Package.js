@@ -80,7 +80,16 @@ const packageSchema = new mongoose.Schema({
     default: 0
   },
   /** The Zenoti series package sold when this package is assigned (chosen in the panel). */
-  zenotiPackageId: { type: String, default: null, trim: true, lowercase: true }
+  zenotiPackageId: { type: String, default: null, trim: true, lowercase: true },
+
+  /**
+   * How long a customer has to use the package once it is assigned, in
+   * months. Copied onto each assignment as `validUntil` at assignment time
+   * (the panel may override the date per customer), after which the sessions
+   * can no longer be booked and the assignment is marked Expired nightly.
+   * 12 = one year, 6 = six months.
+   */
+  validityMonths: { type: Number, default: 12, min: 1, max: 60 }
 }, {
   timestamps: true
 });

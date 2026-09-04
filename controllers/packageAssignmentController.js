@@ -208,7 +208,11 @@ exports.createAssignment = async (req, res) => {
         transactionId: txn || null
       },
       notes: notes || '',
-      validUntil: validUntil || null,
+      // The desk may set an explicit expiry; otherwise it follows the package's
+      // validity (12 months unless the package says otherwise).
+      validUntil: validUntil
+        ? new Date(validUntil)
+        : (() => { const d = new Date(); d.setMonth(d.getMonth() + (Number(packageData.validityMonths) > 0 ? Number(packageData.validityMonths) : 12)); return d; })(),
       preferredLocation: preferredLocation || '',
       branchId: branchId || null,
       // Build the dated session schedule; a service may appear more than once.
@@ -1313,5 +1317,101 @@ exports.pushToZenoti = async (req, res) => {
     res.status(200).json({ success: ok, message: ok ? 'Package sold in Zenoti.' : (fresh.zenotiSyncError || `Zenoti write ${fresh.zenotiSyncStatus || 'not performed'} (mode ${zenotiWrite.mode()}).`), data: fresh });
   } catch (error) {
     res.status(502).json({ success: false, message: error.message });
+  }
+};
+
+/**
+ * POST /api/package-assignments/user/my-packages/:id/sessions/:sessionId/book
+ *
+ * The customer books one session of their package: { preferredDate,
+ * preferredTimeSlots[] , specialistId? }. Creates an ordinary Booking —
+ * amount 0, already paid (the package was), flagged isPackageIncluded — in
+ * "Awaiting Confirmation". The desk confirms it in the panel, and that
+ * confirmation is what creates the Zenoti appointment.
+ *
+ * Refused when the package is not Active, has expired, or the session is
+ * already booked / completed — a package can never yield more appointments
+ * than it contains.
+ */
+exports.bookSessionAsUser = async (req, res) => {
+  try {
+    const Booking = require('../models/Booking');
+    const Consultation = require('../models/Consultation');
+    const Branch = require('../models/Branch');
+    const { validateBranchBooking } = require('../utils/branchSchedule');
+
+    const assignment = await PackageAssignment.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!assignment) return res.status(404).json({ success: false, message: 'Package not found' });
+    if (assignment.status !== 'Active') {
+      return res.status(409).json({ success: false, message: `This package is ${assignment.status.toLowerCase()} and cannot be booked.` });
+    }
+    if (assignment.validUntil && new Date(assignment.validUntil) < new Date()) {
+      return res.status(409).json({ success: false, code: 'PACKAGE_EXPIRED', message: 'This package has expired. Please speak to the clinic.' });
+    }
+
+    const session = assignment.sessions.id(req.params.sessionId);
+    if (!session) return res.status(404).json({ success: false, message: 'Session not found' });
+    if (session.bookingId || ['Booked', 'Completed', 'Cancelled'].includes(session.status)) {
+      return res.status(409).json({ success: false, message: 'This session already has an appointment.' });
+    }
+
+    const { preferredDate, preferredTimeSlots, specialistId, specialistName } = req.body || {};
+    const slots = Array.isArray(preferredTimeSlots) ? preferredTimeSlots.filter(Boolean) : [];
+    if (!preferredDate || !slots.length) {
+      return res.status(400).json({ success: false, message: 'Choose a date and at least one time.' });
+    }
+
+    const branch = assignment.branchId
+      ? await Branch.findById(assignment.branchId)
+      : await Branch.findOne({ name: assignment.preferredLocation, isActive: true });
+    if (!branch) return res.status(409).json({ success: false, message: 'The clinic for this package is not set — please contact reception.' });
+
+    // Same hours and slot rules as every other treatment booking.
+    const check = validateBranchBooking(branch, preferredDate, slots);
+    if (!check.ok) return res.status(409).json({ success: false, code: check.code, message: check.message });
+
+    let consultation = await Consultation.findOne({ id: session.serviceId });
+    if (!consultation) consultation = await Consultation.findById(session.serviceId).catch(() => null);
+    if (!consultation) return res.status(409).json({ success: false, message: 'This treatment is no longer in the catalogue — please contact reception.' });
+
+    const booking = new Booking({
+      userId: req.user._id,
+      consultationId: consultation._id,
+      fullName: assignment.userDetails?.fullName || req.user.fullName || 'Guest',
+      mobileNumber: assignment.userDetails?.phone || req.user.phone || '',
+      email: assignment.userDetails?.email || req.user.email || '',
+      branchId: branch._id,
+      preferredLocation: branch.name,
+      preferredDate: new Date(preferredDate),
+      preferredTimeSlots: slots,
+      amount: 0,
+      paymentStatus: 'paid',
+      paymentMethod: 'Package',
+      status: 'Awaiting Confirmation',
+      ...(specialistId || session.specialistId ? {
+        specialistId: specialistId || session.specialistId,
+        specialistName: specialistName || session.specialistName || null,
+        specialistTier: session.specialistTier || null,
+      } : {}),
+      isPackageIncluded: true,
+      packageAssignmentId: assignment._id,
+      packageSessionId: session._id,
+      source: 'app',
+    });
+    await booking.save();
+
+    session.bookingId = booking._id;
+    session.bookingCreatedAt = new Date();
+    session.status = 'Booked';
+    await assignment.save();
+
+    return res.status(201).json({
+      success: true,
+      message: 'Session requested — the clinic will confirm your time shortly.',
+      data: booking,
+    });
+  } catch (error) {
+    console.error('bookSessionAsUser failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not book the session' });
   }
 };

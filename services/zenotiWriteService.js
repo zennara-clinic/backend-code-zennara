@@ -666,8 +666,9 @@ async function syncBooking(bookingId) {
  * "resync" in the panel.
  *
  * Deliberately conservative:
- *   · only future appointments, and only live statuses — a past or cancelled
- *     booking must never be created in Zenoti after the fact
+ *   · only future appointments, and only CONFIRMED ones — a booking still
+ *     awaiting the clinic's confirmation must not be created in Zenoti, and a
+ *     past or cancelled one must never be created after the fact
  *   · never touches rows that already carry an appointment id
  *   · never touches source:'zenoti' mirrors (they came FROM Zenoti)
  *   · small batches, so a systemic failure cannot turn into a write storm
@@ -682,7 +683,8 @@ async function retryFailedBookingPushes({ limit = 10, trigger = 'schedule' } = {
     source: { $in: ['app', 'reception'] },
     zenotiAppointmentId: null,
     zenotiSyncStatus: { $in: ['failed', 'pending'] },
-    status: { $in: ['Awaiting Confirmation', 'Confirmed', 'Rescheduled'] },
+    // Confirmed only: an unconfirmed booking has no business in Zenoti yet.
+    status: 'Confirmed',
     eventAt: { $gte: new Date() },
   })
     .sort({ eventAt: 1 })

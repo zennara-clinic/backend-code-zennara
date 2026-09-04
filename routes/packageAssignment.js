@@ -26,6 +26,8 @@ const upload = multer({
 router.get('/user/my-packages', protect, packageAssignmentController.getUserPackages);
 router.get('/user/my-packages/:id', protect, packageAssignmentController.getUserPackageById);
 router.get('/user/my-packages/:id/service-cards', protect, packageAssignmentController.getUserServiceCards);
+// The customer books one of their package sessions (arrives at the desk as Awaiting Confirmation).
+router.post('/user/my-packages/:id/sessions/:sessionId/book', protect, packageAssignmentController.bookSessionAsUser);
 
 // Service consent routes (user submits before service)
 router.post('/:assignmentId/service-consent', protect, packageAssignmentController.submitServiceConsent);

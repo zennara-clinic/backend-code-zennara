@@ -55,6 +55,7 @@ exports.createPackage = async (req, res) => {
       media,
       customPrices,  // Object mapping serviceId to custom price
       zenotiPackageId,
+      validityMonths,
     } = req.body;
 
     // Validate required fields
@@ -90,7 +91,8 @@ exports.createPackage = async (req, res) => {
       media: media || [],
       isActive: req.body.isActive !== undefined ? !!req.body.isActive : true,
       isPopular: req.body.isPopular !== undefined ? !!req.body.isPopular : false,
-      zenotiPackageId: zenotiPackageId || null
+      zenotiPackageId: zenotiPackageId || null,
+      validityMonths: Number(validityMonths) > 0 ? Number(validityMonths) : 12,
     });
 
     res.status(201).json({
@@ -188,7 +190,8 @@ exports.updatePackage = async (req, res) => {
       isActive,
       isPopular,
       zenotiPackageId,
-      customPrices  // Object mapping serviceId to custom price
+      customPrices,  // Object mapping serviceId to custom price
+      validityMonths,
     } = req.body;
 
     const packageData = await findPackage(req.params.id);
@@ -212,6 +215,7 @@ exports.updatePackage = async (req, res) => {
     if (description) packageData.description = description;
     if (benefits !== undefined) packageData.benefits = benefits;
     if (price !== undefined) packageData.price = price;
+    if (validityMonths !== undefined && Number(validityMonths) > 0) packageData.validityMonths = Number(validityMonths);
     if (image !== undefined) packageData.image = image;
     if (media !== undefined) packageData.media = media;
     if (isActive !== undefined) packageData.isActive = isActive;

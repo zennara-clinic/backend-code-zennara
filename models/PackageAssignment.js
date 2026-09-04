@@ -107,9 +107,16 @@ const packageAssignmentSchema = new mongoose.Schema({
     ref: 'Branch',
     default: null
   },
-  // The scheduled sessions. The clinic sets a date per session (a treatment can
-  // appear more than once for multi-session treatments). 24h before each
-  // scheduledDate the scheduler auto-creates a Booking and links it here.
+  /**
+   * The sessions in the package. The clinic may set a suggested date per
+   * session (a treatment can appear more than once for a multi-session course).
+   *
+   * Sessions are NOT auto-booked any more. 24 hours before a suggested date —
+   * and again when the package is a month from expiry — the customer is
+   * emailed / WhatsApped to book the session themselves from the app. That
+   * booking arrives at the desk as "Awaiting Confirmation"; confirming it in
+   * the panel is what creates the Zenoti appointment.
+   */
   sessions: [{
     serviceId: String,          // → Package.services[].serviceId / Consultation.id
     serviceName: String,
@@ -135,8 +142,12 @@ const packageAssignmentSchema = new mongoose.Schema({
       default: null
     },
     bookingCreatedAt: { type: Date, default: null },
-    completedAt: { type: Date, default: null }
+    completedAt: { type: Date, default: null },
+    /** When the "book your session" nudge went out, so it is sent once. */
+    reminderSentAt: { type: Date, default: null }
   }],
+  /** When the "your package expires soon" nudge went out. */
+  expiryReminderSentAt: { type: Date, default: null },
   usageTracking: {
     totalSessions: {
       type: Number,

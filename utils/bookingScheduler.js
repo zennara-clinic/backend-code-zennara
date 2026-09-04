@@ -91,130 +91,121 @@ function formatSlotTime(date) {
 }
 
 /**
- * Auto-create the appointment for each package session ~24 hours before its
- * scheduled date. The booking is free (amount 0, paid), Confirmed, and flagged
- * `isPackageIncluded`, so it appears on the guest's appointment list and runs
- * through the same check-in/out flow. Idempotent: a session with a bookingId is
- * skipped, so re-running never double-books.
+ * Nudge customers to book their package sessions — the scheduler no longer
+ * books them.
+ *
+ * Auto-creating the appointment 24 hours before a clinic-set date put a
+ * Confirmed booking in the diary that the customer had never agreed to and the
+ * desk had never looked at. The agreed flow is: the customer books the session
+ * from the app, the desk confirms it, and that confirmation creates the Zenoti
+ * appointment — exactly like any other booking.
+ *
+ * Two nudges, each sent once:
+ *   · 24 hours before a session's suggested date: "book your session"
+ *   · 30 days before the package expires, if sessions remain: "use it before…"
+ *
+ * Email always; WhatsApp best-effort (free-text delivery depends on the
+ * customer having messaged the clinic within 24h, so failures are expected
+ * and logged, never raised).
  */
-const createDuePackageBookings = async () => {
+const remindDuePackageSessions = async () => {
   try {
     const PackageAssignment = require('../models/PackageAssignment');
-    const Consultation = require('../models/Consultation');
+    const whatsapp = require('../services/whatsappService');
+    const { clinicDateKey } = require('./bookingTime');
 
     const now = new Date();
-    const windowEnd = new Date(now.getTime() + 24 * 60 * 60 * 1000);   // book from 24h before
-    const windowStart = new Date(now.getTime() - 24 * 60 * 60 * 1000); // small catch-up for missed runs
+    const dayAhead = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+    const monthAhead = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
 
     const assignments = await PackageAssignment.find({
       status: 'Active',
-      sessions: {
-        $elemMatch: {
-          status: 'Scheduled',
-          bookingId: null,
-          scheduledDate: { $lte: windowEnd, $gte: windowStart }
-        }
-      }
+      $or: [
+        { sessions: { $elemMatch: { status: 'Scheduled', bookingId: null, reminderSentAt: null, scheduledDate: { $gte: now, $lte: dayAhead } } } },
+        { expiryReminderSentAt: null, validUntil: { $gte: now, $lte: monthAhead } },
+      ],
     }).populate('userId', 'fullName email phone');
 
-    let created = 0;
-
-    for (const assignment of assignments) {
+    let sent = 0;
+    for (const a of assignments) {
+      const name = a.userDetails?.fullName || a.userId?.fullName || 'there';
+      const email = a.userDetails?.email || a.userId?.email || '';
+      const phone = a.userDetails?.phone || a.userId?.phone || '';
+      const realEmail = email && !/@zennara\.local$|@guest\.zennara\.in$/i.test(email);
+      const pkgName = a.packageDetails?.name || 'your package';
       let touched = false;
 
-      for (const session of assignment.sessions) {
-        if (session.status !== 'Scheduled' || session.bookingId) continue;
-        if (!session.scheduledDate) continue;
+      const deliver = async (subject, line1, line2) => {
+        const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:520px;margin:0 auto;padding:24px;color:#111714;">
+          <div style="font-size:12px;letter-spacing:2px;color:#032F22;font-weight:800;">ZENNARA</div>
+          <h1 style="font-size:18px;margin:8px 0 12px;">${subject}</h1>
+          <p style="font-size:14px;line-height:21px;">Hi ${name},</p>
+          <p style="font-size:14px;line-height:21px;">${line1}</p>
+          <p style="font-size:14px;line-height:21px;">${line2}</p>
+          <p style="font-size:12px;color:#7A827E;margin-top:20px;">Open the Zennara app → Profile → My packages to choose a date and time. The clinic will confirm your slot.</p>
+        </div>`;
+        if (realEmail) await emailService.sendRawEmail(email, `${subject} — Zennara`, html).catch((e) => console.error('⚠️ package reminder email failed:', e.message));
+        if (phone) await whatsapp.sendMessage(phone, `${subject}\n\nHi ${name}, ${line1} ${line2}\n\nOpen the Zennara app → Profile → My packages to book. The clinic will confirm your slot.`).catch(() => {});
+        sent += 1;
+      };
+
+      for (const session of a.sessions) {
+        if (session.status !== 'Scheduled' || session.bookingId || session.reminderSentAt || !session.scheduledDate) continue;
         const when = new Date(session.scheduledDate);
-        if (when > windowEnd || when < windowStart) continue;
-
-        if (!assignment.preferredLocation) {
-          console.error(`⚠️ Package session ${session._id} has no location on its assignment — skipped`);
-          continue;
-        }
-
-        // serviceId is a Consultation.id (String); fall back to _id just in case.
-        let consultation = await Consultation.findOne({ id: session.serviceId });
-        if (!consultation) {
-          consultation = await Consultation.findById(session.serviceId).catch(() => null);
-        }
-        if (!consultation) {
-          console.error(`⚠️ Package session ${session._id} — treatment not found: ${session.serviceId}`);
-          continue;
-        }
-
-        // Prefer the clinic-local label set in the panel; fall back to deriving
-        // one from the date so a slot is never blank.
-        const timeLabel = session.scheduledTime || formatSlotTime(when);
-
-        try {
-          const booking = new Booking({
-            userId: assignment.userId?._id || assignment.userId,
-            consultationId: consultation._id,
-            fullName: assignment.userDetails?.fullName || assignment.userId?.fullName || 'Guest',
-            mobileNumber: assignment.userDetails?.phone || assignment.userId?.phone || '',
-            email: assignment.userDetails?.email || assignment.userId?.email || '',
-            branchId: assignment.branchId || undefined,
-            preferredLocation: assignment.preferredLocation,
-            preferredDate: when,
-            preferredTimeSlots: [timeLabel],
-            confirmedDate: when,
-            confirmedTime: timeLabel,
-            amount: 0,
-            paymentStatus: 'paid',
-            status: 'Confirmed',
-            // The dermatologist the clinic picked for THIS session. slotTime is
-            // set alongside so the session actually holds the diary slot —
-            // without it the doctor would still look free at that hour.
-            ...(session.specialistId || session.specialistName ? {
-              specialistId: session.specialistId || null,
-              specialistName: session.specialistName || null,
-              specialistTier: session.specialistTier || null,
-              slotTime: toHHMM(when),
-            } : {}),
-            isPackageIncluded: true,
-            packageAssignmentId: assignment._id,
-            packageSessionId: session._id
-          });
-          await booking.save();
-
-          session.bookingId = booking._id;
-          session.bookingCreatedAt = new Date();
-          session.status = 'Booked';
-          touched = true;
-          created++;
-
-          try {
-            await emailService.sendAppointmentConfirmed(
-              booking.email,
-              booking.fullName,
-              {
-                referenceNumber: booking.referenceNumber,
-                treatment: consultation.name,
-                confirmedDate: when.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
-                confirmedTime: timeLabel,
-                location: booking.preferredLocation
-              },
-              booking.preferredLocation
-            );
-          } catch (e) {
-            console.error('⚠️ Package booking email failed:', e.message);
-          }
-        } catch (e) {
-          console.error(`⚠️ Failed to create package booking for session ${session._id}:`, e.message);
-        }
+        if (when < now || when > dayAhead) continue;
+        await deliver(
+          'Book your next session',
+          `your <b>${session.serviceName || 'treatment'}</b> session from ${pkgName} is suggested for <b>${clinicDateKey(when)}${session.scheduledTime ? ` · ${session.scheduledTime}` : ''}</b>.`,
+          'Please book the session in the app so we can hold a time for you.',
+        );
+        session.reminderSentAt = new Date();
+        touched = true;
       }
 
-      if (touched) {
-        await assignment.save().catch((e) => console.error('⚠️ Assignment save failed:', e.message));
+      if (!a.expiryReminderSentAt && a.validUntil && a.validUntil >= now && a.validUntil <= monthAhead) {
+        const remaining = (a.sessions || []).filter((s) => !['Completed', 'Cancelled'].includes(s.status) && !s.bookingId).length;
+        if (remaining > 0) {
+          await deliver(
+            'Your package expires soon',
+            `${pkgName} is valid until <b>${clinicDateKey(a.validUntil)}</b> and you still have <b>${remaining}</b> session${remaining === 1 ? '' : 's'} to use.`,
+            'Book them in the app before the package expires.',
+          );
+        }
+        a.expiryReminderSentAt = new Date();
+        touched = true;
       }
+
+      if (touched) await a.save().catch((e) => console.error('⚠️ Assignment save failed:', e.message));
     }
 
-    if (created > 0) {
-      console.log(`📦 Created ${created} package-session appointment(s)`);
+    if (sent > 0) console.log(`📦 Sent ${sent} package reminder(s)`);
+  } catch (error) {
+    console.error('❌ Error in package reminder scheduler:', error);
+  }
+};
+
+/**
+ * Mark packages Expired once their validity has passed. Nothing else changes:
+ * completed sessions stay completed, and the desk can still extend `validUntil`
+ * from the panel, which puts the package back to Active on the next run.
+ */
+const expirePackages = async () => {
+  try {
+    const PackageAssignment = require('../models/PackageAssignment');
+    const now = new Date();
+    const expired = await PackageAssignment.updateMany(
+      { status: 'Active', validUntil: { $ne: null, $lt: now } },
+      { $set: { status: 'Expired' } },
+    );
+    const revived = await PackageAssignment.updateMany(
+      { status: 'Expired', validUntil: { $gte: now } },
+      { $set: { status: 'Active' } },
+    );
+    if (expired.modifiedCount || revived.modifiedCount) {
+      console.log(`📦 Packages: ${expired.modifiedCount} expired, ${revived.modifiedCount} re-activated after an extension`);
     }
   } catch (error) {
-    console.error('❌ Error in package session scheduler:', error);
+    console.error('❌ Error expiring packages:', error);
   }
 };
 
@@ -230,13 +221,17 @@ const startBookingScheduler = () => {
 
   console.log('📅 Booking cleanup scheduler started - runs every hour');
 
-  // Auto-create package-session appointments ~24h before each session's date.
-  // Runs every 15 minutes so the appointment appears promptly on the guest's list.
-  cron.schedule('*/15 * * * *', () => {
-    createDuePackageBookings();
+  // Nudge customers to book package sessions (24h before a suggested date,
+  // 30 days before expiry). Hourly is plenty — these are messages, not bookings.
+  cron.schedule('5 * * * *', () => {
+    remindDuePackageSessions();
   });
+  // Expire packages whose validity has passed, just after midnight IST.
+  cron.schedule('10 0 * * *', () => {
+    expirePackages();
+  }, { timezone: 'Asia/Kolkata' });
 
-  console.log('📦 Package session scheduler started - runs every 15 minutes');
+  console.log('📦 Package reminder scheduler started - hourly; expiry check nightly');
 
   /*
    * The daily clinic summary, 20:00 IST — after the last 18:00 slot has run,
@@ -254,9 +249,9 @@ const startBookingScheduler = () => {
 
   console.log('✉️  Daily clinic summary scheduled - 20:00 IST');
 
-  // Also run both immediately on server start
+  // Also run immediately on server start
   cleanupExpiredBookings();
-  createDuePackageBookings();
+  expirePackages();
 };
 
 /**
@@ -271,7 +266,7 @@ module.exports = {
   startBookingScheduler,
   manualCleanup,
   cleanupExpiredBookings,
-  createDuePackageBookings
+  remindDuePackageSessions
 };
 
 /* ---------------------------------------------------------------------------

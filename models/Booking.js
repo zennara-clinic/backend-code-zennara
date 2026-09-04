@@ -527,10 +527,14 @@ bookingSchema.methods.canBeRescheduled = function(now = new Date()) {
     && bookingChangeAllowed(this, now);
 };
 
-// Remember whether this save created the booking, so the post-save hook only
-// pushes newly-created bookings to Zenoti (not every status update).
+// Remember what this save did, so the post-save hooks can decide whether the
+// booking is due in Zenoti. `_becameConfirmed` is the trigger for the FIRST
+// push: it is true when the booking is created already Confirmed (reception)
+// or when its status moves to Confirmed (the panel's Confirm button).
 bookingSchema.pre('save', function (next) {
   this._wasNew = this.isNew;
+  this._becameConfirmed = this.status === 'Confirmed'
+    && (this.isNew || this.isModified('status'));
   this._zenotiOperationalChanged = [
     'status', 'confirmedDate', 'confirmedTime', 'preferredDate', 'slotTime',
     'cancellationReason',
@@ -538,11 +542,23 @@ bookingSchema.pre('save', function (next) {
   next();
 });
 
-// Push a newly-created booking to Zenoti as an appointment. Fire-and-forget and
-// gated by ZENOTI_WRITE_MODE — a CRM failure never affects the booking itself.
+/*
+ * Push a booking to Zenoti as an appointment — but ONLY once the clinic has
+ * confirmed it.
+ *
+ * This used to fire on creation, so an app booking that was still "Awaiting
+ * Confirmation" was already sitting in Zenoti's diary before anyone at the
+ * desk had looked at it. The agreed flow is the reverse: the customer books,
+ * reception confirms in the panel, and THAT confirmation is what creates the
+ * Zenoti appointment. A booking created already Confirmed by staff (a walk-in
+ * or a package session booked at the desk) is pushed on that same save.
+ *
+ * Fire-and-forget and gated by ZENOTI_WRITE_MODE — a CRM failure never
+ * affects the booking itself.
+ */
 bookingSchema.post('save', function (doc) {
   if (doc.$locals?.skipZenotiWrite) return;
-  if (!doc._wasNew) return;
+  if (!doc._becameConfirmed) return;
   if (doc.zenotiAppointmentId || doc.source === 'zenoti') return;
   setImmediate(() => {
     try {
