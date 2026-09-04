@@ -21,8 +21,12 @@ async function reconcile({ Model, label, idField, shellFilter, refCheck, copy })
   const active = await Model.find({ isActive: true, [idField]: { $in: [null, ''] } }).lean();
   const shells = await Model.find({ isActive: false, [idField]: { $type: 'string' }, ...shellFilter }).lean();
   const out = { label, active: active.length, shells: shells.length, linked: 0, deletedShells: 0, ambiguous: [], referenced: [] };
+  // Sale-grade tolerance: prices, pack sizes, spacing and word order differ
+  // between the clinic's names and Zenoti's; only a UNIQUE hit is accepted.
+  const { buildMatcher } = require('../utils/catalogueMatch');
+  let matchShell = buildMatcher(shells, (r) => r.name, { strict: true });
   for (const rec of active) {
-    const shell = findByName(shells, rec.name);
+    const shell = findByName(shells, rec.name) || matchShell(rec.name);
     if (!shell) {
       // findByName returns null for 0 OR >1 hits; distinguish for the report.
       const { normalizeName } = require('../utils/nameMatch');
@@ -33,18 +37,20 @@ async function reconcile({ Model, label, idField, shellFilter, refCheck, copy })
     const refs = refCheck ? await refCheck(shell) : 0;
     console.log(`  ${rec.name}  ←  ${shell.name}  [${shell[idField]}]${refs ? `  (shell referenced ${refs}×, kept)` : ''}`);
     if (!APPLY) continue;
-    const set = { [idField]: shell[idField], ...copy(shell) };
-    await Model.updateOne({ _id: rec._id }, { $set: set });
-    out.linked += 1;
+    // The Zenoti id is unique per collection, so the shell must give it up
+    // BEFORE the real record takes it.
     if (!refs) {
       await Model.deleteOne({ _id: shell._id });
       out.deletedShells += 1;
     } else {
-      // Two records cannot share a Zenoti id; the shell loses it.
       await Model.updateOne({ _id: shell._id }, { $unset: { [idField]: '' } });
       out.referenced.push(shell.name);
     }
+    const set = { [idField]: shell[idField], ...copy(shell) };
+    await Model.updateOne({ _id: rec._id }, { $set: set });
+    out.linked += 1;
     shells.splice(shells.indexOf(shell), 1);
+    matchShell = buildMatcher(shells, (r) => r.name, { strict: true });
   }
   return out;
 }
@@ -88,4 +94,4 @@ async function reconcile({ Model, label, idField, shellFilter, refCheck, copy })
   });
   for (const o of [s, p, r]) console.log(`${o.label}: ${o.active} active unlinked, ${o.shells} shells; linked ${o.linked}, shells removed ${o.deletedShells}${o.ambiguous.length ? `; ambiguous: ${o.ambiguous.join(', ')}` : ''}${o.referenced.length ? `; shells kept (referenced): ${o.referenced.join(', ')}` : ''}`);
   await mongoose.disconnect();
-})().catch((e) => { console.error(e.message); process.exitCode = 1; });
+})().catch((e) => { console.error(e.message); process.exitCode = 1; }).finally(() => mongoose.disconnect().catch(() => {}));

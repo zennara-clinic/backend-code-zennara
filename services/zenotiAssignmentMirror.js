@@ -23,31 +23,72 @@ const Consultation = require('../models/Consultation');
 const Branch = require('../models/Branch');
 const logger = require('../utils/logger');
 
+const { buildMatcher } = require('../utils/catalogueMatch');
+
 const escapeRx = (v) => String(v).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const exact = (v) => new RegExp(`^${escapeRx(String(v || '').trim())}$`, 'i');
+
+/*
+ * The catalogue is loaded once and matched in memory: a guest's history has
+ * dozens of lines and there are thousands of guests, and sale names are old
+ * spellings with prices baked in ("Azelac r u serum - 2650"), so a database
+ * regex per line was both slow and nearly blind. Pools refresh every few
+ * minutes, or at once when this module creates a new row.
+ */
+const POOL_TTL_MS = 5 * 60 * 1000;
+let pools = null;
+let poolsAt = 0;
+async function getPools(force = false) {
+  if (pools && !force && Date.now() - poolsAt < POOL_TTL_MS) return pools;
+  const [packages, consultations, products, branches] = await Promise.all([
+    Package.find({}).select('_id id name price originalPrice services zenotiPackageId').lean(),
+    Consultation.find({}).select('_id id name price zenotiServiceId').lean(),
+    Product.find({}).select('_id name image price isRetail zenotiProductId').lean(),
+    Branch.find({}).select('_id name address zenotiCenterId').lean(),
+  ]);
+  const idMap = (rows, key) => new Map(rows.filter((r) => r[key]).map((r) => [String(r[key]).toLowerCase(), r]));
+  pools = {
+    packageByZenotiId: idMap(packages, 'zenotiPackageId'),
+    packageByName: buildMatcher(packages),
+    consultationByZenotiId: idMap(consultations, 'zenotiServiceId'),
+    consultationByName: buildMatcher(consultations),
+    productByZenotiId: idMap(products, 'zenotiProductId'),
+    // Retail first; a same-named consumable is not what a customer bought.
+    retailByName: buildMatcher(products.filter((p) => p.isRetail !== false)),
+    productByName: buildMatcher(products),
+    branchByZenotiId: idMap(branches, 'zenotiCenterId'),
+    branchByName: buildMatcher(branches),
+  };
+  poolsAt = Date.now();
+  return pools;
+}
+const lower = (v) => (v ? String(v).toLowerCase() : null);
 const slugify = (v) => String(v || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 
 /** The catalogue package this purchase is of — created hidden if unknown. */
 async function packageFor(zp) {
   if (!zp?.name) return null;
-  let pkg = await Package.findOne({ name: exact(zp.name) });
-  if (pkg) return pkg;
+  const P = await getPools();
+  const found = (zp.packageId && P.packageByZenotiId.get(lower(zp.packageId))) || P.packageByName(zp.name);
+  if (found) return found;
   const services = [];
   for (const svc of zp.services || []) {
     if (!svc?.name) continue;
-    const c = await Consultation.findOne({ name: exact(svc.name) }).select('id name price').lean();
+    const c = (svc.serviceId && P.consultationByZenotiId.get(lower(svc.serviceId))) || P.consultationByName(svc.name);
     if (c) services.push({ serviceId: c.id, serviceName: c.name, servicePrice: c.price || 0, sessions: Math.max(1, Number(svc.total) || 1) });
   }
-  pkg = new Package({
+  const pkg = new Package({
     id: `pkg-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
     name: String(zp.name).trim(),
     description: `${zp.name} — first seen as a clinic purchase. Review and publish in the panel.`,
     services,
     price: Number(zp.price) > 0 ? Number(zp.price) : 0,
+    zenotiPackageId: zp.packageId ? String(zp.packageId).toLowerCase() : undefined,
     isActive: false,
   });
   await pkg.save({ validateModifiedOnly: true });
-  return pkg;
+  await getPools(true);
+  return pkg.toObject();
 }
 
 /** Rebuild a session list from Zenoti's per-service totals, keeping our booked ones. */
@@ -60,7 +101,7 @@ function sessionsFrom(zp, existing = []) {
     const already = keep.filter((s) => String(s.serviceName || '').toLowerCase() === String(svc.name || '').toLowerCase()).length;
     for (let i = already; i < total; i += 1) {
       out.push({
-        serviceId: svc.serviceId || '',
+        serviceId: svc.serviceId || '',  // Zenoti's id when the history carried one
         serviceName: svc.name || '',
         status: i < used ? 'Completed' : 'Scheduled',
         completedAt: i < used ? (zp.purchaseDate ? new Date(zp.purchaseDate) : null) : null,
@@ -78,7 +119,7 @@ async function mirrorGuestPackages(user, packages) {
     try {
       const pkg = await packageFor(zp);
       if (!pkg) continue;
-      const branch = zp.centerName ? await Branch.findOne({ name: exact(zp.centerName) }).select('_id name').lean() : null;
+      const branch = zp.centerName ? (await getPools()).branchByName(zp.centerName) : null;
 
       let a = await PackageAssignment.findOne({ zenotiUserPackageId: String(zp.id) });
       const isNew = !a;
@@ -129,22 +170,21 @@ async function mirrorGuestPackages(user, packages) {
 }
 
 async function mirrorGuestOrders(user, orders) {
-  const stats = { seen: 0, created: 0, skippedNoProduct: 0, failed: 0 };
+  const stats = { seen: 0, created: 0, skippedNoProduct: 0, failed: 0, unmatched: new Map() };
   for (const zo of orders || []) {
     if (!zo?.name) continue;
     stats.seen += 1;
     const saleId = String(zo.id || `${zo.invoiceNumber || 'inv'}:${zo.name}:${zo.saleDate || ''}`);
     try {
       if (await ProductOrder.exists({ zenotiSaleId: saleId })) continue;
-      // Retail first; a same-named consumable is not what a customer bought.
-      const product = await Product.findOne({ name: exact(zo.name), isRetail: true }).lean()
-        || await Product.findOne({ name: exact(zo.name) }).lean();
-      if (!product) { stats.skippedNoProduct += 1; continue; }
+      const P = await getPools();
+      const product = (zo.productId && P.productByZenotiId.get(lower(zo.productId))) || P.retailByName(zo.name) || P.productByName(zo.name);
+      if (!product) { stats.skippedNoProduct += 1; stats.unmatched.set(zo.name, (stats.unmatched.get(zo.name) || 0) + 1); continue; }
 
       const qty = Math.max(1, Number(zo.quantity) || 1);
       const total = Number(zo.price) >= 0 ? Number(zo.price) : (product.price || 0) * qty;
       const unit = qty > 0 ? Math.round((total / qty) * 100) / 100 : total;
-      const branch = zo.centerName ? await Branch.findOne({ name: exact(zo.centerName) }).select('address').lean() : null;
+      const branch = zo.centerName ? P.branchByName(zo.centerName) : null;
 
       const order = new ProductOrder({
         userId: user._id,
@@ -186,4 +226,4 @@ async function mirrorGuestOrders(user, orders) {
   return stats;
 }
 
-module.exports = { mirrorGuestPackages, mirrorGuestOrders };
+module.exports = { mirrorGuestPackages, mirrorGuestOrders, getPools };
