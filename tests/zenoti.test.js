@@ -235,3 +235,28 @@ test('inbound reconcile never blanks the email of an app booking', () => {
   const src = require('fs').readFileSync(require('path').join(__dirname, '../services/zenotiAppointmentSyncService.js'), 'utf8');
   assert.ok(src.includes("booking.source === 'zenoti' && (!booking.email || isPlaceholderEmail(booking.email))"), 'blank email only for Zenoti-owned rows');
 });
+
+test('clinicInstant reads Zenoti wall-clock strings as IST and rejects the 0001 sentinel', () => {
+  const { clinicInstant } = require('../config/zenoti');
+  assert.equal(clinicInstant('2026-02-04T06:16:07').toISOString(), '2026-02-04T00:46:07.000Z');
+  assert.equal(clinicInstant('2026-08-29T06:54:00Z').toISOString(), '2026-08-29T06:54:00.000Z');
+  assert.equal(clinicInstant('0001-01-01T00:00:00'), null);
+  assert.equal(clinicInstant(null), null);
+});
+
+test('centre diary rows carry when and by whom the appointment was booked', () => {
+  const row = zenoti.normalizeCenterAppointment({
+    appointment_id: 'A1', guest: { id: 'G1', first_name: 'A', last_name: 'B' },
+    service: { id: 'S1', name: 'Consultation' }, start_time: '2026-08-29T12:15:00',
+    creation_date: '2026-08-29T12:24:00', creation_date_utc: '2026-08-29T06:54:00', created_by_name: 'Front Desk',
+  }, 'c9f032b2-4450-4a77-8ec8-641a26908d39');
+  assert.equal(row.createdAt, '2026-08-29T12:24:00');
+  assert.equal(row.createdAtUtc, '2026-08-29T06:54:00');
+  assert.equal(row.createdByName, 'Front Desk');
+});
+
+test('a new mirrored booking keeps the Zenoti booked-on instant as createdAt', () => {
+  const bookedAt = new Date('2026-08-29T06:54:00Z');
+  const booking = new Booking({ createdAt: bookedAt, source: 'zenoti' });
+  assert.equal(booking.createdAt.getTime(), bookedAt.getTime());
+});

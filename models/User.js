@@ -374,6 +374,12 @@ const UserSchema = new mongoose.Schema({
     type: Date,
     default: Date.now
   },
+  // When the clinic first registered this guest in Zenoti (guest.created_date).
+  // For an imported patient this — not the import run — is the join date.
+  zenotiCreatedAt: {
+    type: Date,
+    default: null
+  },
   lastLogin: {
     type: Date,
     default: null

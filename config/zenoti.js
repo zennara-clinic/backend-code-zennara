@@ -153,8 +153,24 @@ function publicEmail(email) {
   return email && !isPlaceholderEmail(email) ? email : null;
 }
 
+/**
+ * Zenoti writes timestamps such as `created_date` and `creation_date` as the
+ * clinic's wall-clock time with no zone ("2026-02-04T06:16:07"). Read them as
+ * IST; honour an explicit zone when one is present. Returns null when the
+ * value is missing or unparseable (Zenoti also sends "0001-01-01T00:00:00").
+ */
+function clinicInstant(value) {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (!raw || raw.startsWith('0001-')) return null;
+  const hasZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
+  const date = new Date(hasZone ? raw : `${raw}+05:30`);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
 module.exports = {
   ZENOTI_API_BASE,
+  clinicInstant,
   PLACEHOLDER_EMAIL_DOMAIN,
   placeholderEmail,
   isPlaceholderEmail,

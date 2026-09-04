@@ -365,7 +365,12 @@ function normalizeCenterAppointment(raw, centerId) {
     membershipApplied: Boolean(raw.autoapply_membership || raw.has_active_membership_for_auto_pay),
     isStarted: Boolean(raw.is_started) || Number(raw.progress) === 1,
     isCompleted: Boolean(raw.is_completed) || Number(raw.progress) === 2,
+    // When and by whom the appointment was BOOKED (not when it takes place).
+    // Only the centre diary and the single-appointment detail carry these;
+    // the per-guest history feed does not.
     createdAt: pick(raw, 'creation_date'),
+    createdAtUtc: pick(raw, 'creation_date_utc'),
+    createdByName: pick(raw, 'created_by_name'),
     updatedAt: pick(raw, 'last_date'),
   };
 }
@@ -375,6 +380,7 @@ function normalizeProductPurchase(item) {
   if (!item) return null;
   return {
     id: pick(item, 'id', 'Id'),
+    productId: pick(item.product || item.product_info || {}, 'id', 'Id') || pick(item, 'product_id'),
     name: pick(item, 'name', 'Name'),
     quantity: item.quantity ?? null,
     saleDate: pick(item, 'sale_date', 'SaleDate'),
@@ -390,6 +396,7 @@ function normalizeProductPurchase(item) {
 function normalizePackage(p) {
   if (!p) return null;
   const services = (Array.isArray(p.services) ? p.services : []).map((s) => ({
+    serviceId: pick(s.service_type_info || {}, 'id', 'Id') || pick(s, 'service_id'),
     name: pick(s.service_type_info || {}, 'name', 'Name'),
     total: s.total ?? null,
     used: s.used ?? null,
@@ -408,6 +415,7 @@ function normalizePackage(p) {
   const redemption = p.redemption_setting_details || {};
   return {
     id: pick(p, 'user_package_id', 'id'),
+    packageId: pick(p.package || {}, 'id', 'Id') || pick(p, 'package_id'),
     name: pick(p.package || {}, 'name', 'Name'),
     status: p.status ?? null, // numeric Zenoti code
     purchaseDate: pick(date, 'purchase_date'),

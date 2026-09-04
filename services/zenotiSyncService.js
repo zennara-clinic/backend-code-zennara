@@ -17,6 +17,7 @@ const Branch = require('../models/Branch');
 const zenoti = require('./zenotiService');
 const {
   DEFAULT_BRANCH_NAME,
+  clinicInstant,
   normalizeIndianMobile,
   isZenMembership,
   isActiveMembershipStatus,
@@ -133,6 +134,11 @@ async function provisionUserFromGuest(guest, opts = {}) {
   if (guest.fullName) synced.fullName = guest.fullName;
   if (guest.gender) synced.gender = guest.gender;
   if (guest.dateOfBirth) synced.dateOfBirth = guest.dateOfBirth;
+  // The day the clinic registered the guest. The roster import stamped every
+  // mirrored patient with the import day instead, so "Joined" read 23 Aug for
+  // 6,900 people; the join date is the EARLIEST first contact we know of.
+  const registeredAt = clinicInstant(guest.createdDate);
+  if (registeredAt) synced.zenotiCreatedAt = registeredAt;
 
   // The bulk importer pre-loads a page's worth of candidate accounts so we
   // don't pay three round-trips per guest; otherwise look them up here.
@@ -186,6 +192,7 @@ async function provisionUserFromGuest(guest, opts = {}) {
     if (guest.fullName && String(user.fullName || '').trim().toLowerCase() === 'zennara guest') {
       user.fullName = guest.fullName;
     }
+    if (registeredAt && (!user.createdAt || registeredAt < user.createdAt)) user.createdAt = registeredAt;
     // Zenoti is the source of record for these, so a real identity always wins.
     const changed = ['fullName', 'gender', 'dateOfBirth', 'zenotiGuestId', 'zenotiCenterId', 'location', 'email', 'phone']
       .some((k) => String(before[k] ?? '') !== String(user[k] ?? ''));
@@ -220,6 +227,7 @@ async function provisionUserFromGuest(guest, opts = {}) {
     // you want to force re-consent in-app.
     privacyPolicyConsent: { accepted: true, version: 'zenoti-import', acceptedAt: new Date() },
     termsOfServiceConsent: { accepted: true, version: 'zenoti-import', acceptedAt: new Date() },
+    ...(registeredAt ? { createdAt: registeredAt } : {}),
     ...synced,
   });
   user.$locals.skipZenotiWrite = true;

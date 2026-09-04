@@ -15,7 +15,7 @@ const User = require('../models/User');
 const ZenotiSyncRun = require('../models/ZenotiSyncRun');
 const zenoti = require('./zenotiService');
 const { provisionUserFromGuest, hydrateGuestIdentity } = require('./zenotiSyncService');
-const { CENTERS, branchNameForCenter, publicEmail, isPlaceholderEmail } = require('../config/zenoti');
+const { CENTERS, branchNameForCenter, publicEmail, isPlaceholderEmail, clinicInstant } = require('../config/zenoti');
 const Doctor = require('../models/Doctor');
 const ZenotiPractitioner = require('../models/ZenotiPractitioner');
 const { buildDoctorMatcher, canonicalName, tierTitle } = require('../utils/dermatologistMatch');
@@ -148,18 +148,22 @@ async function retireVanishedAppointments({ centerId, from, to, seenIds, runStar
 
 async function lookupContext() {
   const [consultations, branches, doctors, practitioners] = await Promise.all([
-    Consultation.find({}).select('_id name slug').lean(),
+    Consultation.find({}).select('_id name slug zenotiServiceId').lean(),
     Branch.find({}).select('_id name').lean(),
     Doctor.find({}).select('doctorId name tier').lean(),
     ZenotiPractitioner.find({ active: true }).lean(),
   ]);
   const consultationByName = new Map(consultations.map((c) => [norm(c.name), c]));
+  // Zenoti's own service id is the reliable link; the name is the fallback for
+  // services not yet mirrored.
+  const consultationByZenotiId = new Map(consultations.filter((c) => c.zenotiServiceId).map((c) => [String(c.zenotiServiceId).toLowerCase(), c]));
   const branchByName = new Map(branches.map((b) => [norm(b.name), b]));
   const doctorById = new Map(doctors.map((doctor) => [String(doctor.doctorId), doctor]));
   const practitionerById = new Map(practitioners.map((row) => [String(row.zenotiEmployeeId).toLowerCase(), row]));
   const practitionerByName = new Map(practitioners.map((row) => [row.normalizedName || canonicalName(row.name), row]));
   return {
     consultationByName,
+    consultationByZenotiId,
     branchByName,
     doctorById,
     practitionerById,
@@ -232,7 +236,8 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
   const ctx = context || await lookupContext();
   const branchName = appointment.branchName || branchNameForCenter(appointment.centerId || owner.zenotiCenterId);
   const branch = ctx.branchByName.get(norm(branchName));
-  const consultation = ctx.consultationByName.get(norm(appointment.serviceName));
+  const consultation = (appointment.serviceId && ctx.consultationByZenotiId?.get(String(appointment.serviceId).toLowerCase()))
+    || ctx.consultationByName.get(norm(appointment.serviceName));
   const parts = appointmentLocalParts(appointment.startTime, appointment.startTimeUtc);
   if (!parts.day || !parts.time || Number.isNaN(parts.date.getTime())) {
     return { outcome: 'skipped', reason: 'invalid appointment time' };
@@ -259,10 +264,15 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
     });
   }
   const isNew = !booking;
+  // "Booked on" is Zenoti's creation_date (centre diary / detail only). Without
+  // it every mirrored visit was stamped with the crawl day, so 32,000 bookings
+  // read as booked on 23–25 Aug. Preferring the UTC form avoids the zone guess.
+  const bookedAt = clinicInstant(appointment.createdAtUtc ? `${appointment.createdAtUtc}Z` : appointment.createdAt);
   if (!booking) {
     booking = new Booking({
       userId: owner._id,
       source: 'zenoti',
+      ...(bookedAt ? { createdAt: bookedAt } : {}),
       // The generic four-digit random reference collides during bulk history
       // imports. Zenoti's GUID gives this row a stable reference, and
       // uniqueZenotiReference guarantees it is not already held by a different
@@ -412,6 +422,9 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
     hasUnexpiredPackages: Boolean(appointment.hasUnexpiredPackages),
     membershipApplied: Boolean(appointment.membershipApplied),
     equipmentName: appointment.equipmentName || null,
+    // Keep what the guest-history feed cannot give us once the diary has.
+    createdAt: bookedAt || booking.zenotiSource?.createdAt || null,
+    createdByName: appointment.createdByName || booking.zenotiSource?.createdByName || null,
   };
   booking.zenotiSyncStatus = 'synced';
   booking.zenotiSyncError = null;
@@ -435,6 +448,13 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
     } else {
       throw error;
     }
+  }
+  // Mongoose makes createdAt immutable on an existing document, so a row that
+  // was first mirrored from the guest-history feed (no creation_date) is
+  // corrected through the driver once the diary supplies the real booked-on
+  // instant. Guarded to a real difference so the common path costs nothing.
+  if (!isNew && bookedAt && Math.abs((booking.createdAt?.getTime() || 0) - bookedAt.getTime()) > 60_000) {
+    await Booking.collection.updateOne({ _id: booking._id }, { $set: { createdAt: bookedAt } });
   }
   return { outcome: isNew ? 'created' : 'updated', bookingId: booking._id };
 }
