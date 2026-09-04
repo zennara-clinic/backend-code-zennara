@@ -205,10 +205,9 @@ async function syncProducts({ trigger = 'manual' } = {}) {
         product.branchStock = entry.branchStock;
         product.stock = entry.total;
         product.trackStock = true;
-      } else if (product.isNew || (product.stock === 0 && product.trackStock !== false && !product.branchStock?.length)) {
-        // Mirrored with no count and none recorded here: not tracked.
-        product.trackStock = false;
       }
+      // Otherwise `trackStock` is settled once, below, for rows that have never
+      // had it decided — a panel decision (true or false) is never overridden.
       product.zenotiSyncedAt = new Date();
 
       await product.save({ validateModifiedOnly: true });
@@ -217,6 +216,16 @@ async function syncProducts({ trigger = 'manual' } = {}) {
       logger.warn('Zenoti product upsert failed', { zenotiProductId: entry.zenotiProductId, error: error.message });
     }
   }
+
+  // Products mirrored before `trackStock` existed carry no value at all. Zenoti
+  // gives no stock, so "never decided" means "not tracked" — set exactly once,
+  // and only where the field is absent, so a clinic that later starts counting
+  // a product in the panel keeps that choice.
+  const settled = await Product.updateMany(
+    { zenotiProductId: { $type: 'string' }, trackStock: { $exists: false } },
+    { $set: { trackStock: false } },
+  ).catch(() => ({ modifiedCount: 0 }));
+  stats.stockUntrackedSettled = settled.modifiedCount || 0;
 
   logger.info('Zenoti product sync finished', { ...stats, trigger });
   if (run) {
