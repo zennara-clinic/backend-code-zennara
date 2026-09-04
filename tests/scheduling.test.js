@@ -18,15 +18,15 @@ const { buildBookingQuery } = require('../utils/listFilters');
 
 const allDays = Object.fromEntries(
   ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
-    .map((day) => [day, { isOpen: true, openTime: '10:00', closeTime: '13:00' }]),
+    .map((day) => [day, { isOpen: true, openTime: '11:00', closeTime: '14:00' }]),
 );
 
 test('treatment slots are hourly even when an old branch record says 30 minutes', () => {
   const branch = { slotDuration: 30, operatingHours: allDays };
   assert.deepEqual(getBranchSlotsForDate(branch, '2030-01-01'), [
-    '10:00 AM',
     '11:00 AM',
     '12:00 PM',
+    '1:00 PM',
   ]);
 
   assert.equal(
@@ -37,12 +37,14 @@ test('treatment slots are hourly even when an old branch record says 30 minutes'
     validateBranchBooking(branch, '2030-01-01', ['11:00 AM'], new Date('2029-12-01')).ok,
     true,
   );
+  // An off-grid start that still fits inside 11:00–14:00 is a valid session
+  // (11:30–12:30); one that runs past close (13:30–14:30) is not.
   assert.equal(
-    validateBranchSession(branch, '2030-01-01', ['10:30 AM'], new Date('2029-12-01')).ok,
+    validateBranchSession(branch, '2030-01-01', ['11:30 AM'], new Date('2029-12-01')).ok,
     true,
   );
   assert.equal(
-    validateBranchSession(branch, '2030-01-01', ['12:30 PM'], new Date('2029-12-01')).ok,
+    validateBranchSession(branch, '2030-01-01', ['1:30 PM'], new Date('2029-12-01')).ok,
     false,
   );
 });
@@ -64,7 +66,7 @@ test('doctor slots are hourly and overlapping legacy bookings block the full hou
       weekly: [{
         day: new Date(2030, 0, 1).getDay(),
         branchId: null,
-        ranges: [{ start: '10:00', end: '13:00' }],
+        ranges: [{ start: '11:00', end: '14:00' }],
       }],
       overrides: [],
     }),
@@ -80,21 +82,21 @@ test('doctor slots are hourly and overlapping legacy bookings block the full hou
       now: new Date(2029, 11, 15, 9, 0),
     });
     assert.equal(free.slotMinutes, 60);
-    assert.deepEqual(free.slots.map((slot) => slot.time), ['10:00', '11:00', '12:00']);
+    assert.deepEqual(free.slots.map((slot) => slot.time), ['11:00', '12:00', '13:00']);
     assert.ok(free.slots.every((slot) => slot.available));
 
-    // A pre-change 10:30 booking now occupies 10:30–11:30, so neither the
-    // 10:00 nor 11:00 one-hour session may be sold around it.
-    bookings = [{ slotTime: '10:30', preferredTimeSlots: [] }];
+    // A pre-change 11:30 booking now occupies 11:30–12:30, so neither the
+    // 11:00 nor 12:00 one-hour session may be sold around it.
+    bookings = [{ slotTime: '11:30', preferredTimeSlots: [] }];
     const occupied = await slotsForDate('doctor-test', '2030-01-01', {
       now: new Date(2029, 11, 15, 9, 0),
     });
     assert.deepEqual(
       occupied.slots.map((slot) => ({ time: slot.time, booked: slot.booked })),
       [
-        { time: '10:00', booked: true },
         { time: '11:00', booked: true },
-        { time: '12:00', booked: false },
+        { time: '12:00', booked: true },
+        { time: '13:00', booked: false },
       ],
     );
   } finally {
@@ -170,7 +172,7 @@ test('any available returns free dermatologists across clinics with their actual
   Branch.findById = async (id) => ({
     _id: id,
     closureFor: () => null,
-    hoursFor: () => ({ open: '10:00', close: '13:00' }),
+    hoursFor: () => ({ open: '11:00', close: '14:00' }),
   });
   DermatologistSchedule.findOne = ({ doctorId }) => ({
     lean: async () => ({
@@ -181,7 +183,7 @@ test('any available returns free dermatologists across clinics with their actual
       weekly: [{
         day: new Date(Date.UTC(2030, 0, 1)).getUTCDay(),
         branchId: doctorId === 'doctor-jubilee' ? 'branch-jubilee' : 'branch-kondapur',
-        ranges: [{ start: '10:00', end: '13:00' }],
+        ranges: [{ start: '11:00', end: '14:00' }],
       }],
       overrides: [],
     }),
@@ -192,7 +194,7 @@ test('any available returns free dermatologists across clinics with their actual
   });
 
   try {
-    const network = await whoIsFreeWithBranches('2030-01-01', '10:00', {
+    const network = await whoIsFreeWithBranches('2030-01-01', '11:00', {
       now: new Date('2029-12-15T00:00:00.000Z'),
     });
     assert.deepEqual(network, [
@@ -208,7 +210,7 @@ test('any available returns free dermatologists across clinics with their actual
       },
     ]);
 
-    const kondapurOnly = await whoIsFreeWithBranches('2030-01-01', '10:00', {
+    const kondapurOnly = await whoIsFreeWithBranches('2030-01-01', '11:00', {
       branchName: 'kondapur',
       now: new Date('2029-12-15T00:00:00.000Z'),
     });
@@ -240,4 +242,29 @@ test('clinic dates and appointment instants never inherit the EC2 or browser tim
   const range = query.$and[0].$or[0].confirmedDate;
   assert.equal(range.$gte.toISOString(), start.toISOString());
   assert.equal(range.$lte.toISOString(), end.toISOString());
+});
+
+test('the clinic-wide booking window caps every slot source', () => {
+  // 2030-01-01 is a Tuesday, 2030-01-06 a Sunday.
+  const { clampToBookingWindow } = require('../utils/dermatologistSlots');
+  const wide = [{ start: '08:00', end: '21:00' }];
+  assert.deepEqual(clampToBookingWindow(wide, '2030-01-01'), [{ start: '11:00', end: '18:00' }]);
+  assert.deepEqual(clampToBookingWindow(wide, '2030-01-06'), [{ start: '11:00', end: '15:00' }]);
+  // A dermatologist sitting only part of the window keeps their own hours.
+  assert.deepEqual(clampToBookingWindow([{ start: '12:00', end: '14:00' }], '2030-01-01'), [{ start: '12:00', end: '14:00' }]);
+  // Entirely outside the window → nothing to sell.
+  assert.deepEqual(clampToBookingWindow([{ start: '18:00', end: '20:00' }], '2030-01-01'), []);
+
+  // Treatment slots come from the centre's own hours and must be capped too:
+  // a centre open 09:00–20:00 still only sells 11:00–17:00 starts.
+  const open = Object.fromEntries(
+    ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+      .map((day) => [day, { isOpen: true, openTime: '09:00', closeTime: '20:00' }]),
+  );
+  assert.deepEqual(getBranchSlotsForDate({ slotDuration: 60, operatingHours: open }, '2030-01-01'), [
+    '11:00 AM', '12:00 PM', '1:00 PM', '2:00 PM', '3:00 PM', '4:00 PM', '5:00 PM',
+  ]);
+  assert.deepEqual(getBranchSlotsForDate({ slotDuration: 60, operatingHours: open }, '2030-01-06'), [
+    '11:00 AM', '12:00 PM', '1:00 PM', '2:00 PM',
+  ]);
 });

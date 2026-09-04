@@ -1,5 +1,34 @@
 const { clinicDateParts, clinicDateTime, parseClockMinutes } = require('./bookingTime');
-const { SESSION_SLOT_MINUTES } = require('../config/scheduling');
+const { SESSION_SLOT_MINUTES, bookingWindowForDay } = require('../config/scheduling');
+
+/**
+ * A centre's open/close for a date, capped to the clinic-wide booking window.
+ *
+ * Treatment bookings derive their slots from the centre's own hours, not from
+ * a dermatologist's schedule, so they never passed through the slot engine's
+ * clamp — a centre open 09:00–20:00 would still have sold a 9 AM treatment.
+ * The same cap is applied here, and to the pre-payment guard below, so every
+ * booking flow obeys Mon–Sat 11:00–18:00 / Sun 11:00–15:00.
+ *
+ * Returns null when the centre is closed or the window closes that day.
+ */
+const windowedHours = (schedule, parts) => {
+  if (!schedule?.isOpen) return null;
+  let open = parseClockMinutes(schedule.openTime);
+  let close = parseClockMinutes(schedule.closeTime);
+  if (open === null || close === null) return null;
+
+  // parts.weekday is the lowercase day name; the window is keyed by getDay().
+  const dayIndex = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday']
+    .indexOf(String(parts.weekday || '').toLowerCase());
+  const window = bookingWindowForDay(dayIndex);
+  if (!window) return null;
+  const wOpen = parseClockMinutes(window.start);
+  const wClose = parseClockMinutes(window.end);
+  if (wOpen !== null) open = Math.max(open, wOpen);
+  if (wClose !== null) close = Math.min(close, wClose);
+  return close > open ? { open, close } : null;
+};
 
 const formatSlot = (minutes) => {
   const hour = Math.floor(minutes / 60);
@@ -13,12 +42,11 @@ const getBranchSlotsForDate = (branch, dateValue) => {
   if (!parts) return [];
 
   const schedule = branch?.operatingHours?.[parts.weekday];
-  if (!schedule?.isOpen) return [];
+  const hours = windowedHours(schedule, parts);
+  if (!hours) return [];
 
-  const open = parseClockMinutes(schedule.openTime);
-  const close = parseClockMinutes(schedule.closeTime);
+  const { open, close } = hours;
   const duration = SESSION_SLOT_MINUTES;
-  if (open === null || close === null) return [];
 
   const slots = [];
   for (let cursor = open; cursor + duration <= close; cursor += duration) {
@@ -53,8 +81,11 @@ const validateBranchSession = (branch, dateValue, requestedSlots, now = new Date
     return { ok: false, code: 'TIME_REQUIRED', message: 'Select at least one appointment time.' };
   }
 
-  const open = parseClockMinutes(schedule.openTime);
-  const close = parseClockMinutes(schedule.closeTime);
+  // Capped to the clinic-wide window, so a crafted request for 09:00 at a
+  // centre that opens early is refused here, before any payment is taken.
+  const hours = windowedHours(schedule, dateParts);
+  const open = hours ? hours.open : null;
+  const close = hours ? hours.close : null;
   const invalid = requested.find((slot) => {
     const start = parseClockMinutes(slot);
     return start === null || open === null || close === null

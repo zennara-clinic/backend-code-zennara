@@ -724,7 +724,7 @@ exports.exportUsers = async (req, res) => {
     const limit = Math.min(20000, Math.max(1, parseInt(req.query.limit || '20000', 10)));
 
     const users = await User.find(filter)
-      .select('patientId fullName email phone location memberType zenMembershipStartDate zenMembershipExpiryDate dateOfBirth gender source totalVisits totalSpent appOpenCount hasDrugAllergy drugAllergies medicalHistory smoking drinking isActive isVerified createdAt lastLogin')
+      .select('patientId fullName email phone location memberType zenMembershipStartDate zenMembershipExpiryDate dateOfBirth gender source totalVisits totalSpent appOpenCount hasDrugAllergy drugAllergies medicalHistory smoking drinking isActive isVerified createdAt lastLogin zenotiGuestId zenotiSyncStatus zenotiSyncError zenotiSyncedAt')
       .sort(sort)
       .limit(limit)
       .lean();
