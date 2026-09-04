@@ -19,9 +19,19 @@ const cleanupExpiredBookings = async () => {
     // Find all bookings that are:
     // 1. Still in "Awaiting Confirmation" status
     // 2. Preferred date is in the past OR (date is today AND time has passed)
+    // 3. NOT paid, and not a package session.
+    //
+    // (3) is new. Since the desk now approves every booking before Zenoti sees
+    // it, a paid dermatologist-slot booking sits in Awaiting Confirmation until
+    // reception confirms it. Money has been taken for it; deleting it because
+    // nobody pressed Confirm in time would erase a paid appointment and its
+    // refund trail. Paid and package bookings are left for a person to
+    // resolve — they show as overdue in the panel, never vanish.
     const expiredBookings = await Booking.find({
       status: 'Awaiting Confirmation',
       preferredDate: { $lte: clinicDayEnd(currentDate) },
+      paymentStatus: { $ne: 'paid' },
+      isPackageIncluded: { $ne: true },
     }).populate('consultationId', 'name');
 
     // Filter bookings where time has also passed (for today's bookings)
