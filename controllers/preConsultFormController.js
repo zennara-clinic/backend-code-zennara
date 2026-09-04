@@ -376,3 +376,57 @@ exports.updateFormStatus = async (req, res) => {
     });
   }
 };
+
+/**
+ * GET /api/pre-consult-forms/admin/by-booking/:bookingId
+ *
+ * "Pre-consultation form: Completed" on an appointment.
+ *
+ * The appointment screen needs one cheap call that answers three questions —
+ * is there a form, is it finished, and what do I open — without pulling the
+ * whole encrypted document into a list view. Falls back to the patient's most
+ * recent form when none is linked to this booking directly, because a patient
+ * who filled the form before the appointment existed still filled it.
+ */
+exports.getFormStatusForBooking = async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.bookingId).select('userId eventAt').lean();
+    if (!booking) return res.status(404).json({ success: false, message: 'Appointment not found' });
+
+    let form = await PreConsultForm.findOne({ bookingId: req.params.bookingId })
+      .select('status createdAt updatedAt bookingId')
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    let linked = Boolean(form);
+    if (!form) {
+      form = await PreConsultForm.findOne({ userId: booking.userId })
+        .select('status createdAt updatedAt bookingId')
+        .sort({ updatedAt: -1 })
+        .lean();
+    }
+
+    if (!form) {
+      return res.json({
+        success: true,
+        data: { state: 'not_started', label: 'Not started', formId: null, linked: false },
+      });
+    }
+
+    const submitted = ['submitted', 'reviewed', 'completed'].includes(String(form.status || '').toLowerCase());
+    return res.json({
+      success: true,
+      data: {
+        state: submitted ? 'completed' : 'draft',
+        label: submitted ? 'Completed' : 'Started, not submitted',
+        formId: form._id,
+        status: form.status,
+        linked,
+        updatedAt: form.updatedAt,
+      },
+    });
+  } catch (error) {
+    console.error('getFormStatusForBooking failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not read the form status' });
+  }
+};

@@ -119,6 +119,59 @@ const preConsultFormSchema = new mongoose.Schema({
     }
   },
 
+  /*
+   * Presenting complaint — added 2026-09 so the dermatologist reads the story
+   * before the patient sits down, not during the consultation.
+   *
+   * These are deliberately free text rather than another checkbox grid: the
+   * useful part of "how long has this been going on" is the patient's own
+   * wording, and a fixed list of durations or past treatments would be wrong
+   * for half of them.
+   */
+  symptomDuration: {
+    type: String,
+    default: null,
+    trim: true,
+    maxlength: 200,
+  },
+  previousTreatments: {
+    type: String,
+    default: null,
+    trim: true,
+    maxlength: 2000,
+  },
+  currentMedications: {
+    type: String,
+    default: null,
+    trim: true,
+    maxlength: 2000,
+  },
+  /**
+   * Pregnancy status. Clinically load-bearing — several dermatology drugs and
+   * most laser and peel protocols are contraindicated in pregnancy — so it is
+   * an explicit field rather than something buried in free text.
+   * 'not_applicable' is the default so no one is asked to answer it wrongly.
+   */
+  pregnancyStatus: {
+    type: String,
+    enum: ['not_applicable', 'not_pregnant', 'pregnant', 'breastfeeding', 'planning', 'prefer_not_to_say'],
+    default: 'not_applicable',
+  },
+  /** Photographs the patient attached with the form (S3 URLs). */
+  photos: [{
+    _id: false,
+    url: { type: String, required: true, trim: true },
+    caption: { type: String, default: '', trim: true },
+    uploadedAt: { type: Date, default: Date.now },
+  }],
+  /** Anything else the patient wants the dermatologist to know. */
+  patientNotes: {
+    type: String,
+    default: null,
+    trim: true,
+    maxlength: 2000,
+  },
+
   // Allergies
   drugAllergies: {
     type: String,
@@ -235,7 +288,24 @@ if (encryptionSecret?.trim()) {
       'otherAllergies',
       'medicalHistory',
       'additionalInfo',
-      'lastMenstrualPeriod'
+      'lastMenstrualPeriod',
+      // Presenting complaint (2026-09). Free text describing symptoms, past
+      // treatment and current drugs is health data and is encrypted with the
+      // rest.
+      'symptomDuration',
+      'previousTreatments',
+      'currentMedications',
+      'patientNotes',
+      /*
+       * `pregnancyStatus` is deliberately NOT encrypted.
+       *
+       * It is an enum, and the plugin stores ciphertext as a string — the enum
+       * validator would then reject every encrypted value and no form would
+       * save. It also has to stay queryable so a contraindication warning can
+       * be shown against a booking. It carries a single coded value rather
+       * than free narrative, and access is already restricted to clinical
+       * staff.
+       */
     ],
     secret: encryptionSecret,
     encryptNull: false,

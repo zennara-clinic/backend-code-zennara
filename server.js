@@ -271,6 +271,8 @@ app.use('/api/notifications', require('./routes/notification'));
 app.use('/api/payments', require('./routes/payment'));
 app.use('/api/pre-consult-forms', require('./routes/preConsultForm'));
 app.use('/api/patient-consent-forms', require('./routes/patientConsentForm'));
+// Clinical photographs (before / during / after). Staff-only; see the route file.
+app.use('/api/patient-photos', require('./routes/patientPhoto'));
 app.use('/api/service-cards', require('./routes/serviceCard'));
 app.use('/api/admin/forms', require('./routes/forms'));
 app.use('/api/app-customization', require('./routes/appCustomizationRoutes'));
