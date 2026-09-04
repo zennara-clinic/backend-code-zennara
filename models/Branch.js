@@ -108,6 +108,11 @@ const branchSchema = new mongoose.Schema({
     }
   },
 
+  /** Zenoti centre id this branch mirrors (set by the centre sync). */
+  zenotiCenterId: { type: String, default: null, trim: true, lowercase: true, index: true },
+  /** Last time address/contact were refreshed from Zenoti. */
+  zenotiSyncedAt: { type: Date, default: null },
+
   // Slot Configuration
   slotDuration: {
     type: Number,

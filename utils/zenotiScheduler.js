@@ -59,6 +59,13 @@ function startZenotiScheduler() {
     require('../services/zenotiCatalogSyncService').syncCatalog({ trigger: 'schedule' }).catch(() => {});
   });
 
+  // Centres (address / phone / map pin) and the category list change rarely:
+  // nightly, after the guest roster, plus the panel's "Sync now".
+  cron.schedule('50 2 * * *', () => {
+    require('../services/zenotiCenterSyncService').syncCenters({ trigger: 'schedule' }).catch(() => {});
+    require('../services/zenotiCategorySyncService').syncCategories({ trigger: 'schedule' }).catch(() => {});
+  }, { timezone: 'Asia/Kolkata' });
+
   // Panel working hours → Zenoti shifts, daily at 03:15 IST, so Zenoti's slot
   // engine can accept app bookings (see zenotiScheduleWriteService).
   cron.schedule('15 3 * * *', () => {

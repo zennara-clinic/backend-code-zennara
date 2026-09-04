@@ -32,6 +32,8 @@ const categorySchema = new mongoose.Schema({
     type: String,
     default: ''
   },
+  /** Zenoti category id, when this category mirrors one of Zenoti's 22. */
+  zenotiCategoryId: { type: String, default: null, trim: true, lowercase: true, index: true },
   isActive: {
     type: Boolean,
     default: true

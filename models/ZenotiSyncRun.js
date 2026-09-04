@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 const ZenotiSyncRunSchema = new mongoose.Schema(
   {
     /** Which mirror ran. 'catalog' = services + packages, 'products' = retail stock. */
-    type: { type: String, enum: ['roster', 'details', 'appointments', 'catalog', 'products'], required: true },
+    type: { type: String, enum: ['roster', 'details', 'appointments', 'catalog', 'products', 'centers', 'categories'], required: true },
     mode: { type: String, enum: ['incremental', 'full'], default: 'incremental' },
     status: { type: String, enum: ['running', 'completed', 'failed'], default: 'running' },
     trigger: { type: String, enum: ['schedule', 'manual', 'boot'], default: 'schedule' },

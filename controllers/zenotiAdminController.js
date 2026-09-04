@@ -587,6 +587,8 @@ exports.syncHealth = async (_req, res) => {
       { type: 'details', label: 'Guest histories (Zenoti → Zennara)', every: 'every 5 min, 40 guests' },
       { type: 'products', label: 'Products & stock (Zenoti → Zennara)', every: 'hourly at :20' },
       { type: 'catalog', label: 'Services & packages (Zenoti → Zennara)', every: 'hourly at :40' },
+      { type: 'centers', label: 'Clinics — address, phone, map pin (Zenoti → Zennara)', every: 'nightly 02:50 IST' },
+      { type: 'categories', label: 'Categories (Zenoti → Zennara)', every: 'nightly 02:50 IST' },
     ];
     const inbound = await Promise.all(MIRRORS.map(async (m) => {
       const last = await ZenotiSyncRun.findOne({ type: m.type }).sort({ startedAt: -1 }).lean();
@@ -631,4 +633,16 @@ exports.syncHealth = async (_req, res) => {
     console.error('syncHealth failed:', error);
     return res.status(500).json({ success: false, message: 'Could not build the sync health view' });
   }
+};
+
+/** POST /api/admin/zenoti/centers/sync — address, phone, email, map pin from Zenoti. */
+exports.syncCenters = async (req, res) => {
+  try { return res.json({ success: true, data: await require('../services/zenotiCenterSyncService').syncCenters({ trigger: 'manual', adminId: req.admin?._id || null }) }); }
+  catch (error) { return res.status(500).json({ success: false, message: error.message || 'Centre sync failed' }); }
+};
+
+/** POST /api/admin/zenoti/categories/sync — Zenoti's category list, linked by id. */
+exports.syncCategories = async (req, res) => {
+  try { return res.json({ success: true, data: await require('../services/zenotiCategorySyncService').syncCategories({ trigger: 'manual', adminId: req.admin?._id || null }) }); }
+  catch (error) { return res.status(500).json({ success: false, message: error.message || 'Category sync failed' }); }
 };
