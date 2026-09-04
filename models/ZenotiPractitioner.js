@@ -16,6 +16,10 @@ const zenotiPractitionerSchema = new mongoose.Schema({
   centerIds: [{ type: String, lowercase: true, trim: true }],
   centerNames: [{ type: String, trim: true }],
   onboardedDoctorId: { type: String, lowercase: true, trim: true, default: null, index: true },
+  /** For therapists: the Admin (role therapist) account created for them. */
+  onboardedAdminId: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', default: null, index: true },
+  /** Zenoti's login/user name for the person, when it looks like an email. */
+  zenotiUserName: { type: String, default: null, trim: true },
   active: { type: Boolean, default: true, index: true },
   lastSeenAt: { type: Date, default: Date.now },
   syncedAt: { type: Date, default: Date.now },

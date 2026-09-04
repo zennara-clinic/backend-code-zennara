@@ -646,3 +646,19 @@ exports.syncCategories = async (req, res) => {
   try { return res.json({ success: true, data: await require('../services/zenotiCategorySyncService').syncCategories({ trigger: 'manual', adminId: req.admin?._id || null }) }); }
   catch (error) { return res.status(500).json({ success: false, message: error.message || 'Category sync failed' }); }
 };
+
+/** GET /api/admin/zenoti/catalog/memberships — Zenoti's membership products (name, price, images). */
+exports.listCatalogMemberships = async (_req, res) => {
+  try {
+    const zenoti = require('../services/zenotiService');
+    const { CENTERS } = require('../config/zenoti');
+    const byId = new Map();
+    for (const [centerId, c] of Object.entries(CENTERS)) {
+      if (!c.isClinic) continue;
+      for (const m of await zenoti.getCenterMemberships(centerId).catch(() => [])) if (m.id && !byId.has(m.id)) byId.set(m.id, m);
+    }
+    return res.json({ success: true, data: [...byId.values()] });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message || 'Could not read Zenoti memberships' });
+  }
+};

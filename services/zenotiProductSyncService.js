@@ -23,6 +23,7 @@
  *     Anything else risks merging two different products.
  */
 const Product = require('../models/Product');
+const Inventory = require('../models/Inventory');
 const Branch = require('../models/Branch');
 const zenoti = require('./zenotiService');
 const { CENTERS } = require('../config/zenoti');
@@ -136,10 +137,37 @@ async function syncProducts({ trigger = 'manual' } = {}) {
     try {
       // Match by Zenoti id, then SKU, then exact name — in that order, because
       // anything looser risks folding two different products together.
+      /*
+       * Consumables (needles, device supplies) belong in the clinic's
+       * Inventory, which the treatment room consumes from — not in the app
+       * store's Product list, where 260 of them would be catalogue noise.
+       * Retail items go to Product. Stock is never written for either.
+       */
+      if (entry.isRetail === false) {
+        let inv = await Inventory.findOne({ zenotiProductId: entry.zenotiProductId });
+        if (!inv && entry.sku) inv = await Inventory.findOne({ code: entry.sku });
+        if (!inv) inv = await Inventory.findOne({ inventoryName: entry.name });
+        if (inv && inv.zenotiProductId && inv.zenotiProductId !== entry.zenotiProductId) { stats.errors += 1; continue; } // same name, different Zenoti item
+        if (!inv) { inv = new Inventory({ inventoryName: entry.name, inventoryCategory: 'Consumables' }); stats.created += 1; } else { stats.updated += 1; }
+        inv.zenotiProductId = entry.zenotiProductId;
+        if (entry.sku) inv.code = entry.sku;
+        if (entry.packSize) inv.formulation = entry.packSize;
+        if (entry.brand) inv.orgName = entry.brand;
+        inv.zenotiSyncedAt = new Date();
+        await inv.save({ validateModifiedOnly: true });
+        continue;
+      }
+
       let product = await Product.findOne({ zenotiProductId: entry.zenotiProductId });
       if (!product && entry.sku) product = await Product.findOne({ sku: entry.sku });
       if (!product && entry.sku) product = await Product.findOne({ code: entry.sku });
       if (!product) product = await Product.findOne({ name: entry.name });
+      // A same-name product already tied to a DIFFERENT Zenoti item is not this item.
+      if (product && product.zenotiProductId && product.zenotiProductId !== entry.zenotiProductId) {
+        stats.errors += 1;
+        logger.warn('Product mirror skipped: name already linked to another Zenoti product', { name: entry.name, zenotiProductId: entry.zenotiProductId });
+        continue;
+      }
 
       if (!product) {
         product = new Product({

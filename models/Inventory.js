@@ -1,6 +1,10 @@
 const mongoose = require('mongoose');
 
 const inventorySchema = new mongoose.Schema({
+  /** Zenoti product id when this consumable mirrors a Zenoti product. */
+  zenotiProductId: { type: String, default: null, trim: true, index: true },
+  zenotiSyncedAt: { type: Date, default: null },
+
   // Basic Information
   inventoryName: {
     type: String,

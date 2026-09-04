@@ -70,6 +70,8 @@ async function syncServices(stats) {
     try {
       let doc = await Consultation.findOne({ zenotiServiceId: svc.id });
       if (!doc) doc = await Consultation.findOne({ name: new RegExp(`^${svc.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+      // Same name, already linked to a different Zenoti service: not this one.
+      if (doc && doc.zenotiServiceId && doc.zenotiServiceId !== svc.id) { stats.services.failed += 1; logger.warn('Service mirror skipped: name linked to another Zenoti service', { name: svc.name }); continue; }
 
       if (!doc) {
         // New to Zennara: create it hidden with the minimum the schema needs.
@@ -159,6 +161,7 @@ async function syncPackages(stats) {
     try {
       let doc = await Package.findOne({ zenotiPackageId: pkg.id });
       if (!doc) doc = await Package.findOne({ name: new RegExp(`^${pkg.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+      if (doc && doc.zenotiPackageId && doc.zenotiPackageId !== pkg.id) { stats.packages.failed += 1; logger.warn('Package mirror skipped: name linked to another Zenoti package', { name: pkg.name }); continue; }
 
       if (!doc) {
         // A Zenoti package's line items are not exposed by the centre list, so

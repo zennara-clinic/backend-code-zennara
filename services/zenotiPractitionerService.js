@@ -36,8 +36,42 @@ const updateManyIfChanged = (filter, set) => ({
  * at — so the panel shows them straight away and a person only has to add a
  * photo, bio and fee and publish. Disable with ZENOTI_AUTO_ONBOARD_DOCTORS=false.
  */
+
+/**
+ * A therapist rostered in Zenoti becomes a therapist account here — HIDDEN
+ * (isActive:false) — so the Therapists page lists them and bookings attribute
+ * to them. Zenoti's user name is used as the login email when it is one;
+ * otherwise a placeholder that cannot sign in until reception sets a real
+ * email and password. Never duplicates a therapist who already exists by name.
+ */
+async function autoOnboardTherapist(row) {
+  if (row.onboardedAdminId) return row.onboardedAdminId;
+  const Admin = require('../models/Admin');
+  const Branch = require('../models/Branch');
+  const name = String(row.name || '').trim();
+  if (!name) return null;
+  const rx = new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+  let admin = await Admin.findOne({ role: 'therapist', name: rx });
+  if (!admin) {
+    const branches = await Branch.find({ name: { $in: row.centerNames || [] } }).select('_id').lean();
+    const email = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(row.zenotiUserName || ''))
+      ? String(row.zenotiUserName).toLowerCase()
+      : `zenoti.${String(row.zenotiEmployeeId).slice(0, 8)}@zennara.local`;
+    if (await Admin.exists({ email })) return null; // someone else owns that address — leave it to a person
+    admin = await Admin.create({
+      name, email, role: 'therapist', isActive: false, isVerified: false,
+      branchId: branches[0]?._id || null, branchIds: branches.map((b) => b._id),
+    });
+    logger.info('Zenoti therapist auto-onboarded (hidden) as therapist account', { employeeId: row.zenotiEmployeeId, adminId: admin._id });
+  }
+  row.onboardedAdminId = admin._id;
+  await row.save();
+  return admin._id;
+}
+
 async function autoOnboard(row) {
   if (String(process.env.ZENOTI_AUTO_ONBOARD_DOCTORS || 'true').toLowerCase() === 'false') return null;
+  if (/therapist/i.test(row.jobName || '')) return autoOnboardTherapist(row);
   if (row.onboardedDoctorId) return row.onboardedDoctorId;
   const doctorController = require('../controllers/doctorController');
   const Doctor = require('../models/Doctor');
@@ -45,7 +79,13 @@ async function autoOnboard(row) {
   if (!name) return null;
   // Same person already in the app under this name (e.g. added by hand): link, don't duplicate.
   const existing = await Doctor.findOne({ name: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }).select('doctorId').lean();
-  if (existing?.doctorId) { row.onboardedDoctorId = existing.doctorId; await row.save(); return existing.doctorId; }
+  if (existing?.doctorId) {
+    // Same name, but already the app identity of a different Zenoti employee →
+    // two people share a name. Do not merge; leave it for a person.
+    const claimed = await ZenotiPractitioner.exists({ onboardedDoctorId: existing.doctorId, zenotiEmployeeId: { $ne: row.zenotiEmployeeId } });
+    if (claimed) { logger.warn('Auto-onboard skipped: name already linked to another Zenoti doctor', { name, employeeId: row.zenotiEmployeeId }); return null; }
+    row.onboardedDoctorId = existing.doctorId; await row.save(); return existing.doctorId;
+  }
 
   let created = null;
   const fakeRes = { status(code) { this.code = code; return this; }, json(body) { created = { code: this.code || 200, body }; } };
@@ -71,7 +111,19 @@ async function syncPractitioners({ trigger = 'schedule', repair = true } = {}) {
   running = true;
   try {
     const clinics = Object.entries(CENTERS).filter(([, center]) => center.isClinic);
-    const results = await Promise.allSettled(clinics.map(([centerId]) => zenoti.getCenterEmployees(centerId)));
+    // Doctors come from the employee list; therapists from Zenoti's separate
+    // therapist list (they are not on the employee job list — verified live).
+    const results = await Promise.allSettled(clinics.map(async ([centerId]) => {
+      const [employees, therapists] = await Promise.all([
+        zenoti.getCenterEmployees(centerId),
+        zenoti.getCenterTherapists(centerId).catch(() => []),
+      ]);
+      const seen = new Set(employees.map((e) => e.id));
+      return [
+        ...employees,
+        ...therapists.filter((t) => t.id && !seen.has(t.id)).map((t) => ({ ...t, jobName: /doctor/i.test(t.jobName || '') ? 'Doctor' : 'Therapist' })),
+      ];
+    }));
     const byId = new Map();
     results.forEach((result, index) => {
       if (result.status !== 'fulfilled') {
@@ -79,7 +131,7 @@ async function syncPractitioners({ trigger = 'schedule', repair = true } = {}) {
         return;
       }
       const [centerId, center] = clinics[index];
-      result.value.filter((employee) => /^doctor$/i.test(String(employee.jobName || '').trim())).forEach((employee) => {
+      result.value.filter((employee) => /^(doctor|therapist)$/i.test(String(employee.jobName || '').trim())).forEach((employee) => {
         const row = byId.get(employee.id) || { ...employee, centerIds: [], centerNames: [] };
         if (!row.centerIds.includes(centerId)) row.centerIds.push(centerId);
         if (!row.centerNames.includes(center.name)) row.centerNames.push(center.name);
@@ -104,6 +156,7 @@ async function syncPractitioners({ trigger = 'schedule', repair = true } = {}) {
               name: employee.name,
               normalizedName: canonicalName(employee.name),
               jobName: employee.jobName || 'Doctor',
+              zenotiUserName: employee.userName || null,
               centerIds: employee.centerIds,
               centerNames: employee.centerNames,
               onboardedDoctorId: onboarded?.doctorId || null,
@@ -341,7 +394,7 @@ async function syncDoctorShiftsFromZenoti({ trigger = 'schedule' } = {}) {
 
 /** Onboard every active Zenoti doctor that has no app dermatologist yet. */
 async function autoOnboardAll() {
-  const rows = await ZenotiPractitioner.find({ active: true, onboardedDoctorId: null });
+  const rows = await ZenotiPractitioner.find({ active: true, $or: [{ jobName: /doctor/i, onboardedDoctorId: null }, { jobName: /therapist/i, onboardedAdminId: null }] });
   let n = 0;
   for (const row of rows) { if (await autoOnboard(row).catch(() => null)) n += 1; }
   return n;

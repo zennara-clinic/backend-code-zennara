@@ -695,6 +695,54 @@ async function getCenterProducts(centerId) {
   });
 }
 
+/** Memberships sold at a centre (verified live 2026-09-04: 7 rows with price + images). */
+async function getCenterMemberships(centerId) {
+  if (!centerId) return [];
+  return cachedPaged(`memberships:${centerId}`, async (page) => {
+    const json = await request(`/v1/centers/${centerId}/memberships`, { query: { page, size: 100 } });
+    const list = json?.memberships || json?.Memberships || [];
+    return list.map((m) => ({
+      id: String(pick(m, 'id', 'Id') || '').toLowerCase(),
+      versionId: String(pick(m, 'version_id') || '').toLowerCase() || null,
+      name: pick(m, 'name', 'Name'),
+      displayName: pick(m, 'display_name') || null,
+      description: pick(m, 'description') || null,
+      price: m.price ?? null,
+      discountedPrice: m.discounted_price ?? null,
+      canBook: m.can_book ?? null,
+      showPrice: m.show_price ?? null,
+      isRecurring: m.is_recurring_membership ?? null,
+      membershipType: m.membership_type ?? null,
+      imagePaths: Array.isArray(m.image_paths) ? m.image_paths : (m.image_paths ? [m.image_paths] : []),
+    }));
+  });
+}
+
+/** Therapists rostered at a centre (a separate list from employees; verified live 2026-09-04). */
+async function getCenterTherapists(centerId) {
+  if (!centerId) return [];
+  return cachedPaged(`therapists:${centerId}`, async (page) => {
+    const json = await request(`/v1/centers/${centerId}/therapists`, { query: { page, size: 100 } });
+    const list = json?.therapists || json?.Therapists || [];
+    return list.map((t) => {
+      const info = t.personal_info || {};
+      const job = t.job_info || {};
+      return {
+        id: String(pick(t, 'id', 'Id') || '').toLowerCase(),
+        code: pick(t, 'code') || null,
+        name: pick(info, 'name') || [info.first_name, info.last_name].filter(Boolean).join(' ').trim(),
+        firstName: info.first_name || null,
+        lastName: info.last_name || null,
+        userName: info.user_name || null,
+        gender: info.gender ?? null,
+        jobName: pick(job, 'name') || 'Therapist',
+        canBook: t.catalog_info?.can_book ?? null,
+        displayName: t.catalog_info?.display_name || null,
+      };
+    });
+  });
+}
+
 /**
  * Find a guest by mobile number. Tries the bare 10-digit form first, then the
  * 91-prefixed form, since centres store numbers inconsistently.
@@ -913,6 +961,8 @@ function isoDaysFromNow(days) {
 }
 
 module.exports = {
+  getCenterMemberships,
+  getCenterTherapists,
   isConfigured,
   ZenotiError,
   request,

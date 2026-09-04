@@ -237,6 +237,13 @@ const appCustomizationSchema = new mongoose.Schema({
 
     discountPercent: { type: Number, default: 15, min: 0, max: 100 },
 
+    /**
+     * The Zenoti membership this card sells. When set, a Zen membership bought
+     * in the app is invoiced in Zenoti against this version id (falls back to
+     * the ZENOTI_MEMBERSHIP_VERSION_IDS env when blank).
+     */
+    zenotiMembershipVersionId: { type: String, default: '', trim: true, lowercase: true },
+    zenotiMembershipName: { type: String, default: '', trim: true },
     /** AUTHORITATIVE. What the member is actually charged, in rupees. */
     priceInr: { type: Number, default: 110000, min: 0 },
     /** Struck-through "was" price. 0/absent = show nothing. */

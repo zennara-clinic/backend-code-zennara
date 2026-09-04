@@ -450,7 +450,11 @@ async function syncMembership(userId) {
   if (!user || user.memberType !== 'Zen Member' || user.zenotiMembershipInvoiceId || isOff()) return;
   try {
     const guestId = await ensureGuest(user);
-    const membershipVersionIds = process.env.ZENOTI_MEMBERSHIP_VERSION_IDS || process.env.ZENOTI_MEMBERSHIP_ID;
+    // The panel's membership card names the Zenoti membership it sells;
+    // the env is only a fallback for installs that never set it.
+    const settings = await require('../models/AppCustomization').getSettings().catch(() => null);
+    const membershipVersionIds = settings?.membership?.zenotiMembershipVersionId
+      || process.env.ZENOTI_MEMBERSHIP_VERSION_IDS || process.env.ZENOTI_MEMBERSHIP_ID;
     const payload = {
       center_id: user.zenotiCenterId || clinicCenterIdForBranch(user.location),
       user_id: guestId,
