@@ -307,6 +307,20 @@ async function syncGuestDetails(user) {
   } catch (err) {
     logger.warn('Zenoti detail sync: user counters not updated', { userId: user._id, error: err.message });
   }
+
+  // Clinic purchases become the same package assignments and orders the app
+  // and panel already show — one list per customer, whatever the source.
+  try {
+    const mirror = require('./zenotiAssignmentMirror');
+    const fullUser = typeof user.save === 'function' ? user : await User.findById(user._id);
+    if (fullUser) {
+      const p = await mirror.mirrorGuestPackages(fullUser, merged.packages);
+      const o = await mirror.mirrorGuestOrders(fullUser, merged.orders);
+      if (p.created || o.created) logger.info('Clinic purchases mirrored', { userId: user._id, packages: p, orders: o });
+    }
+  } catch (err) {
+    logger.warn('Zenoti detail sync: purchase mirror failed', { userId: user._id, error: err.message });
+  }
   return doc;
 }
 

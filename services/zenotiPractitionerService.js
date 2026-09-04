@@ -44,6 +44,17 @@ const updateManyIfChanged = (filter, set) => ({
  * otherwise a placeholder that cannot sign in until reception sets a real
  * email and password. Never duplicates a therapist who already exists by name.
  */
+
+/** Keep Doctor.zenotiEmployeeId / zenotiCenterNames in step with the practitioner link. */
+async function stampDoctorLink(row) {
+  if (!row?.onboardedDoctorId) return;
+  const Doctor = require('../models/Doctor');
+  await Doctor.updateOne(
+    { doctorId: String(row.onboardedDoctorId).toLowerCase() },
+    { $set: { zenotiEmployeeId: row.zenotiEmployeeId, zenotiCenterNames: row.centerNames || [] } },
+  ).catch(() => {});
+}
+
 async function autoOnboardTherapist(row) {
   if (row.onboardedAdminId) return row.onboardedAdminId;
   const Admin = require('../models/Admin');
@@ -84,7 +95,7 @@ async function autoOnboard(row) {
     // two people share a name. Do not merge; leave it for a person.
     const claimed = await ZenotiPractitioner.exists({ onboardedDoctorId: existing.doctorId, zenotiEmployeeId: { $ne: row.zenotiEmployeeId } });
     if (claimed) { logger.warn('Auto-onboard skipped: name already linked to another Zenoti doctor', { name, employeeId: row.zenotiEmployeeId }); return null; }
-    row.onboardedDoctorId = existing.doctorId; await row.save(); return existing.doctorId;
+    row.onboardedDoctorId = existing.doctorId; await row.save(); await stampDoctorLink(row); return existing.doctorId;
   }
 
   let created = null;
@@ -102,6 +113,7 @@ async function autoOnboard(row) {
   if (!doctorId) { logger.warn('Auto-onboard failed', { employeeId: row.zenotiEmployeeId, name, error: created?.body?.message }); return null; }
   row.onboardedDoctorId = doctorId;
   await row.save();
+  await stampDoctorLink(row);
   logger.info('Zenoti doctor auto-onboarded (hidden) as app dermatologist', { employeeId: row.zenotiEmployeeId, doctorId });
   return doctorId;
 }
@@ -394,6 +406,7 @@ async function syncDoctorShiftsFromZenoti({ trigger = 'schedule' } = {}) {
 
 /** Onboard every active Zenoti doctor that has no app dermatologist yet. */
 async function autoOnboardAll() {
+  for (const linked of await ZenotiPractitioner.find({ active: true, onboardedDoctorId: { $ne: null } }).lean()) await stampDoctorLink(linked);
   const rows = await ZenotiPractitioner.find({ active: true, $or: [{ jobName: /doctor/i, onboardedDoctorId: null }, { jobName: /therapist/i, onboardedAdminId: null }] });
   let n = 0;
   for (const row of rows) { if (await autoOnboard(row).catch(() => null)) n += 1; }

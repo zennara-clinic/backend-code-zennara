@@ -251,6 +251,14 @@ const packageAssignmentSchema = new mongoose.Schema({
   },
   zenotiPackageId: { type: String, default: null },
   zenotiInvoiceId: { type: String, default: null },
+  /**
+   * Zenoti's user-package id when this assignment mirrors a package the
+   * customer bought AT THE CLINIC. It is the idempotency key for the mirror:
+   * one Zenoti purchase is ever one assignment here, however many passes run.
+   */
+  zenotiUserPackageId: { type: String, default: null, trim: true },
+  /** 'zenoti' = bought at the clinic (mirrored); 'panel' = assigned by staff here. */
+  source: { type: String, enum: ['panel', 'zenoti'], default: 'panel', index: true },
   zenotiInvoiceNumber: { type: String, default: null },
   zenotiSyncStatus: {
     type: String,

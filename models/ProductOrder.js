@@ -102,9 +102,11 @@ const productOrderSchema = new mongoose.Schema({
     // enum on purpose: thousands of historical orders carry it, and dropping
     // the value would make every one of them fail validation on the next save
     // (cancel, return, status change). Nothing may write it going forward.
-    enum: ['Razorpay', 'Online', 'COD'],
+    enum: ['Razorpay', 'Online', 'COD', 'Clinic'],
     default: 'Razorpay'
   },
+  /** 'zenoti' = a sale rung up at the clinic counter, mirrored from Zenoti. */
+  source: { type: String, enum: ['app', 'zenoti'], default: 'app', index: true },
   paymentStatus: {
     type: String,
     enum: ['Pending', 'Paid', 'Failed', 'Refunded'],
@@ -233,6 +235,8 @@ const productOrderSchema = new mongoose.Schema({
   // Zenoti write-back (Phase 2): the product invoice this order created in the
   // CRM, and its sync status, for idempotency + observability.
   zenotiInvoiceId: { type: String, default: null },
+  /** Zenoti's line-item id for a counter sale — the idempotency key for the mirror. */
+  zenotiSaleId: { type: String, default: null },
   zenotiSyncStatus: {
     type: String,
     enum: ['pending', 'synced', 'failed', 'skipped', 'dryrun', null],
@@ -294,5 +298,7 @@ productOrderSchema.index(
   { razorpayPaymentId: 1 },
   { unique: true, sparse: true, name: 'one_product_order_per_razorpay_payment' }
 );
+
+productOrderSchema.index({ zenotiSaleId: 1 }, { unique: true, partialFilterExpression: { zenotiSaleId: { $type: 'string' } } });
 
 module.exports = mongoose.model('ProductOrder', productOrderSchema);

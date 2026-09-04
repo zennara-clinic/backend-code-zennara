@@ -98,6 +98,13 @@ const doctorSchema = new mongoose.Schema(
       default: null,
       trim: true,
     },
+    /**
+     * The Zenoti employee this dermatologist is. Kept on the record itself so
+     * a dermatologist is one thing everywhere — there is no separate "Zenoti
+     * doctor" a user ever sees; the practitioner mirror is internal plumbing.
+     */
+    zenotiEmployeeId: { type: String, default: null, trim: true, lowercase: true, index: true },
+    zenotiCenterNames: { type: [String], default: [] },
     displayOrder: {
       type: Number,
       default: 0,
