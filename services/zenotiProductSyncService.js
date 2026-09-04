@@ -57,6 +57,9 @@ async function syncProducts({ trigger = 'manual' } = {}) {
     return { centres: 0, seen: 0, created: 0, updated: 0, errors: 0, skipped: true };
   }
 
+  const ZenotiSyncRun = require('../models/ZenotiSyncRun');
+  const run = await ZenotiSyncRun.create({ type: 'products', trigger: trigger === 'schedule' ? 'schedule' : 'manual' }).catch(() => null);
+
   const byName = await branchIndex();
   const stats = { centres: 0, seen: 0, created: 0, updated: 0, errors: 0 };
 
@@ -168,6 +171,18 @@ async function syncProducts({ trigger = 'manual' } = {}) {
   }
 
   logger.info('Zenoti product sync finished', { ...stats, trigger });
+  if (run) {
+    await ZenotiSyncRun.updateOne(
+      { _id: run._id },
+      { $set: {
+        status: stats.errors && !stats.updated && !stats.created ? 'failed' : 'completed',
+        finishedAt: new Date(),
+        total: stats.seen, processed: stats.created + stats.updated,
+        created: stats.created, updated: stats.updated, failed: stats.errors,
+        datasets: { centres: stats.centres },
+      } },
+    ).catch(() => {});
+  }
   return stats;
 }
 

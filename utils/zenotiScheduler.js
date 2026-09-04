@@ -52,6 +52,13 @@ function startZenotiScheduler() {
     require('../services/zenotiProductSyncService').syncProducts({ trigger: 'schedule' }).catch(() => {});
   });
 
+  // Zenoti services + packages → Consultation/Package, hourly. Read-only;
+  // creates hidden shells and links names, never publishes or reprices
+  // (unless ZENOTI_SYNC_SERVICE_PRICES=true).
+  cron.schedule('40 * * * *', () => {
+    require('../services/zenotiCatalogSyncService').syncCatalog({ trigger: 'schedule' }).catch(() => {});
+  });
+
   // Panel working hours → Zenoti shifts, daily at 03:15 IST, so Zenoti's slot
   // engine can accept app bookings (see zenotiScheduleWriteService).
   cron.schedule('15 3 * * *', () => {

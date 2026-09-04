@@ -3,7 +3,8 @@ const mongoose = require('mongoose');
 /** One row per roster import / crawl window, so the panel can show sync health. */
 const ZenotiSyncRunSchema = new mongoose.Schema(
   {
-    type: { type: String, enum: ['roster', 'details', 'appointments'], required: true },
+    /** Which mirror ran. 'catalog' = services + packages, 'products' = retail stock. */
+    type: { type: String, enum: ['roster', 'details', 'appointments', 'catalog', 'products'], required: true },
     mode: { type: String, enum: ['incremental', 'full'], default: 'incremental' },
     status: { type: String, enum: ['running', 'completed', 'failed'], default: 'running' },
     trigger: { type: String, enum: ['schedule', 'manual', 'boot'], default: 'schedule' },

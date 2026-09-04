@@ -553,3 +553,82 @@ exports.syncProducts = async (req, res) => {
     return res.status(500).json({ success: false, message: error.message || 'Product sync failed' });
   }
 };
+
+/** POST /api/admin/zenoti/catalog/sync — mirror services + packages now. */
+exports.syncCatalog = async (req, res) => {
+  try {
+    const stats = await require('../services/zenotiCatalogSyncService')
+      .syncCatalog({ trigger: 'manual', adminId: req.admin?._id || null });
+    return res.json({ success: true, data: stats });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message || 'Catalogue sync failed' });
+  }
+};
+
+/**
+ * GET /api/admin/zenoti/sync-health
+ *
+ * One screen that answers "is everything flowing, both ways?": the last run of
+ * every inbound mirror with its cadence, and everything outbound that is still
+ * waiting on Zenoti. This is what to look at before and after any deploy.
+ */
+exports.syncHealth = async (_req, res) => {
+  try {
+    const ZenotiSyncRun = require('../models/ZenotiSyncRun');
+    const Booking = require('../models/Booking');
+    const User = require('../models/User');
+    const PackageAssignment = require('../models/PackageAssignment');
+    const ConsultationNote = require('../models/ConsultationNote');
+    const zenotiWrite = require('../services/zenotiWriteService');
+
+    const MIRRORS = [
+      { type: 'appointments', label: 'Appointments (Zenoti → Zennara)', every: 'every 2 min (next 6 days) + every 15 min (up to 62 days)' },
+      { type: 'roster', label: 'Guests roster (Zenoti → Zennara)', every: 'nightly 02:30 IST' },
+      { type: 'details', label: 'Guest histories (Zenoti → Zennara)', every: 'every 5 min, 40 guests' },
+      { type: 'products', label: 'Products & stock (Zenoti → Zennara)', every: 'hourly at :20' },
+      { type: 'catalog', label: 'Services & packages (Zenoti → Zennara)', every: 'hourly at :40' },
+    ];
+    const inbound = await Promise.all(MIRRORS.map(async (m) => {
+      const last = await ZenotiSyncRun.findOne({ type: m.type }).sort({ startedAt: -1 }).lean();
+      return { ...m, last: last ? {
+        status: last.status, startedAt: last.startedAt, finishedAt: last.finishedAt,
+        created: last.created, updated: last.updated, failed: last.failed, error: last.error,
+        datasets: last.datasets,
+      } : null };
+    }));
+
+    const now = new Date();
+    const [bookingsPending, bookingsFailed, bookingsNeedPerson, usersPending, usersFailed, usersReview, pkgPending, notesFailed] = await Promise.all([
+      Booking.countDocuments({ source: { $in: ['app', 'reception'] }, status: 'Confirmed', zenotiAppointmentId: null, zenotiBookingId: null, zenotiSyncStatus: { $in: ['pending', 'failed', null] }, eventAt: { $gte: now } }),
+      Booking.countDocuments({ source: { $in: ['app', 'reception'] }, zenotiSyncStatus: 'failed', eventAt: { $gte: now } }),
+      Booking.countDocuments({ source: { $in: ['app', 'reception'] }, zenotiAppointmentId: null, zenotiBookingId: { $ne: null }, eventAt: { $gte: now } }),
+      User.countDocuments({ zenotiGuestId: { $exists: false }, zenotiSyncStatus: 'pending' }),
+      User.countDocuments({ zenotiSyncStatus: 'failed' }),
+      User.countDocuments({ zenotiSyncStatus: 'review' }),
+      PackageAssignment.countDocuments({ zenotiSyncStatus: { $in: ['pending', 'failed'] } }),
+      ConsultationNote.countDocuments({ zenotiSyncStatus: 'failed' }),
+    ]);
+
+    return res.json({ success: true, data: {
+      checkedAt: now,
+      writeMode: zenotiWrite.mode(),
+      lifecycleWriteback: zenotiWrite.lifecycleWritebackEnabled(),
+      breaker: zenotiWrite.breakerStatus(),
+      inbound,
+      outbound: {
+        bookingsAwaitingPush: bookingsPending,
+        bookingsFailed,
+        bookingsNeedingAPerson: bookingsNeedPerson,
+        patientsPendingSync: usersPending,
+        patientsSyncFailed: usersFailed,
+        patientsNeedingReview: usersReview,
+        packageSalesPending: pkgPending,
+        prescriptionNotesFailed: notesFailed,
+        retry: 'confirmed future bookings retried every 10 min, max 10 per run',
+      },
+    } });
+  } catch (error) {
+    console.error('syncHealth failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not build the sync health view' });
+  }
+};

@@ -25,6 +25,10 @@ router.get('/practitioners', requirePermission('zenoti.view', 'patients.view', '
 router.post('/practitioners/sync', requirePermission('zenoti.manage'), z.syncPractitioners);
 // Catalogue + per-centre stock mirror. Read-only against Zenoti.
 router.post('/products/sync', requirePermission('zenoti.manage', 'inventory.manage'), z.syncProducts);
+// Services + packages mirror (read-only against Zenoti; creates hidden shells only).
+router.post('/catalog/sync', requirePermission('zenoti.manage', 'services.manage'), z.syncCatalog);
+// "Is everything flowing, both ways?" — last run per mirror + outbound backlog.
+router.get('/sync-health', VIEW, z.syncHealth);
 router.post('/practitioners/:employeeId/onboard', requirePermission('dermatologists.manage'), z.onboardPractitioner);
 
 router.get('/packages', VIEW, z.listPackages);
