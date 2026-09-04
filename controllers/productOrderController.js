@@ -18,7 +18,30 @@ const {
 // @access  Private
 exports.createOrder = async (req, res) => {
   try {
-    const { items, addressId, pricing, coupon, paymentMethod = 'COD', notes } = req.body;
+    const { items, addressId, pricing, coupon, notes } = req.body;
+
+    // Online payment only (2026-09 policy). Cash on delivery was removed from
+    // the store, so this endpoint no longer accepts a payment method at all —
+    // a prepaid order is created by verifyProductPayment after Razorpay
+    // captures. Any client still posting here is on an old build.
+    return res.status(400).json({
+      success: false,
+      code: 'ONLINE_PAYMENT_REQUIRED',
+      message: 'Cash on delivery is no longer available. Please update the app and pay online to place your order.',
+    });
+  } catch (error) {
+    console.error('Create product order error:', error);
+    return res.status(500).json({ success: false, message: 'Could not place the order' });
+  }
+};
+
+/**
+ * Retained for reference / future reinstatement of an unpaid-order path.
+ * Not routed. See routes/productOrder.js.
+ */
+exports.createOrderLegacyUnpaid = async (req, res) => {
+  try {
+    const { items, addressId, pricing, coupon, paymentMethod = 'Razorpay', notes } = req.body;
     
     console.log('📦 Creating product order for user:', req.user._id);
     console.log('👤 Member Type:', req.user.memberType);
@@ -62,7 +85,7 @@ exports.createOrder = async (req, res) => {
     // Never trust client-sent prices / GST / discount / total. Recompute
     // everything from the database and validate the coupon ourselves; the
     // client's `pricing` block is ignored entirely.
-    const priced = await computeOrderPricing({ items, couponCode: coupon?.code });
+    const priced = await computeOrderPricing({ items, couponCode: coupon?.code, city: address.city });
     if (!priced.ok) {
       return res.status(priced.status || 400).json({
         success: false,

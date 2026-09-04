@@ -268,9 +268,12 @@ exports.getUserBookings = async (req, res) => {
       };
     }
 
+    // Newest appointment first. `createdAt` was wrong for the patient's own
+    // history: a Zenoti visit from 2024 imported last week would have sorted
+    // above an appointment they booked in the app this morning.
     const bookings = await Booking.find(query)
       .populate('consultationId', 'name category price image duration_minutes')
-      .sort({ createdAt: -1 })
+      .sort({ eventAt: -1, _id: -1 })
       .select('-__v');
 
     res.status(200).json({

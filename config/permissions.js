@@ -71,6 +71,14 @@ const GROUPS = [
       { key: 'packages.manage', label: 'Edit & assign packages' },
       { key: 'consultationNotes.view', label: 'View consultation notes' },
       { key: 'consultationNotes.manage', label: 'Delete consultation notes', sensitive: true },
+      // Prescriptions: drafting and signing are deliberately separate keys so
+      // reception can prepare one but only a dermatologist can finalise it.
+      { key: 'prescriptions.draft', label: 'Prepare / edit a draft prescription' },
+      { key: 'prescriptions.sign', label: 'Sign & finalise prescriptions', sensitive: true },
+      { key: 'patientPhotos.view', label: 'View clinical photos' },
+      { key: 'patientPhotos.manage', label: 'Capture / upload clinical photos' },
+      { key: 'forms.view', label: 'View consultation form submissions' },
+      { key: 'forms.manage', label: 'Build & assign consultation form templates' },
     ],
   },
   {
@@ -79,6 +87,8 @@ const GROUPS = [
     permissions: [
       { key: 'products.view', label: 'View products' },
       { key: 'products.manage', label: 'Edit products' },
+      { key: 'bulk.import', label: 'Bulk import services / categories / products', sensitive: true },
+      { key: 'bulk.export', label: 'Bulk export services / categories / products' },
       { key: 'brands.view', label: 'View brands & formulations' },
       { key: 'brands.manage', label: 'Edit brands & formulations' },
       { key: 'coupons.view', label: 'View coupons' },
@@ -94,7 +104,14 @@ const GROUPS = [
     permissions: [
       { key: 'inventory.view', label: 'View inventory' },
       { key: 'inventory.manage', label: 'Adjust inventory' },
+      // Clinical read-only view: names, SKUs and quantities with NO pricing.
+      // Grant this to dermatologists INSTEAD OF inventory.view.
+      { key: 'inventory.availability', label: 'View product availability (no prices)' },
+      { key: 'inventory.receive', label: 'Receive stock against a purchase order' },
       { key: 'stockLedger.view', label: 'View stock ledger' },
+      { key: 'purchaseOrders.view', label: 'View purchase orders' },
+      { key: 'purchaseOrders.manage', label: 'Create / edit purchase orders' },
+      { key: 'purchaseOrders.approve', label: 'Approve purchase orders', sensitive: true },
       { key: 'vendors.view', label: 'View vendors' },
       { key: 'vendors.manage', label: 'Edit vendors' },
       { key: 'vendors.bank', label: 'Reveal vendor bank details', sensitive: true },
@@ -160,9 +177,24 @@ const ROLE_BASELINES = {
     'services.view', 'packages.view', 'branches.view',
     // Their own profile, schedule and fee requests live behind these.
     'dermatologists.view',
-    // The prescription pad reads the product catalogue; PatientDetail reads the
-    // app's membership copy; the CRM tab reads a guest's clinic history.
-    'products.view', 'appStudio.view', 'zenoti.view',
+    // Clinical work: the pre-consultation form the patient filled, the photo
+    // record, and a prescription they alone may sign.
+    'forms.view',
+    'patientPhotos.view', 'patientPhotos.manage',
+    'prescriptions.draft', 'prescriptions.sign',
+    /*
+     * Product availability, NOT the product catalogue.
+     *
+     * This used to be `products.view`, which serves /admin/products — every
+     * row of which carries price and GST. A dermatologist needs to know an item
+     * exists and is in stock, never what it costs or what it cost us, so the
+     * baseline now grants only the price-free availability view. Do not put
+     * `products.view` or `inventory.view` back here.
+     */
+    'inventory.availability',
+    // PatientDetail reads the app's membership copy; the CRM tab reads a
+    // guest's clinic history.
+    'appStudio.view', 'zenoti.view',
   ],
   therapist: [
     // The floor: today's guests, check-in/out, and stock consumed in session.
@@ -170,6 +202,8 @@ const ROLE_BASELINES = {
     'patients.view',
     'inventory.view', 'inventory.manage',
     'services.view', 'packages.view', 'branches.view',
+    // Before/after photographs of the treatment they performed.
+    'patientPhotos.view', 'patientPhotos.manage',
     // The session screen reads the app's service copy, and shows what the
     // dermatologist prescribed for this guest.
     'appStudio.view', 'consultationNotes.view',

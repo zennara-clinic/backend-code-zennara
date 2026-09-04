@@ -97,8 +97,11 @@ const productOrderSchema = new mongoose.Schema({
   paymentMethod: {
     type: String,
     required: true,
-    // 'COD' = cash on delivery (createOrder defaults to it); 'Razorpay'/'Online'
-    // for prepaid. COD was missing here, so every cash order failed validation.
+    // 'Razorpay'/'Online' are the only methods new orders may use — cash on
+    // delivery was withdrawn in the 2026-09 store policy. 'COD' is KEPT in the
+    // enum on purpose: thousands of historical orders carry it, and dropping
+    // the value would make every one of them fail validation on the next save
+    // (cancel, return, status change). Nothing may write it going forward.
     enum: ['Razorpay', 'Online', 'COD'],
     default: 'Razorpay'
   },

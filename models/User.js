@@ -80,10 +80,22 @@ const UserSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
-  // Write-back status of the guest record in Zenoti (Phase 2 write-back).
+  /**
+   * Write-back status of the guest record in Zenoti.
+   *
+   *   pending  queued — created locally, not yet accepted by Zenoti
+   *   synced   Zenoti holds this guest and zenotiGuestId is its real id
+   *   failed   the write was attempted and rejected
+   *   review   needs a human: a duplicate mobile, or an ambiguous match
+   *   skipped  intentionally not written (e.g. already a Zenoti-origin row)
+   *   dryrun   ZENOTI_WRITE_MODE=dryrun, so nothing was actually sent
+   *
+   * `review` exists so a patient who cannot be safely auto-matched is visible
+   * in the panel rather than silently living on as a local-only record.
+   */
   zenotiSyncStatus: {
     type: String,
-    enum: ['pending', 'synced', 'failed', 'skipped', 'dryrun', null],
+    enum: ['pending', 'synced', 'failed', 'review', 'skipped', 'dryrun', null],
     default: null
   },
   zenotiSyncError: {

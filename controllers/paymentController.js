@@ -224,8 +224,13 @@ exports.createProductOrderPayment = async (req, res) => {
         message: 'Cart contains an invalid item quantity'
       });
     }
-    if (!mongoose.isValidObjectId(orderData.addressId)
-        || !await Address.exists({ _id: orderData.addressId, userId: req.user._id })) {
+    if (!mongoose.isValidObjectId(orderData.addressId)) {
+      return res.status(400).json({ success: false, message: 'Select a valid delivery address' });
+    }
+    // The delivery fee is city-dependent, so the address must be read here, not
+    // merely proven to exist.
+    const deliveryAddress = await Address.findOne({ _id: orderData.addressId, userId: req.user._id });
+    if (!deliveryAddress) {
       return res.status(400).json({ success: false, message: 'Select a valid delivery address' });
     }
 
@@ -235,9 +240,17 @@ exports.createProductOrderPayment = async (req, res) => {
     const priced = await computeOrderPricing({
       items: orderData.items,
       couponCode: orderData.coupon?.code,
+      city: deliveryAddress.city,
     });
     if (!priced.ok) {
-      return res.status(priced.status || 400).json({ success: false, message: priced.message });
+      // Carries `code`/`minOrderValue` for BELOW_MIN_ORDER so the app can show
+      // the shortfall instead of a generic failure.
+      return res.status(priced.status || 400).json({
+        success: false,
+        message: priced.message,
+        ...(priced.code ? { code: priced.code } : {}),
+        ...(priced.minOrderValue !== undefined ? { minOrderValue: priced.minOrderValue } : {}),
+      });
     }
     const chargeAmount = priced.pricing.total;
     if (!Number.isFinite(chargeAmount) || chargeAmount <= 0) {
@@ -386,6 +399,7 @@ exports.verifyProductPayment = async (req, res) => {
       const priced = await computeOrderPricing({
         items: orderData.items,
         couponCode: orderData.coupon?.code,
+        city: address.city,
       });
       if (!priced.ok) {
         await markFulfilmentFailure(payment, 'order', priced.message);

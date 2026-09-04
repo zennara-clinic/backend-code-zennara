@@ -73,7 +73,7 @@ async function consultationIdsByKind() {
  * ------------------------------------------------------------------------ */
 const BOOKING_SORTS = {
   createdAt: 'createdAt',
-  date: null, // handled specially (confirmedDate → preferredDate)
+  date: 'eventAt', // the appointment's own instant — see Booking.eventAt
   amount: 'amount',
   status: 'status',
   name: 'fullName',
@@ -176,11 +176,22 @@ async function buildBookingQuery(q) {
   }
   if (and.length) query.$and = and;
 
-  // Sort
+  /*
+   * Sort — newest first, on ONE field.
+   *
+   * This used to be `{ confirmedDate: dir, preferredDate: dir, slotTime: dir }`.
+   * Mongo compares those keys in order, and a booking mirrored from Zenoti has
+   * no confirmedDate at all, so every mirrored visit sorted as null and sank
+   * below every app booking whatever its date — producing the "this month,
+   * then four years ago, then another date" ordering. `eventAt` collapses the
+   * two dates plus the time of day into a single instant (see Booking.eventAt),
+   * so one key gives a true chronological order for both kinds of row.
+   *
+   * `_id` breaks ties so pagination can't repeat or drop a row.
+   */
   const dir = q.sortOrder === 'asc' ? 1 : -1;
-  let sort = { createdAt: -1 };
-  if (q.sortBy === 'date') sort = { confirmedDate: dir, preferredDate: dir, slotTime: dir };
-  else if (BOOKING_SORTS[q.sortBy]) sort = { [BOOKING_SORTS[q.sortBy]]: dir };
+  let sort = { eventAt: -1, _id: -1 };
+  if (BOOKING_SORTS[q.sortBy]) sort = { [BOOKING_SORTS[q.sortBy]]: dir, _id: dir };
 
   return { query, sort };
 }

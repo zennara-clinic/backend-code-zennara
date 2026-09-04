@@ -40,6 +40,7 @@ async function buildAdminPayload(admin) {
     roleKey: eff.roleKey,
     roleName: eff.roleName,
     permissions: Array.from(eff.permissions),
+    toursSeen: Array.isArray(admin.toursSeen) ? admin.toursSeen : [],
   };
 }
 exports.buildAdminPayload = buildAdminPayload;
@@ -803,5 +804,46 @@ exports.updateMyPassword = async (req, res) => {
   } catch (error) {
     console.error('❌ Update my password failed:', error);
     return res.status(500).json({ success: false, message: 'Could not change the password. Please try again.' });
+  }
+};
+
+
+/**
+ * Walkthrough state for the signed-in staff member.
+ *
+ * PUT  /api/admin/auth/me/tours  { key }  → mark one tour as seen
+ * DELETE /api/admin/auth/me/tours         → "View tutorial again" (replay all)
+ * DELETE /api/admin/auth/me/tours?key=x   → replay just one module tour
+ */
+exports.markTourSeen = async (req, res) => {
+  try {
+    const key = String(req.body?.key || '').trim();
+    if (!key || key.length > 64) {
+      return res.status(400).json({ success: false, message: 'A tour key is required' });
+    }
+    // $addToSet keeps this idempotent — a tour finished twice in two tabs is
+    // still one entry.
+    const admin = await Admin.findByIdAndUpdate(
+      req.admin._id,
+      { $addToSet: { toursSeen: key } },
+      { new: true },
+    ).select('toursSeen').lean();
+    return res.json({ success: true, data: { toursSeen: admin?.toursSeen || [] } });
+  } catch (error) {
+    console.error('❌ markTourSeen failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not save tutorial state' });
+  }
+};
+
+exports.resetTours = async (req, res) => {
+  try {
+    const key = String(req.query?.key || '').trim();
+    const update = key ? { $pull: { toursSeen: key } } : { $set: { toursSeen: [] } };
+    const admin = await Admin.findByIdAndUpdate(req.admin._id, update, { new: true })
+      .select('toursSeen').lean();
+    return res.json({ success: true, data: { toursSeen: admin?.toursSeen || [] } });
+  } catch (error) {
+    console.error('❌ resetTours failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not reset the tutorial' });
   }
 };

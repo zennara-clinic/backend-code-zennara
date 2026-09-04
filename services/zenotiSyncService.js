@@ -62,10 +62,56 @@ function escapeRegExp(s) {
  * @param {object} [opts] { phone } — the exact 10-digit phone used to sign in
  * @returns {Promise<import('mongoose').Document>} the local user
  */
+/**
+ * Make sure a normalised guest actually carries an identity before it is used
+ * to create or update a local account.
+ *
+ * Several Zenoti endpoints return a *partial* guest — the centre appointment
+ * book and the guest-list crawl both hand back little more than an id. Writing
+ * that straight into Mongo is how patients ended up named "Zennara Guest" with
+ * a blank mobile: the placeholder was never a Zenoti value, it was our own
+ * fallback being persisted and then re-persisted on every later pass.
+ *
+ * So: when the name is missing but we hold the guest id, ask Zenoti for the
+ * full record (GET /guests/{id}) and merge it in. The placeholder is only ever
+ * correct when Zenoti itself has no name for the guest, which is rare.
+ *
+ * Failure is non-fatal — a CRM hiccup must not stop the mirror — but it is
+ * logged, and the caller keeps whatever identity it already had.
+ */
+async function hydrateGuestIdentity(guest) {
+  if (!guest || !guest.zenotiGuestId) return guest;
+  const missingName = !String(guest.fullName || '').trim();
+  const missingContact = !guest.phone && !guest.email;
+  if (!missingName && !missingContact) return guest;
+  if (!zenoti.isConfigured()) return guest;
+
+  try {
+    const full = await zenoti.getGuest(guest.zenotiGuestId);
+    if (!full) return guest;
+    // Only fill gaps. A value already present on the partial payload is the
+    // fresher of the two (it came from the feed we are processing).
+    return {
+      ...full,
+      ...Object.fromEntries(Object.entries(guest).filter(([, v]) => v !== undefined && v !== null && v !== '')),
+      zenotiGuestId: guest.zenotiGuestId,
+    };
+  } catch (error) {
+    logger.warn('Could not hydrate Zenoti guest identity; keeping partial record', {
+      zenotiGuestId: guest.zenotiGuestId,
+      error: error.message,
+    });
+    return guest;
+  }
+}
+
 async function provisionUserFromGuest(guest, opts = {}) {
   if (!guest || !guest.zenotiGuestId) {
     throw new Error('provisionUserFromGuest requires a guest with a zenotiGuestId');
   }
+
+  // A partial guest payload must not become a "Zennara Guest" record.
+  guest = await hydrateGuestIdentity(guest);
 
   const phone = normalizeIndianMobile(opts.phone) || guest.phone || null;
   const email = (guest.email || placeholderEmail(guest.zenotiGuestId)).toLowerCase().trim();
@@ -128,6 +174,13 @@ async function provisionUserFromGuest(guest, opts = {}) {
     }
     if (!user.phone && phone) user.phone = phone;
     if (!user.location) user.location = location;
+    // Heal a record that was created before the identity was available. This is
+    // the repair path for accounts already sitting in the database as
+    // "Zennara Guest": the moment Zenoti gives us a real name, take it.
+    if (guest.fullName && String(user.fullName || '').trim().toLowerCase() === 'zennara guest') {
+      user.fullName = guest.fullName;
+    }
+    // Zenoti is the source of record for these, so a real identity always wins.
     const changed = ['fullName', 'gender', 'dateOfBirth', 'zenotiGuestId', 'zenotiCenterId', 'location', 'email', 'phone']
       .some((k) => String(before[k] ?? '') !== String(user[k] ?? ''));
     user.$locals.skipZenotiWrite = true;
@@ -146,6 +199,9 @@ async function provisionUserFromGuest(guest, opts = {}) {
   const emailTaken = pre ? Boolean(pre.byEmail.get(email)) : await User.exists({ email });
   user = new User({
     email: emailTaken ? placeholderEmail(guest.zenotiGuestId) : email,
+    // Only after hydrateGuestIdentity has failed to find a real name — i.e.
+    // Zenoti genuinely holds no identity for this guest — is the placeholder
+    // correct. It is a last resort, never a default.
     fullName: guest.fullName || 'Zennara Guest',
     phone: phone || undefined,
     location,
@@ -281,6 +337,7 @@ async function syncLinkedUser(user) {
 
 module.exports = {
   placeholderEmail,
+  hydrateGuestIdentity,
   isMembershipCurrentlyActive,
   provisionUserFromGuest,
   findOrProvisionByPhone,

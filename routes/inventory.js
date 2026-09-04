@@ -18,6 +18,21 @@ router.use(protectAdmin);
 const VIEW = requirePermission('inventory.view');
 
 // Statistics route (must be before :id route)
+/**
+ * Doctor-facing availability — names and quantities, never a price.
+ *
+ * Either permission opens it (requirePermission is OR), so anyone who already
+ * administers stock keeps access. The point of the separate
+ * `inventory.availability` key is the other direction: a dermatologist can be
+ * granted this WITHOUT `inventory.view`, and so can never reach the priced
+ * inventory list at /api/inventory.
+ */
+router.get(
+  '/availability',
+  requirePermission('inventory.availability', 'inventory.view'),
+  require('../controllers/inventoryAvailabilityController').getAvailability,
+);
+
 router.get('/statistics', VIEW, getInventoryStatistics);
 
 // Ledger + session consumption (therapists may consume; only admins adjust/edit)

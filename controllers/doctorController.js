@@ -114,14 +114,12 @@ exports.getAllDoctors = async (req, res) => {
     // Contact details are for the panel only; the app sees the public profile.
     const projection = req.admin ? {} : { email: 0, phone: 0 };
 
-    const doctors = await Doctor.find(filter, projection)
-      .sort({ displayOrder: 1, tier: 1, name: 1 })
-      .lean();
+    const doctors = await Doctor.find(filter, projection).lean();
 
     return res.status(200).json({
       success: true,
       count: doctors.length,
-      data: doctors,
+      data: sortByDisplayOrder(doctors),
     });
   } catch (error) {
     console.error('Get doctors error:', error);
@@ -132,6 +130,27 @@ exports.getAllDoctors = async (req, res) => {
     });
   }
 };
+
+/**
+ * The clinic's approved order for the team, used by every list the app and the
+ * panels render.
+ *
+ * `displayOrder` defaults to 0, so a plain `.sort({ displayOrder: 1 })` put
+ * every un-ordered dermatologist ABOVE the ones the clinic had deliberately
+ * placed first — the opposite of what the panel's "Order in the app" field
+ * promises. Treat 0 / null / absent as "unranked" and sort those to the end,
+ * alphabetically, behind everyone who has been given a position.
+ */
+function sortByDisplayOrder(rows) {
+  const rank = (d) => {
+    const n = Number(d?.displayOrder);
+    return Number.isFinite(n) && n > 0 ? n : Number.MAX_SAFE_INTEGER;
+  };
+  return [...rows].sort(
+    (a, b) => rank(a) - rank(b) || String(a?.name || '').localeCompare(String(b?.name || '')),
+  );
+}
+exports.sortByDisplayOrder = sortByDisplayOrder;
 
 // @desc    Get one doctor by _id or doctorId slug
 // @route   GET /api/doctors/:id
@@ -683,7 +702,7 @@ exports.getDoctorStats = async (req, res) => {
     const slotIn = { $or: [{ confirmedDate: { $gte: start, $lte: end } }, { confirmedDate: null, preferredDate: { $gte: start, $lte: end } }] };
     const mine = { $or: [{ specialistId: doctor.doctorId }, { specialistName: doctor.name }] };
     const [rows, allTime] = await Promise.all([
-      Booking.find({ $and: [mine, slotIn] }).populate('consultationId', 'name category').select('consultationId externalServiceName status amount paymentStatus confirmedDate preferredDate confirmedTime slotTime preferredTimeSlots rating feedback userId fullName source preferredLocation checkInTime checkOutTime sessionDuration').sort({ confirmedDate: -1, preferredDate: -1 }).lean(),
+      Booking.find({ $and: [mine, slotIn] }).populate('consultationId', 'name category').select('consultationId externalServiceName status amount paymentStatus eventAt confirmedDate preferredDate confirmedTime slotTime preferredTimeSlots rating feedback userId fullName source preferredLocation checkInTime checkOutTime sessionDuration').sort({ eventAt: -1, _id: -1 }).lean(),
       Booking.aggregate([{ $match: mine }, { $group: { _id: null, bookings: { $sum: 1 }, completed: { $sum: { $cond: [{ $eq: ['$status', 'Completed'] }, 1, 0] } }, revenue: { $sum: { $cond: [{ $eq: ['$paymentStatus', 'paid'] }, '$amount', 0] } }, patients: { $addToSet: '$userId' } } }]),
     ]);
     const sum = (arr, f) => arr.reduce((n, x) => n + (Number(f(x)) || 0), 0);

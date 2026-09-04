@@ -280,6 +280,28 @@ const bookingSchema = new mongoose.Schema({
   zenotiSyncError: { type: String, default: null },
   zenotiSyncedAt: { type: Date, default: null },
 
+  /**
+   * The single instant this appointment "happened at", for ordering.
+   *
+   * History was coming back in an apparently random sequence — this month,
+   * then four years ago, then something else — because every list sorted on
+   * two competing fields (`confirmedDate` then `preferredDate`). A booking
+   * mirrored from Zenoti has NO confirmedDate, so under a
+   * `{ confirmedDate: -1, preferredDate: -1 }` sort every mirrored visit fell
+   * to the bottom of the list regardless of its actual date, interleaving old
+   * and new.
+   *
+   * Maintained in the pre-save hook below as
+   *   confirmedDate ?? preferredDate ?? createdAt
+   * (with the confirmed/slot time folded in so two visits on one day order by
+   * the hour). Sort every history list on this, descending, and nothing else.
+   */
+  eventAt: {
+    type: Date,
+    default: null,
+    index: true,
+  },
+
   // Metadata
   notes: String,
   /** Set when the owner deleted their account; the record is kept, anonymised, for accounting. */
@@ -305,6 +327,9 @@ bookingSchema.pre('save', async function(next) {
 
 // Index for efficient queries
 bookingSchema.index({ userId: 1, status: 1 });
+// Newest-first history for one patient, straight off the index.
+bookingSchema.index({ userId: 1, eventAt: -1 });
+bookingSchema.index({ eventAt: -1 });
 bookingSchema.index({ preferredDate: 1, preferredLocation: 1 });
 bookingSchema.index({ createdAt: -1 });
 bookingSchema.index(
@@ -376,9 +401,30 @@ const toClinicMidnight = (value) => {
 };
 bookingSchema.statics.toClinicMidnight = toClinicMidnight;
 
+/**
+ * "YYYY-MM-DD midnight" + "HH:mm" → the actual clinic-local instant.
+ * Times are stored as wall-clock strings on purpose (see DermatologistSchedule),
+ * so the offset is applied here rather than by the server's own timezone.
+ */
+const withClinicTime = (date, time) => {
+  if (!date) return null;
+  const base = new Date(date);
+  if (Number.isNaN(base.getTime())) return null;
+  const m = /^([01]?\d|2[0-3]):([0-5]\d)/.exec(String(time || ''));
+  if (!m) return base;
+  return new Date(base.getTime() + (Number(m[1]) * 60 + Number(m[2])) * 60 * 1000);
+};
+
 bookingSchema.pre('save', function (next) {
   if (this.isModified('preferredDate') && this.preferredDate) this.preferredDate = toClinicMidnight(this.preferredDate);
   if (this.isModified('confirmedDate') && this.confirmedDate) this.confirmedDate = toClinicMidnight(this.confirmedDate);
+  // One field to sort every history list on. Recomputed on every save so a
+  // reschedule moves the booking to its new position immediately.
+  this.eventAt =
+    withClinicTime(this.confirmedDate, this.confirmedTime || this.slotTime)
+    || withClinicTime(this.preferredDate, this.slotTime || (this.preferredTimeSlots || [])[0])
+    || this.createdAt
+    || new Date();
   if (this.slotTime) {
     const live = ['Awaiting Confirmation', 'Confirmed', 'Rescheduled', 'In Progress', 'Completed'];
     // Zenoti mirrors still block the diary (the slot engine filters on status),

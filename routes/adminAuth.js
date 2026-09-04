@@ -26,5 +26,8 @@ router.get('/me', protectAdmin, getAdminProfile);
 const { updateMyContact, updateMyPassword } = require('../controllers/adminAuthController');
 router.put('/me/contact', protectAdmin, updateMyContact);
 router.put('/me/password', protectAdmin, updateMyPassword);
+// First-login walkthrough state (per account, not per browser).
+router.put('/me/tours', protectAdmin, require('../controllers/adminAuthController').markTourSeen);
+router.delete('/me/tours', protectAdmin, require('../controllers/adminAuthController').resetTours);
 
 module.exports = router;

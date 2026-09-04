@@ -105,6 +105,21 @@ const AdminSchema = new mongoose.Schema({
   },
   
   // Activity tracking
+  /**
+   * Walkthroughs this person has already seen, by tour key ("tour-doctor",
+   * "module-consultation", …).
+   *
+   * This used to live in the panel's localStorage, so the first-login tour
+   * replayed on every new browser, profile or cleared cache — which is exactly
+   * the "it keeps showing again" complaint. Storing it against the account
+   * makes "only on first login" true per person rather than per device.
+   * Clearing the array is what "View tutorial again" does.
+   */
+  toursSeen: {
+    type: [String],
+    default: [],
+  },
+
   lastLogin: {
     type: Date,
     default: null

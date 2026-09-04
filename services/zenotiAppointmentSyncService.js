@@ -14,7 +14,7 @@ const Consultation = require('../models/Consultation');
 const User = require('../models/User');
 const ZenotiSyncRun = require('../models/ZenotiSyncRun');
 const zenoti = require('./zenotiService');
-const { provisionUserFromGuest } = require('./zenotiSyncService');
+const { provisionUserFromGuest, hydrateGuestIdentity } = require('./zenotiSyncService');
 const { CENTERS, branchNameForCenter, publicEmail, isPlaceholderEmail } = require('../config/zenoti');
 const Doctor = require('../models/Doctor');
 const ZenotiPractitioner = require('../models/ZenotiPractitioner');
@@ -296,8 +296,30 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
   status = mergeStatus(booking, appointment, status, isNew);
   booking.userId = owner._id;
   if (consultation) booking.consultationId = consultation._id;
-  const ownerName = owner.fullName || guest?.fullName || null;
-  if (ownerName) booking.fullName = ownerName;
+  /*
+   * Identity on the mirrored booking.
+   *
+   * "Zennara Guest" is a last-resort label, not a value Zenoti ever sends. It
+   * may only be written when we have exhausted every real source, and it must
+   * never overwrite a name already on the row — that was the bug that made
+   * real patients turn back into guests on a later sync pass.
+   */
+  let ownerName = owner.fullName || guest?.fullName || null;
+  if (!ownerName && (owner.zenotiGuestId || guest?.zenotiGuestId)) {
+    // Ask Zenoti directly before giving up on the name.
+    const hydrated = await hydrateGuestIdentity({
+      zenotiGuestId: owner.zenotiGuestId || guest.zenotiGuestId,
+    }).catch(() => null);
+    if (hydrated?.fullName) {
+      ownerName = hydrated.fullName;
+      // Heal the account too, so the next pass has it locally.
+      await User.updateOne(
+        { _id: owner._id, $or: [{ fullName: { $in: [null, '', 'Zennara Guest'] } }] },
+        { $set: { fullName: hydrated.fullName } },
+      ).catch(() => {});
+    }
+  }
+  if (ownerName && ownerName !== 'Zennara Guest') booking.fullName = ownerName;
   else if (!booking.fullName) booking.fullName = 'Zennara Guest';
   const ownerPhone = owner.phone || guest?.phone || null;
   if (ownerPhone) booking.mobileNumber = ownerPhone;
