@@ -580,6 +580,13 @@ async function syncBooking(bookingId) {
     const created = await liveWrite('bookAppointment', () => zenoti.request('/v1/bookings', { method: 'POST', body: payload }));
     const zBookingId = created?.id || created?.Id;
     if (!zBookingId) throw new Error('Zenoti booking create returned no id');
+    // Record the ids as soon as they exist. If the reserve/confirm steps below
+    // fail we still know which Zenoti booking was opened, instead of leaving an
+    // orphan behind with nothing linking back to it.
+    booking.zenotiBookingId = zBookingId;
+    booking.zenotiGuestId = guestId;
+    booking.zenotiSyncStatus = 'pending';
+    await booking.save({ validateModifiedOnly: true }).catch(() => {});
 
     const slotsRes = await zenoti.request(`/v1/bookings/${zBookingId}/slots`, { method: 'GET' });
     const slots = slotsRes?.slots || slotsRes?.Slots || [];
@@ -612,6 +619,7 @@ async function syncBooking(bookingId) {
     booking.zenotiAppointmentGroupId =
       confirmed?.appointment_group_id || invoice.appointment_group_id || invoice.AppointmentGroupId || null;
     booking.zenotiServiceId = serviceId;
+    booking.zenotiGuestId = guestId;
     booking.zenotiSyncStatus = 'synced';
     booking.zenotiSyncedAt = new Date();
     booking.zenotiSyncError = null;
@@ -623,6 +631,52 @@ async function syncBooking(bookingId) {
     await booking.save({ validateModifiedOnly: true }).catch(() => {});
     logger.error('Zenoti syncBooking failed', { bookingId, error: err.message });
   }
+}
+
+
+/**
+ * Retry bookings that were created here but never reached Zenoti.
+ *
+ * The push happens in a fire-and-forget post-save hook, so a transient CRM
+ * outage, an unpublished staff shift or a momentary network failure leaves a
+ * confirmed-looking appointment that exists only in Zennara. Without a retry
+ * the only way it ever reaches the CRM is somebody noticing and pressing
+ * "resync" in the panel.
+ *
+ * Deliberately conservative:
+ *   · only future appointments, and only live statuses — a past or cancelled
+ *     booking must never be created in Zenoti after the fact
+ *   · never touches rows that already carry an appointment id
+ *   · never touches source:'zenoti' mirrors (they came FROM Zenoti)
+ *   · small batches, so a systemic failure cannot turn into a write storm
+ *     against the CRM — this is the same class of mistake as the automated
+ *     no-show job that wrote hundreds of rows into Zenoti
+ */
+async function retryFailedBookingPushes({ limit = 10, trigger = 'schedule' } = {}) {
+  if (isOff()) return { attempted: 0, reason: 'write mode off' };
+  const Booking = require('../models/Booking');
+
+  const candidates = await Booking.find({
+    source: { $in: ['app', 'reception'] },
+    zenotiAppointmentId: null,
+    zenotiSyncStatus: { $in: ['failed', 'pending'] },
+    status: { $in: ['Awaiting Confirmation', 'Confirmed', 'Rescheduled'] },
+    eventAt: { $gte: new Date() },
+  })
+    .sort({ eventAt: 1 })
+    .limit(Math.min(Number(limit) || 10, 25))
+    .select('_id')
+    .lean();
+
+  let attempted = 0;
+  for (const row of candidates) {
+    // Sequential on purpose: the breaker in liveWrite counts failures, and a
+    // parallel burst would trip it on the first bad batch.
+    await syncBooking(row._id).catch(() => {});
+    attempted += 1;
+  }
+  if (attempted) logger.info('Retried Zenoti booking pushes', { attempted, trigger });
+  return { attempted };
 }
 
 /** Resolve identifiers missing on records created by the older write parser. */
@@ -890,6 +944,7 @@ async function syncOrder(orderId) {
 }
 
 module.exports = {
+  retryFailedBookingPushes,
   mode,
   isOff,
   isLive,

@@ -18,7 +18,7 @@
  */
 const Booking = require('../models/Booking');
 const DermatologistSchedule = require('../models/DermatologistSchedule');
-const { SESSION_SLOT_MINUTES } = require('../config/scheduling');
+const { SESSION_SLOT_MINUTES, bookingWindowForDay } = require('../config/scheduling');
 const {
   clinicDateKey,
   clinicDateTime,
@@ -137,6 +137,33 @@ async function branchDoc(branchId) {
   branchCache.set(k, { at: Date.now(), doc });
   return doc;
 }
+
+/**
+ * Narrow ranges to the clinic-wide booking window for that weekday.
+ *
+ * Applied to EVERY read of the diary, before the per-centre clamp, so no
+ * surface can offer a time outside 11:00–18:00 (11:00–15:00 on Sunday) — not
+ * the app, not reception, not the panel, and not a hand-crafted request, since
+ * the pre-payment slot guard calls the same engine.
+ *
+ * The window only ever removes time. A dermatologist who sits 11:00–14:00
+ * still offers 11:00–14:00; a centre closed that day is still closed.
+ */
+function clampToBookingWindow(ranges, key) {
+  const window = bookingWindowForDay(weekdayForKey(key));
+  if (!window) return [];
+  const open = toMinutes(window.start);
+  const close = toMinutes(window.end);
+  if (open === null || close === null || close <= open) return [];
+  return (ranges || [])
+    .map((r) => {
+      const s = Math.max(toMinutes(r.start), open);
+      const e = Math.min(toMinutes(r.end), close);
+      return e > s ? { ...r, start: toHHMM(s), end: toHHMM(e) } : null;
+    })
+    .filter(Boolean);
+}
+
 async function clampToBranch(ranges, branchId, key) {
   const b = await branchDoc(branchId);
   if (!b) return { ranges, closed: null };
@@ -240,7 +267,7 @@ async function slotsForDate(doctorId, key, { branchId = null, now = new Date(), 
   {
     const clamped = await clampToBranch(ranges, branchId || (resolved.perBranch && resolved.perBranch[0] && resolved.perBranch[0].branchId), key);
     if (clamped.closed) return { date: key, configured: true, slots: [], reason: 'centre-closed', note: clamped.closed.reason };
-    ranges = clamped.ranges;
+    ranges = clampToBookingWindow(clamped.ranges, key);
     if (!ranges.length) return { date: key, configured: true, slots: [], reason: 'outside-centre-hours' };
   }
 
@@ -355,8 +382,8 @@ async function availabilityRange(doctorId, fromKeyStr, toKeyStr, { branchId = nu
 
     if (ranges.length) {
       const clamped = await clampToBranch(ranges, branchId || (resolved.perBranch && resolved.perBranch[0] && resolved.perBranch[0].branchId), key);
-      ranges = clamped.ranges;
       if (clamped.closed) { days.push({ date: key, open: false, total: 0, free: 0, note: clamped.closed.reason }); continue; }
+      ranges = clampToBookingWindow(clamped.ranges, key);
     }
     if (!ranges.length) {
       days.push({ date: key, open: false, total: 0, free: 0, note: resolved.note });
@@ -567,6 +594,7 @@ module.exports = {
   LIVE_STATUSES,
   rangesFor,
   clampToBranch,
+  clampToBookingWindow,
   anySlotsForDate,
   anyAvailabilityRange,
   whoIsFree,

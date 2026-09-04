@@ -262,6 +262,19 @@ const bookingSchema = new mongoose.Schema({
 
   // Zenoti write-back (Phase 2): the appointment this booking created in the CRM,
   // and its sync status, for idempotency + observability.
+  /**
+   * The Zenoti guest (client) id this appointment belongs to, denormalised
+   * from the User at push time.
+   *
+   * The booking already points at a local userId, but the integration contract
+   * is "every booking carries the external client id", and keeping it here
+   * means reconciliation and support lookups do not need a join — nor do they
+   * silently follow a userId that was later re-linked to a different guest.
+   * It is only ever COPIED from User.zenotiGuestId; never generated here.
+   */
+  zenotiGuestId: { type: String, default: null, index: true },
+  /** Zenoti's short-lived /v1/bookings id, distinct from the appointment id. */
+  zenotiBookingId: { type: String, default: null },
   zenotiAppointmentId: { type: String, default: null },
   zenotiAppointmentGroupId: { type: String, default: null, index: true },
   zenotiAppointmentSegmentId: { type: String, default: null },

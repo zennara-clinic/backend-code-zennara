@@ -60,6 +60,20 @@ function startZenotiScheduler() {
     appointmentSync.syncRecentAppointments({ trigger: 'schedule' }).catch(() => {});
   });
 
+  /*
+   * Retry app/reception bookings whose push to Zenoti failed.
+   *
+   * Every 10 minutes and at most 10 at a time: a booking confirmed to a patient
+   * must not live only in Zennara, but a systemic Zenoti failure must not turn
+   * this into a write storm either. Only future, still-live bookings are ever
+   * retried — see retryFailedBookingPushes.
+   */
+  cron.schedule('*/10 * * * *', () => {
+    require('../services/zenotiWriteService')
+      .retryFailedBookingPushes({ limit: 10, trigger: 'schedule' })
+      .catch(() => {});
+  });
+
   // Booking-horizon pass: day +6 → +62 in seven-day chunks, every 15 minutes.
   // Keeps far-out Zenoti reservations blocking the app's consultation slots
   // (the near window above only reaches six days ahead; the slot engine offers

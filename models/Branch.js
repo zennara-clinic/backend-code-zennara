@@ -60,42 +60,51 @@ const branchSchema = new mongoose.Schema({
     }
   },
 
-  // Operating Hours
+  /**
+   * Operating Hours — the centre's own opening times.
+   *
+   * Defaults match the clinic-wide booking window in config/scheduling.js
+   * (Mon–Sat 11:00–18:00, Sun 11:00–15:00) so a newly created centre is
+   * bookable for exactly the advertised hours. A centre may open EARLIER or
+   * close LATER than the window for walk-ins; the slot engine clamps online
+   * booking to the window regardless, so widening these does not widen what
+   * patients can book.
+   */
   operatingHours: {
     monday: {
       isOpen: { type: Boolean, default: true },
-      openTime: { type: String, default: '10:00' },
-      closeTime: { type: String, default: '19:00' }
+      openTime: { type: String, default: '11:00' },
+      closeTime: { type: String, default: '18:00' }
     },
     tuesday: {
       isOpen: { type: Boolean, default: true },
-      openTime: { type: String, default: '10:00' },
-      closeTime: { type: String, default: '19:00' }
+      openTime: { type: String, default: '11:00' },
+      closeTime: { type: String, default: '18:00' }
     },
     wednesday: {
       isOpen: { type: Boolean, default: true },
-      openTime: { type: String, default: '10:00' },
-      closeTime: { type: String, default: '19:00' }
+      openTime: { type: String, default: '11:00' },
+      closeTime: { type: String, default: '18:00' }
     },
     thursday: {
       isOpen: { type: Boolean, default: true },
-      openTime: { type: String, default: '10:00' },
-      closeTime: { type: String, default: '19:00' }
+      openTime: { type: String, default: '11:00' },
+      closeTime: { type: String, default: '18:00' }
     },
     friday: {
       isOpen: { type: Boolean, default: true },
-      openTime: { type: String, default: '10:00' },
-      closeTime: { type: String, default: '19:00' }
+      openTime: { type: String, default: '11:00' },
+      closeTime: { type: String, default: '18:00' }
     },
     saturday: {
       isOpen: { type: Boolean, default: true },
-      openTime: { type: String, default: '10:00' },
-      closeTime: { type: String, default: '19:00' }
+      openTime: { type: String, default: '11:00' },
+      closeTime: { type: String, default: '18:00' }
     },
     sunday: {
       isOpen: { type: Boolean, default: true },
-      openTime: { type: String, default: '10:00' },
-      closeTime: { type: String, default: '19:00' }
+      openTime: { type: String, default: '11:00' },
+      closeTime: { type: String, default: '15:00' }
     }
   },
 
