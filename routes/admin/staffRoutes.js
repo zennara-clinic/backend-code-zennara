@@ -31,7 +31,6 @@ const VIEW_STAFF = requirePermission(
 const MANAGE_STAFF = requirePermission('staff.manage', 'therapists.manage');
 // Password set/reveal carries its own sensitive permission, so a role can
 // manage accounts without ever seeing or changing credentials.
-const MANAGE_PASSWORD = requirePermission('staff.password', 'therapists.password');
 
 // The role-label helper is harmless metadata used across panels — keep it open
 // to any signed-in staff. The staff LIST needs a view permission.
@@ -40,9 +39,6 @@ router.get('/', VIEW_STAFF, getStaff);
 
 router.post('/', MANAGE_STAFF, auditLog('ADMIN_CREATED', 'ADMIN'), createStaff);
 router.put('/:id', MANAGE_STAFF, updateStaff);
-router.put('/:id/password', MANAGE_PASSWORD, auditLog('STAFF_UPDATED', 'ADMIN'), setStaffPassword);
-// Reading a password is sensitive enough to audit like a change.
-router.get('/:id/password', MANAGE_PASSWORD, auditLog('STAFF_UPDATED', 'ADMIN'), revealStaffPassword);
 router.patch(
   '/:id/toggle-status',
   MANAGE_STAFF,

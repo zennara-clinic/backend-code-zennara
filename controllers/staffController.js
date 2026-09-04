@@ -126,17 +126,15 @@ const shape = (admin, allowList) => ({
   // RBAC: assigned custom role + direct permission grants.
   customRoleId: admin.customRoleId || null,
   permissions: sanitizePermissions(admin.permissions),
-  hasPassword: !!admin.passwordHash,
   /*
    * Whether the current password can actually be shown. Passwords set before
    * the readable copy existed have only a bcrypt hash, which cannot be turned
    * back into the password — the panel says so up front rather than making
    * someone click "Show" to discover it.
    */
-  canRevealPassword: !!(admin.passwordHash && admin.passwordPlain),
   passwordSetAt: admin.passwordSetAt || null,
   /** How this account gets in — the panel labels the row with it. */
-  loginMethod: usesPassword(admin.role) ? 'password' : 'otp',
+  loginMethod: 'otp',
   /*
    * Whether sign-in will actually work today. Admin-panel accounts sign in with
    * an emailed code and `Admin.resolveLogin` accepts any active staff row, so
@@ -144,8 +142,7 @@ const shape = (admin, allowList) => ({
    * for the first super admin, reported separately below. Clinical accounts
    * additionally need a password set.
    */
-  canSignIn: admin.isActive !== false
-    && (usesPassword(admin.role) ? !!admin.passwordHash : true),
+  canSignIn: admin.isActive !== false,
   onAllowList: allowList.includes(String(admin.email).toLowerCase()),
 });
 
@@ -180,7 +177,7 @@ exports.getStaff = async (req, res) => {
       filter.$or = [{ email: rx }, { name: rx }];
     }
 
-    const admins = await Admin.find(filter).select('+passwordHash +passwordPlain').sort({ role: 1, name: 1 }).lean();
+    const admins = await Admin.find(filter).sort({ role: 1, name: 1 }).lean();
     const allowList = authorizedEmails();
 
     return res.status(200).json({
@@ -259,38 +256,11 @@ exports.createStaff = async (req, res) => {
       isActive: true,
     });
 
-    // Same atomic onboarding as dermatologists: password set in the same
-    // request and the credentials emailed, so they can sign in immediately.
-    let credentialsEmailed = false;
-    if (password) {
-      const withHash = await Admin.findById(admin._id).select('+passwordHash');
-      withHash.setPassword(String(password));
-      await withHash.save({ validateModifiedOnly: true });
-      admin.passwordHash = withHash.passwordHash;
-      try {
-        await require('../utils/emailService').sendDoctorCredentials(admin.email, admin.name, {
-          password: String(password),
-          mode: 'created',
-          panel: PANEL_LABEL[role] || 'Zennara',
-        });
-        credentialsEmailed = true;
-      } catch (err) {
-        console.error('❌ Staff credentials email failed (login still created):', err.message);
-      }
-    }
-
     const allowList = authorizedEmails();
 
     return res.status(201).json({
       success: true,
-      message: password
-        ? (credentialsEmailed
-            ? `Account created — login details emailed to ${admin.email}`
-            : 'Account created and password set, but the credentials email failed. Share the password with them directly.')
-        : (usesPassword(role)
-            ? `Account created — set their password from the ${PANEL_OF(role)}s page so they can sign in.`
-            : `Account created — they sign in at the admin panel with ${admin.email} and the code emailed at sign-in.`),
-      credentialsEmailed,
+      message: `Account created — they sign in to the ${PANEL_OF(role)} panel with ${admin.email} and the code emailed at sign-in.`,
       data: shape(admin, allowList),
     });
   } catch (error) {
@@ -309,7 +279,7 @@ exports.createStaff = async (req, res) => {
 exports.updateStaff = async (req, res) => {
   try {
     const { name, role, doctorId } = req.body;
-    const admin = await Admin.findById(req.params.id).select('+passwordHash +passwordPlain');
+    const admin = await Admin.findById(req.params.id);
 
     if (!admin) {
       return res.status(404).json({ success: false, message: 'Staff account not found' });
@@ -362,14 +332,6 @@ exports.updateStaff = async (req, res) => {
     }
     // Moving an account onto an admin-panel role retires its password, so the
     // clinical panels cannot still be entered with the old credentials.
-    if (!usesPassword(effectiveRole) && admin.passwordHash) {
-      admin.passwordHash = null;
-      admin.passwordPlain = null;
-      admin.passwordSetAt = null;
-      await require('../models/Token').updateMany(
-        { userId: admin._id, isActive: true }, { $set: { isActive: false } },
-      ).catch(() => undefined);
-    }
     await admin.save();
 
     if (role && role !== previousRole) {
@@ -491,83 +453,7 @@ exports.deleteStaff = async (req, res) => {
   }
 };
 
-// @desc    Set / reset a staff member's password (credentials are emailed)
-// @route   PUT /api/admin/staff/:id/password
-// @access  super_admin
-exports.setStaffPassword = async (req, res) => {
-  try {
-    const { password } = req.body || {};
-    if (!password || String(password).length < 8) {
-      return res.status(400).json({ success: false, message: 'Password must be at least 8 characters.' });
-    }
-    const admin = await Admin.findById(req.params.id).select('+passwordHash');
-    if (!admin) return res.status(404).json({ success: false, message: 'Staff account not found' });
-    if (refuseOutOfScope(req, res, admin.role, 'password')) return;
-    if (!usesPassword(admin.role)) {
-      return res.status(400).json({
-        success: false,
-        message: 'This is an admin panel account — it signs in with a one-time code emailed to it, so there is no password to set.',
-      });
-    }
 
-    const isReset = !!admin.passwordHash;
-    admin.setPassword(String(password));
-    admin.isActive = true;
-    await admin.save({ validateModifiedOnly: true });
-    // The old password is dead — so is every session that used it.
-    await require('../models/Token').updateMany(
-      { userId: admin._id, isActive: true }, { $set: { isActive: false } },
-    ).catch(() => undefined);
-
-    let emailed = false;
-    try {
-      await require('../utils/emailService').sendDoctorCredentials(admin.email, admin.name, {
-        password: String(password),
-        mode: isReset ? 'reset' : 'created',
-        panel: PANEL_LABEL[admin.role] || 'Zennara',
-      });
-      emailed = true;
-    } catch (err) {
-      console.error('❌ Staff credentials email failed (password still set):', err.message);
-    }
-
-    return res.status(200).json({
-      success: true,
-      credentialsEmailed: emailed,
-      message: emailed
-        ? `Password ${isReset ? 'reset' : 'set'} — details emailed to ${admin.email}.`
-        : `Password ${isReset ? 'reset' : 'set'}. The email could not be sent — share it with them directly.`,
-    });
-  } catch (error) {
-    console.error('Set staff password error:', error);
-    return res.status(500).json({ success: false, message: 'Failed to set the password' });
-  }
-};
-
-// @desc    Reveal a staff member's current panel password (audited)
-// @route   GET /api/admin/staff/:id/password
-// @access  super_admin
-exports.revealStaffPassword = async (req, res) => {
-  try {
-    const admin = await Admin.findById(req.params.id).select('+passwordHash +passwordPlain');
-    if (!admin) return res.status(404).json({ success: false, message: 'Staff account not found' });
-    if (refuseOutOfScope(req, res, admin.role, 'password')) return;
-    return res.status(200).json({
-      success: true,
-      data: {
-        hasPassword: !!admin.passwordHash,
-        canReveal: !!(admin.passwordHash && admin.passwordPlain),
-        // Passwords set before the plaintext copy existed cannot be shown —
-        // only reset. The panel explains that when password is null.
-        password: admin.passwordHash ? (admin.passwordPlain || null) : null,
-        passwordSetAt: admin.passwordSetAt || null,
-      },
-    });
-  } catch (error) {
-    console.error('Reveal staff password error:', error);
-    return res.status(500).json({ success: false, message: 'Failed to look up the password' });
-  }
-};
 
 // @desc    The roles the panel can assign
 // @route   GET /api/admin/staff/roles

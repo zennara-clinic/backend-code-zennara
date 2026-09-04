@@ -12,10 +12,20 @@ const TokenSchema = new mongoose.Schema({
     enum: ['User', 'Admin'],
     default: 'User'
   },
+  /**
+   * Legacy: the raw bearer. New sessions store only `tokenHash`; a database
+   * read can then never yield a usable session. Optional so old rows still
+   * validate; they age out on their own expiry.
+   */
   token: {
     type: String,
-    required: true,
-    unique: true
+    default: null,
+  },
+  /** SHA-256 of the bearer token. What protectAdmin looks sessions up by. */
+  tokenHash: {
+    type: String,
+    default: null,
+    index: true,
   },
   type: {
     type: String,
@@ -59,6 +69,9 @@ const TokenSchema = new mongoose.Schema({
 
 // Index for auto-deletion of expired tokens
 TokenSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+// One session per bearer; partial so legacy raw-token rows are unaffected.
+TokenSchema.index({ tokenHash: 1 }, { unique: true, partialFilterExpression: { tokenHash: { $type: 'string' } } });
+TokenSchema.index({ token: 1 }, { unique: true, partialFilterExpression: { token: { $type: 'string' } } });
 
 // Method to check if token is valid
 TokenSchema.methods.isValid = function() {

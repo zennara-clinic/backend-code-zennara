@@ -74,16 +74,19 @@ const AdminSchema = new mongoose.Schema({
   },
   
   // Account status
-  /** Optional password login (set by an admin from Staff & roles / the dermatologist page). */
-  passwordHash: { type: String, default: null, select: false },
-  /**
-   * Plaintext copy of the password so super admins can look it up from the
-   * panel (clinic requirement). Never selected by default and only exposed
-   * through the audited reveal endpoints. Passwords set before this field
-   * existed have no copy and can only be reset.
+  /*
+   * Passwords were removed on 2026-09-05. Every panel signs in with an emailed
+   * one-time code only. (This model used to keep a bcrypt hash AND a plaintext
+   * copy for a "reveal password" feature — the plaintext copy alone was reason
+   * enough to end password login.) scripts/purgePasswords.js unsets the old
+   * fields on existing accounts.
    */
-  passwordPlain: { type: String, default: null, select: false },
-  passwordSetAt: { type: Date, default: null },
+  /**
+   * Bumped to invalidate every session at once ("sign out everywhere",
+   * deactivation, or a suspected compromise). Tokens carry the version they
+   * were issued under and are refused once it moves on.
+   */
+  sessionVersion: { type: Number, default: 1 },
   phone: { type: String, default: null, trim: true },
   isActive: {
     type: Boolean,
@@ -240,14 +243,6 @@ AdminSchema.statics.resolveLogin = async function(email) {
   return staff && staff.isActive !== false ? staff : null;
 };
 
-AdminSchema.methods.setPassword = function(plain) {
-  this.passwordHash = bcrypt.hashSync(String(plain), 10);
-  this.passwordPlain = String(plain);
-  this.passwordSetAt = new Date();
-};
-AdminSchema.methods.checkPassword = function(plain) {
-  return !!this.passwordHash && bcrypt.compareSync(String(plain || ''), this.passwordHash);
-};
 
 // Static method to find or create admin
 AdminSchema.statics.findOrCreateAdmin = async function(email, role = 'super_admin') {

@@ -269,21 +269,12 @@ exports.updateTier = async (req, res) => {
 exports.createDoctor = async (req, res) => {
   try {
     const body = pickBody(req.body);
-    // The login password never lives on the Doctor document — it is applied to
-    // the Admin account after ensureDoctorLogin creates/links it below.
-    const password = req.body.password ? String(req.body.password) : null;
 
     if (!body.name || !body.tier) {
       return res.status(400).json({
         success: false,
         message: 'Doctor name and tier are required',
       });
-    }
-    if (password && password.length < 8) {
-      return res.status(400).json({ success: false, message: 'The panel password must be at least 8 characters' });
-    }
-    if (password && !body.email) {
-      return res.status(400).json({ success: false, message: 'A work email is required to create the panel login' });
     }
     if (body.email) {
       const AdminModel = require('../models/Admin');
@@ -315,32 +306,16 @@ exports.createDoctor = async (req, res) => {
     }
 
     // Every dermatologist gets a login. No email yet? Use a placeholder the
-    // admin can replace later; the account still exists and can get a password.
+    // admin can replace later; the account still exists and signs in by emailed code.
     if (!body.email) body.email = `${doctorId}@dermatologist.zennara.in`;
     const doctor = await Doctor.create({ ...body, doctorId });
     const account = await ensureDoctorLogin(doctor);
     await syncAvailability(doctor, req.admin?._id || null);
     await ensureDefaultSchedule(doctor, req.admin?._id || null);
 
-    // Creation with a password is one atomic onboarding: profile, login and
-    // the credentials email in the same request, so a dermatologist can sign
-    // in the moment the admin saves the drawer.
-    let credentialsEmailed = false;
-    let emailError = null;
-    if (password && account) {
-      const Admin = require('../models/Admin');
-      const withHash = await Admin.findById(account._id).select('+passwordHash');
-      withHash.setPassword(password);
-      withHash.isActive = true;
-      await withHash.save({ validateModifiedOnly: true });
-      try {
-        await require('../utils/emailService').sendDoctorCredentials(account.email, doctor.name, { password, mode: 'created' });
-        credentialsEmailed = true;
-      } catch (err) {
-        emailError = err.message;
-        console.error('❌ Doctor credentials email failed (login still created):', err.message);
-      }
-    }
+    // The login is the email above: a one-time code is sent to it at sign-in.
+    const credentialsEmailed = false;
+    const emailError = null;
 
     return res.status(201).json({
       success: true,
@@ -583,106 +558,21 @@ async function ensureDoctorLogin(doctor) {
 exports.ensureDoctorLogin = ensureDoctorLogin;
 exports.ensureDefaultSchedule = ensureDefaultSchedule;
 
-// @desc    The dermatologist's login account (email, phone, password state)
+// @desc    The dermatologist's login account (email, phone)
 // @route   GET /api/doctors/:id/account
 exports.getDoctorAccount = async (req, res) => {
   try {
-    const Admin = require('../models/Admin');
     const doctor = await Doctor.findById(req.params.id);
     if (!doctor) return res.status(404).json({ success: false, message: 'Doctor not found' });
     const account = await ensureDoctorLogin(doctor);
-    const withHash = account ? await Admin.findById(account._id).select('+passwordHash +passwordPlain') : null;
-    res.json({ success: true, data: account ? { _id: account._id, email: account.email, phone: account.phone, role: account.role, isActive: account.isActive, lastLogin: account.lastLogin, hasPassword: !!(withHash && withHash.passwordHash), canRevealPassword: !!(withHash && withHash.passwordHash && withHash.passwordPlain), passwordSetAt: account.passwordSetAt, placeholderEmail: /@dermatologist\.zennara\.in$/i.test(account.email) } : null });
+    // Sign-in is a one-time code emailed to `email`; there is no password state.
+    res.json({ success: true, data: account ? { _id: account._id, email: account.email, phone: account.phone, role: account.role, isActive: account.isActive, lastLogin: account.lastLogin, loginMethod: 'otp', placeholderEmail: /@dermatologist\.zennara\.in$/i.test(account.email) } : null });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// @desc    Reveal the dermatologist's current panel password (audited)
-// @route   GET /api/doctors/:id/account/password
-exports.revealDoctorPassword = async (req, res) => {
-  try {
-    const Admin = require('../models/Admin');
-    const doctor = await Doctor.findById(req.params.id);
-    if (!doctor) return res.status(404).json({ success: false, message: 'Doctor not found' });
-    // Resolve the login the same way getDoctorAccount and setDoctorPassword do.
-    // Matching on `doctorId` alone missed any account still linked only by
-    // email, so the panel reported "no password" for a dermatologist who had
-    // one — and the Set/Reset button written beside it worked on a different
-    // lookup, which is how the two views disagreed.
-    const linked = await ensureDoctorLogin(doctor);
-    const account = linked
-      ? await Admin.findById(linked._id).select('+passwordHash +passwordPlain')
-      : null;
-    if (!account) {
-      return res.json({ success: true, data: { hasPassword: false, canReveal: false, password: null, passwordSetAt: null } });
-    }
-    res.json({
-      success: true,
-      data: {
-        hasPassword: !!account.passwordHash,
-        // A password set before the readable copy existed can only be reset,
-        // never shown — a bcrypt hash cannot be turned back into the password.
-        canReveal: !!(account.passwordHash && account.passwordPlain),
-        password: account.passwordHash ? (account.passwordPlain || null) : null,
-        passwordSetAt: account.passwordSetAt || null,
-      },
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
 
-// @desc    Admin sets / resets the dermatologist's panel password
-// @route   PUT /api/doctors/:id/account/password
-exports.setDoctorPassword = async (req, res) => {
-  try {
-    const Admin = require('../models/Admin');
-    const { password } = req.body || {};
-    if (!password || String(password).length < 8) return res.status(400).json({ success: false, message: 'Password must be at least 8 characters.' });
-    const doctor = await Doctor.findById(req.params.id);
-    if (!doctor) return res.status(404).json({ success: false, message: 'Doctor not found' });
-    const account = await ensureDoctorLogin(doctor);
-    if (!account) {
-      return res.status(400).json({
-        success: false,
-        message: 'No login could be linked — give the dermatologist an email first, and make sure it is not another staff account\u2019s address.',
-      });
-    }
-    const withHash = await Admin.findById(account._id).select('+passwordHash');
-    const isReset = !!withHash.passwordHash;
-    withHash.setPassword(password);
-    withHash.isActive = true;
-    await withHash.save({ validateModifiedOnly: true });
-    // An admin-driven reset must end the doctor's existing sessions — the old
-    // password is dead, and so is anything signed in with it.
-    await require('../models/Token').updateMany(
-      { userId: withHash._id, isActive: true }, { $set: { isActive: false } },
-    ).catch(() => undefined);
-
-    // Tell the dermatologist — a password they never learn is a locked door.
-    let emailed = false;
-    try {
-      await require('../utils/emailService').sendDoctorCredentials(account.email, doctor.name, {
-        password,
-        mode: isReset ? 'reset' : 'created',
-      });
-      emailed = true;
-    } catch (err) {
-      console.error('❌ Doctor credentials email failed (password still set):', err.message);
-    }
-
-    res.json({
-      success: true,
-      credentialsEmailed: emailed,
-      message: emailed
-        ? `Password ${isReset ? 'reset' : 'set'} — details emailed to ${account.email}.`
-        : `Password ${isReset ? 'reset' : 'set'}. The email could not be sent — share it with ${doctor.name} directly.`,
-    });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
 
 // @desc    Performance + activity for one dermatologist
 // @route   GET /api/doctors/:id/stats?startDate&endDate

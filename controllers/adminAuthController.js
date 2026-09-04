@@ -2,6 +2,8 @@ const Admin = require('../models/Admin');
 const Token = require('../models/Token');
 const AdminAuditLog = require('../models/AdminAuditLog');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const hashToken = (t) => crypto.createHash('sha256').update(String(t)).digest('hex');
 const { sendAdminOTP } = require('../utils/emailService');
 const { computeEffectivePermissions } = require('../middleware/auth');
 
@@ -12,7 +14,8 @@ const { computeEffectivePermissions } = require('../middleware/auth');
  * and `staff`), the dermatologist and floor panels are email + password. Both
  * login endpoints enforce this from the same list so they cannot drift.
  */
-const PASSWORD_ROLES = ['doctor', 'therapist'];
+/** Empty since 2026-09-05: every panel signs in with an emailed one-time code. */
+const PASSWORD_ROLES = [];
 exports.PASSWORD_ROLES = PASSWORD_ROLES;
 
 /**
@@ -101,15 +104,15 @@ exports.adminLogin = async (req, res) => {
     const admin = staffLogin;
 
     // Dermatologists and therapists sign in with a password only — no codes.
-    if (PASSWORD_ROLES.includes(admin.role)) {
-      const label = admin.role === 'doctor' ? 'Dermatologist' : 'Therapist';
-      return res.status(400).json({
-        success: false,
-        message: `${label} accounts sign in with a password. Ask the clinic admin to set or reset yours.`
-      });
-    }
 
     // Check if account is locked
+
+    // A code may be re-sent at most every 30 seconds per account, whatever the
+    // client says — this is what stops an inbox being flooded by a script.
+    if (admin.lastOtpRequest && Date.now() - new Date(admin.lastOtpRequest).getTime() < 30 * 1000) {
+      const wait = Math.ceil((30 * 1000 - (Date.now() - new Date(admin.lastOtpRequest).getTime())) / 1000);
+      return res.status(429).json({ success: false, message: `Please wait ${wait}s before requesting another code.` });
+    }
     const rateLimitCheck = admin.canRequestOTP();
     if (!rateLimitCheck.allowed) {
       return res.status(429).json({
@@ -209,13 +212,6 @@ exports.adminVerifyOTP = async (req, res) => {
     }
 
     // Dermatologists and therapists sign in with a password only — no codes.
-    if (PASSWORD_ROLES.includes(admin.role)) {
-      const label = admin.role === 'doctor' ? 'Dermatologist' : 'Therapist';
-      return res.status(400).json({
-        success: false,
-        message: `${label} accounts sign in with a password. Ask the clinic admin to set or reset yours.`
-      });
-    }
 
     // Verify OTP
     const verificationResult = admin.verifyOTP(otp);
@@ -288,13 +284,16 @@ exports.adminVerifyOTP = async (req, res) => {
       appVersion: req.headers['app-version'] || null
     };
 
-    // Generate JWT token (24 hours for admin)
+    // Session token: 24h absolute life (protectAdmin also enforces an idle
+    // limit), stamped with the account's sessionVersion so "sign out
+    // everywhere" and deactivation end every session at once.
     const token = jwt.sign(
       { 
         adminId: admin._id, 
         email: admin.email,
         role: admin.role,
-        type: 'admin'
+        type: 'admin',
+        sv: admin.sessionVersion || 1,
       },
       process.env.JWT_SECRET,
       { expiresIn: '24h' }
@@ -307,7 +306,8 @@ exports.adminVerifyOTP = async (req, res) => {
     const tokenDoc = new Token({
       userId: admin._id,
       userType: 'Admin',
-      token,
+      // Only the hash is stored: a database read can never yield a live session.
+      tokenHash: hashToken(token),
       type: 'admin_access',
       deviceInfo,
       ipAddress: req.ip || req.connection.remoteAddress,
@@ -403,13 +403,6 @@ exports.adminResendOTP = async (req, res) => {
     }
 
     // Dermatologists and therapists sign in with a password only — no codes.
-    if (PASSWORD_ROLES.includes(admin.role)) {
-      const label = admin.role === 'doctor' ? 'Dermatologist' : 'Therapist';
-      return res.status(400).json({
-        success: false,
-        message: `${label} accounts sign in with a password. Ask the clinic admin to set or reset yours.`
-      });
-    }
 
     // Check rate limiting
     const rateLimitCheck = admin.canRequestOTP();
@@ -463,7 +456,7 @@ exports.adminLogout = async (req, res) => {
 
     if (token) {
       // Find and revoke the token
-      const tokenDoc = await Token.findOne({ token, isActive: true });
+      const tokenDoc = await Token.findOne({ $or: [{ tokenHash: hashToken(token) }, { token }], isActive: true });
       
       if (tokenDoc) {
         await tokenDoc.revoke();
@@ -490,7 +483,7 @@ exports.adminLogout = async (req, res) => {
 exports.getAdminProfile = async (req, res) => {
   try {
     const admin = await Admin.findById(req.admin._id)
-      .select('-otp -otpExpiry +passwordHash')
+      .select('-otp -otpExpiry')
       .lean();
 
     if (!admin) {
@@ -510,7 +503,7 @@ exports.getAdminProfile = async (req, res) => {
         ...payload,
         lastLogin: admin.lastLogin,
         createdAt: admin.createdAt,
-        hasPassword: !!admin.passwordHash,
+        loginMethod: 'otp',
       },
     });
   } catch (error) {
@@ -632,62 +625,13 @@ async function issueAdminSession(req, admin) {
 // accounts — super admins and granular `staff` — sign in with an emailed
 // one-time code and have no password at all, so this refuses them by role
 // rather than leaving two ways into the same panel.
-exports.adminPasswordLogin = async (req, res) => {
-  try {
-    const { email, password } = req.body || {};
-    if (!email || !password) return res.status(400).json({ success: false, message: 'Email and password are required' });
-    const admin = await Admin.findOne({ email: String(email).toLowerCase().trim() }).select('+passwordHash +passwordPlain');
-    if (!admin || admin.isActive === false) return res.status(403).json({ success: false, message: 'This email is not authorised for the panel.' });
-    if (!PASSWORD_ROLES.includes(admin.role)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Admin panel accounts sign in with a one-time code emailed to this address, not a password.',
-      });
-    }
-    if (!admin.passwordHash) return res.status(400).json({ success: false, message: 'No password is set for this account — ask the clinic admin to set one.' });
-    const lock = admin.canRequestOTP ? admin.canRequestOTP() : { allowed: true };
-    if (!lock.allowed) return res.status(429).json({ success: false, message: lock.reason });
-    if (!admin.checkPassword(password)) {
-      admin.failedLoginAttempts = (admin.failedLoginAttempts || 0) + 1;
-      if (admin.failedLoginAttempts >= 5) { admin.accountLockedUntil = new Date(Date.now() + 15 * 60 * 1000); admin.failedLoginAttempts = 0; }
-      await admin.save({ validateModifiedOnly: true });
-      return res.status(401).json({ success: false, message: 'Incorrect password.' });
-    }
-    admin.failedLoginAttempts = 0;
-    admin.lastLogin = new Date();
-    // Passwords set before the plaintext copy existed have no viewable copy —
-    // a correct login is the one moment we can backfill it for the panel's
-    // password reveal.
-    if (!admin.passwordPlain) admin.passwordPlain = String(password);
-    await admin.save({ validateModifiedOnly: true });
-    const { token, expiresAt } = await issueAdminSession(req, admin);
-    res.status(200).json({
-      success: true,
-      message: 'Login successful',
-      data: { token, expiresAt, admin: await buildAdminPayload(admin) },
-    });
-  } catch (error) {
-    console.error('❌ Admin password login failed:', error);
-    res.status(500).json({ success: false, message: 'Login failed. Please try again.' });
-  }
-};
-
-/**
- * Self-service account settings for the signed-in staff member.
- *
- * A dermatologist (or any staff login) can change their own email, phone and
- * password from their panel; the clinic admin can always do the same for them
- * from the admin panel (via /api/doctors/:id/account). Email and password
- * changes require the current password when one is set, so a walked-away
- * unlocked panel cannot silently take over the account.
- */
 
 // @desc    Change my login email / phone
 // @route   PUT /api/admin/auth/me/contact
 exports.updateMyContact = async (req, res) => {
   try {
-    const { email, phone, currentPassword } = req.body || {};
-    const admin = await Admin.findById(req.admin._id).select('+passwordHash');
+    const { email, phone } = req.body || {};
+    const admin = await Admin.findById(req.admin._id);
     if (!admin) return res.status(404).json({ success: false, message: 'Account not found' });
 
     const nextEmail = email !== undefined ? String(email).toLowerCase().trim() : undefined;
@@ -698,9 +642,6 @@ exports.updateMyContact = async (req, res) => {
         return res.status(400).json({ success: false, message: 'Enter a valid email address' });
       }
       // Changing the sign-in address needs the current password when one exists.
-      if (admin.passwordHash && !admin.checkPassword(currentPassword)) {
-        return res.status(401).json({ success: false, message: 'Enter your current password to change the email' });
-      }
       const taken = await Admin.findOne({ email: nextEmail, _id: { $ne: admin._id } });
       if (taken) return res.status(400).json({ success: false, message: 'Another account already uses this email' });
     }
@@ -763,58 +704,6 @@ exports.updateMyContact = async (req, res) => {
   }
 };
 
-// @desc    Change my password
-// @route   PUT /api/admin/auth/me/password
-exports.updateMyPassword = async (req, res) => {
-  try {
-    const { currentPassword, newPassword } = req.body || {};
-    if (!newPassword || String(newPassword).length < 8) {
-      return res.status(400).json({ success: false, message: 'The new password must be at least 8 characters' });
-    }
-
-    const admin = await Admin.findById(req.admin._id).select('+passwordHash');
-    if (!admin) return res.status(404).json({ success: false, message: 'Account not found' });
-
-    if (admin.passwordHash && !admin.checkPassword(currentPassword)) {
-      return res.status(401).json({ success: false, message: 'Your current password is incorrect' });
-    }
-
-    admin.setPassword(String(newPassword));
-    await admin.save({ validateModifiedOnly: true });
-
-    // Every other session dies with the old password; this one stays signed in.
-    const currentToken = req.headers.authorization?.split(' ')[1] || null;
-    await Token.updateMany(
-      { userId: admin._id, isActive: true, ...(currentToken ? { token: { $ne: currentToken } } : {}) },
-      { $set: { isActive: false } },
-    ).catch(() => undefined);
-
-    await AdminAuditLog.logAction({
-      adminId: admin._id,
-      adminEmail: admin.email,
-      action: 'STAFF_UPDATED',
-      resource: 'ADMIN',
-      resourceId: String(admin._id),
-      details: { self: true, passwordChanged: true },
-      ipAddress: req.adminIp || req.ip,
-      userAgent: req.adminUserAgent || req.get('user-agent'),
-    }).catch(() => undefined);
-
-    return res.status(200).json({ success: true, message: 'Password changed' });
-  } catch (error) {
-    console.error('❌ Update my password failed:', error);
-    return res.status(500).json({ success: false, message: 'Could not change the password. Please try again.' });
-  }
-};
-
-
-/**
- * Walkthrough state for the signed-in staff member.
- *
- * PUT  /api/admin/auth/me/tours  { key }  → mark one tour as seen
- * DELETE /api/admin/auth/me/tours         → "View tutorial again" (replay all)
- * DELETE /api/admin/auth/me/tours?key=x   → replay just one module tour
- */
 exports.markTourSeen = async (req, res) => {
   try {
     const key = String(req.body?.key || '').trim();
@@ -845,5 +734,26 @@ exports.resetTours = async (req, res) => {
   } catch (error) {
     console.error('❌ resetTours failed:', error);
     return res.status(500).json({ success: false, message: 'Could not reset the tutorial' });
+  }
+};
+
+/**
+ * POST /api/admin/auth/me/logout-all — end every session for this account.
+ *
+ * Bumps sessionVersion (tokens issued before it are refused by protectAdmin)
+ * and revokes the stored sessions, so a lost laptop or a shared login is
+ * closed from anywhere in one action.
+ */
+exports.logoutAll = async (req, res) => {
+  try {
+    await Admin.updateOne({ _id: req.admin._id }, { $inc: { sessionVersion: 1 } });
+    await Token.updateMany({ userId: req.admin._id, userType: 'Admin', isActive: true }, { $set: { isActive: false } });
+    await AdminAuditLog.logAction({
+      adminId: req.admin._id, adminEmail: req.admin.email, action: 'LOGOUT', resource: 'AUTH',
+      details: { everywhere: true }, ipAddress: req.adminIp || req.ip, userAgent: req.adminUserAgent, status: 'SUCCESS',
+    }).catch(() => {});
+    return res.json({ success: true, message: 'Signed out on every device' });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Could not sign out everywhere' });
   }
 };

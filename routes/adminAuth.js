@@ -13,7 +13,6 @@ const { protectAdmin } = require('../middleware/auth');
 
 // Public routes (with rate limiting)
 router.post('/login', adminLoginLimiter, adminLogin);
-router.post('/login-password', adminLoginLimiter, require('../controllers/adminAuthController').adminPasswordLogin);
 router.post('/verify-otp', adminOTPLimiter, adminVerifyOTP);
 router.post('/resend-otp', adminLoginLimiter, adminResendOTP);
 router.post('/check-email', adminLoginLimiter, checkAuthorizedEmail);
@@ -23,9 +22,10 @@ router.post('/logout', protectAdmin, adminLogout);
 router.get('/me', protectAdmin, getAdminProfile);
 
 // Self-service account settings — any signed-in staff member, their own row only.
-const { updateMyContact, updateMyPassword } = require('../controllers/adminAuthController');
+const { updateMyContact } = require('../controllers/adminAuthController');
 router.put('/me/contact', protectAdmin, updateMyContact);
-router.put('/me/password', protectAdmin, updateMyPassword);
+// Sign out everywhere: bumps the session version and revokes every stored session.
+router.post('/me/logout-all', protectAdmin, require('../controllers/adminAuthController').logoutAll);
 // First-login walkthrough state (per account, not per browser).
 router.put('/me/tours', protectAdmin, require('../controllers/adminAuthController').markTourSeen);
 router.delete('/me/tours', protectAdmin, require('../controllers/adminAuthController').resetTours);

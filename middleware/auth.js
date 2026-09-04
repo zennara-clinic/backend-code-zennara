@@ -1,5 +1,11 @@
 const jwt = require('jsonwebtoken');
 const Token = require('../models/Token');
+const crypto = require('crypto');
+const hashToken = (t) => crypto.createHash('sha256').update(String(t)).digest('hex');
+/** The stored session for a bearer: by hash (current), else by raw value (sessions from before hashing). */
+const findSession = (token) => Token.findOne({ $or: [{ tokenHash: hashToken(token) }, { token }], isActive: true });
+/** Sessions idle longer than this are ended even inside their 24h life. */
+const IDLE_MS = Math.max(1, Number(process.env.ADMIN_SESSION_IDLE_HOURS) || 8) * 60 * 60 * 1000;
 const User = require('../models/User');
 const Admin = require('../models/Admin');
 const AdminAuditLog = require('../models/AdminAuditLog');
@@ -64,7 +70,7 @@ exports.protect = async (req, res, next) => {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       
       // Check if token exists and is valid in database
-      const tokenDoc = await Token.findOne({ token, isActive: true });
+      const tokenDoc = await findSession(token);
       
       if (!tokenDoc) {
         return res.status(401).json({
@@ -224,7 +230,7 @@ exports.protectAdmin = async (req, res, next) => {
       // check, sign-out and password resets could never actually end a
       // session: a copied bearer token would keep working until the JWT
       // expired on its own.
-      const tokenDoc = await Token.findOne({ token, isActive: true });
+      const tokenDoc = await findSession(token);
       if (!tokenDoc) {
         return res.status(401).json({
           success: false,
@@ -240,6 +246,20 @@ exports.protectAdmin = async (req, res, next) => {
           code: 'SESSION_EXPIRED'
         });
       }
+      // Idle limit: a panel left open on an unattended desk closes itself.
+      const lastUsed = tokenDoc.lastUsedAt ? new Date(tokenDoc.lastUsedAt).getTime() : new Date(tokenDoc.createdAt).getTime();
+      if (Date.now() - lastUsed > IDLE_MS) {
+        await tokenDoc.revoke();
+        return res.status(401).json({
+          success: false,
+          message: 'You were signed out after a period of inactivity. Please sign in again.',
+          code: 'SESSION_EXPIRED'
+        });
+      }
+      // Touch at most once a minute — a busy panel must not write on every call.
+      if (Date.now() - lastUsed > 60 * 1000) {
+        Token.updateOne({ _id: tokenDoc._id }, { $set: { lastUsedAt: new Date() } }).catch(() => {});
+      }
 
       // Check if admin account still exists and is active
       const admin = await Admin.findById(decoded.adminId);
@@ -249,6 +269,15 @@ exports.protectAdmin = async (req, res, next) => {
           success: false,
           message: 'Admin account not found.',
           code: 'ACCOUNT_DELETED'
+        });
+      }
+      // "Sign out everywhere" / deactivation moved the version on: refuse.
+      if (decoded.sv !== undefined && Number(decoded.sv) !== Number(admin.sessionVersion || 1)) {
+        await tokenDoc.revoke();
+        return res.status(401).json({
+          success: false,
+          message: 'Session expired. Please login again.',
+          code: 'SESSION_EXPIRED'
         });
       }
 
@@ -572,7 +601,7 @@ exports.protectBoth = async (req, res, next) => {
       // Otherwise, treat as user token
       if (decoded.userId) {
         // Check if token exists and is valid in database
-        const tokenDoc = await Token.findOne({ token, isActive: true });
+        const tokenDoc = await findSession(token);
         
         if (!tokenDoc) {
           return res.status(401).json({
@@ -692,7 +721,7 @@ exports.optionalAuth = async (req, res, next) => {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
       
       // Check if token exists and is valid in database
-      const tokenDoc = await Token.findOne({ token, isActive: true });
+      const tokenDoc = await findSession(token);
       
       if (!tokenDoc || !tokenDoc.isValid()) {
         // Invalid token - continue as guest
