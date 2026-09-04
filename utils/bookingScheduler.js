@@ -197,7 +197,7 @@ const remindDuePackageSessions = async () => {
 /**
  * Mark packages Expired once their validity has passed. Nothing else changes:
  * completed sessions stay completed, and the desk can still extend `validUntil`
- * from the panel, which puts the package back to Active on the next run.
+ * from the panel, which re-activates the package at that moment.
  */
 const expirePackages = async () => {
   try {
@@ -207,12 +207,11 @@ const expirePackages = async () => {
       { status: 'Active', validUntil: { $ne: null, $lt: now } },
       { $set: { status: 'Expired' } },
     );
-    const revived = await PackageAssignment.updateMany(
-      { status: 'Expired', validUntil: { $gte: now } },
-      { $set: { status: 'Active' } },
-    );
-    if (expired.modifiedCount || revived.modifiedCount) {
-      console.log(`📦 Packages: ${expired.modifiedCount} expired, ${revived.modifiedCount} re-activated after an extension`);
+    // No automatic re-activation here: the desk may have marked a package
+    // Expired on purpose. Extending validUntil from the panel is what brings a
+    // package back (see packageAssignmentController.updateAssignment).
+    if (expired.modifiedCount) {
+      console.log(`📦 Packages: ${expired.modifiedCount} expired`);
     }
   } catch (error) {
     console.error('❌ Error expiring packages:', error);

@@ -418,6 +418,10 @@ exports.updateAssignment = async (req, res) => {
       }
     });
 
+    // Extending an expired package's date is the deliberate way to revive it.
+    if (updates.validUntil && assignment.status === 'Expired' && new Date(updates.validUntil) > new Date()) {
+      assignment.status = 'Active';
+    }
     await assignment.save();
 
     res.status(200).json({
@@ -1378,8 +1382,12 @@ exports.bookSessionAsUser = async (req, res) => {
       userId: req.user._id,
       consultationId: consultation._id,
       fullName: assignment.userDetails?.fullName || req.user.fullName || 'Guest',
-      mobileNumber: assignment.userDetails?.phone || req.user.phone || '',
-      email: assignment.userDetails?.email || req.user.email || '',
+      // Both are required on an app booking. A clinic-created account can have
+      // neither, so fall back to the same placeholders walk-ins use rather than
+      // failing the customer's booking on a validation error.
+      mobileNumber: assignment.userDetails?.phone || req.user.phone || '0000000000',
+      email: assignment.userDetails?.email || req.user.email
+        || `walkin.${String(assignment.userDetails?.phone || req.user.phone || req.user._id).replace(/\D/g, '')}@zennara.local`,
       branchId: branch._id,
       preferredLocation: branch.name,
       preferredDate: new Date(preferredDate),
