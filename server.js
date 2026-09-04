@@ -275,6 +275,10 @@ app.use('/api/patient-consent-forms', require('./routes/patientConsentForm'));
 app.use('/api/patient-photos', require('./routes/patientPhoto'));
 // Procurement: purchase orders and goods receipt (the only path that raises stock).
 app.use('/api/purchase-orders', require('./routes/purchaseOrder'));
+// Bulk import / export for services, categories and products.
+app.use('/api/bulk', require('./routes/bulk'));
+// Admin-built consultation forms (templates + submissions).
+app.use('/api/form-templates', require('./routes/formTemplate'));
 app.use('/api/service-cards', require('./routes/serviceCard'));
 app.use('/api/admin/forms', require('./routes/forms'));
 app.use('/api/app-customization', require('./routes/appCustomizationRoutes'));

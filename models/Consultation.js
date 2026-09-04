@@ -62,6 +62,20 @@ const consultationSchema = new mongoose.Schema({
     required: true,
     index: true
   },
+  /**
+   * How long the treatment takes, in minutes.
+   *
+   * The `formattedDuration` virtual below has always read this, but the field
+   * itself was never declared — so under Mongoose's strict mode it could not
+   * be stored and the virtual returned "NaN mins" for every service. Declaring
+   * it makes the virtual work and gives the bulk import somewhere to put the
+   * Duration column. Null means "not specified", which the UI already handles.
+   */
+  duration_minutes: {
+    type: Number,
+    default: null,
+    min: 0,
+  },
   cta_label: {
     type: String,
     default: 'Book Consultation'
