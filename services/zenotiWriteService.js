@@ -227,7 +227,15 @@ async function resolveProductId(centerId, product) {
 async function ensureGuest(user) {
   if (!user) return null;
   if (user.zenotiGuestId) return user.zenotiGuestId; // already linked
-  if (isOff()) return null;
+  if (isOff()) {
+    // Not an error, but it must be visible: the patient exists only here.
+    if (user.zenotiSyncStatus !== 'pending') {
+      user.zenotiSyncStatus = 'pending';
+      user.zenotiSyncError = 'Zenoti write mode is off — will sync when enabled.';
+      await user.save({ validateModifiedOnly: true }).catch(() => {});
+    }
+    return null;
+  }
 
   const phone = normalizeIndianMobile(user.phone);
   const centerId = clinicCenterIdForBranch(user.location);
@@ -238,10 +246,24 @@ async function ensureGuest(user) {
     if (existing?.zenotiGuestId) {
       user.zenotiGuestId = existing.zenotiGuestId;
       user.zenotiCenterId = existing.centerId || centerId;
-      user.zenotiSyncStatus = 'synced';
+      /*
+       * A phone match links the accounts, but a phone is not an identity —
+       * families share numbers, and a number gets reassigned. When Zenoti's
+       * name for this guest shares no word with ours, the link is kept (so no
+       * duplicate is created) but the record is flagged `review` so the desk
+       * confirms it is the same person before anything clinical is attached.
+       */
+      const ours = String(user.fullName || '').toLowerCase().split(/\s+/).filter((w) => w.length > 1);
+      const theirs = String(existing.fullName || '').toLowerCase().split(/\s+/).filter((w) => w.length > 1);
+      const nameMismatch = ours.length && theirs.length
+        && !ours.some((w) => theirs.includes(w)) && user.fullName !== 'Zennara Guest';
+      user.zenotiSyncStatus = nameMismatch ? 'review' : 'synced';
+      user.zenotiSyncError = nameMismatch
+        ? `Zenoti has this number under "${existing.fullName}" — confirm it is the same person.`
+        : null;
       user.zenotiSyncedAt = new Date();
       await user.save({ validateModifiedOnly: true });
-      logger.info('Linked user to existing Zenoti guest', { userId: user._id });
+      logger.info('Linked user to existing Zenoti guest', { userId: user._id, review: Boolean(nameMismatch) });
       return user.zenotiGuestId;
     }
   } catch (err) {

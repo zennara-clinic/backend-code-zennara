@@ -122,6 +122,9 @@ async function provisionUserFromGuest(guest, opts = {}) {
     zenotiGuestId: guest.zenotiGuestId,
     zenotiCenterId: guest.centerId || null,
     zenotiSyncedAt: new Date(),
+    // A guest read from Zenoti IS synced — the id is Zenoti's own.
+    zenotiSyncStatus: 'synced',
+    zenotiSyncError: null,
     source: 'zenoti',
   };
   if (guest.fullName) synced.fullName = guest.fullName;

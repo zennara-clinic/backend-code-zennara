@@ -430,3 +430,32 @@ exports.getFormStatusForBooking = async (req, res) => {
     return res.status(500).json({ success: false, message: 'Could not read the form status' });
   }
 };
+
+/**
+ * POST /api/pre-consult-forms/photos — the patient attaches photographs.
+ *
+ * Multipart `photos[]` (max 6). Returns the stored URLs; the app then includes
+ * them as `photos: [{ url }]` when it saves the form. Uploading separately
+ * keeps the form save a small JSON request and lets a photo be retried on its
+ * own if a mobile connection drops mid-way.
+ *
+ * Patient-authenticated (protect), so this never touches staff permissions;
+ * the images go to their own S3 folder and are only ever read back through
+ * the form, which is itself access-controlled.
+ */
+exports.uploadFormPhotos = async (req, res) => {
+  try {
+    const files = req.files || [];
+    if (!files.length) return res.status(400).json({ success: false, message: 'No photo was received' });
+    const { uploadToS3 } = require('../services/s3Service');
+    const photos = [];
+    for (const file of files) {
+      const url = await uploadToS3(file, 'preconsult-photos');
+      photos.push({ url, uploadedAt: new Date() });
+    }
+    return res.status(201).json({ success: true, count: photos.length, data: photos });
+  } catch (error) {
+    console.error('uploadFormPhotos failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not save the photographs' });
+  }
+};

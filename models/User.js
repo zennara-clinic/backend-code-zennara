@@ -96,7 +96,10 @@ const UserSchema = new mongoose.Schema({
   zenotiSyncStatus: {
     type: String,
     enum: ['pending', 'synced', 'failed', 'review', 'skipped', 'dryrun', null],
-    default: null
+    // 'pending' from the moment a record exists: a patient created in Zennara
+    // is, by definition, not yet in Zenoti. Rows imported FROM Zenoti are set
+    // to 'synced' explicitly by the importer, so they never read as pending.
+    default: 'pending'
   },
   zenotiSyncError: {
     type: String,
