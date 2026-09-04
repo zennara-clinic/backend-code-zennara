@@ -1194,13 +1194,14 @@ exports.getUserPackages = async (req, res) => {
         .populate('packageId', 'name description price duration benefits originalPrice discount'),
       // Packages bought at the clinic (Zenoti) — listed on the same screen so a
       // clinic customer never sees "No packages yet" while holding sessions.
-      require('../services/zenotiImportService').customerClinicData(userId, ['packages']).catch(() => null),
+      // Clinic purchases are mirrored INTO assignments now (source 'zenoti'),
+      // so there is no second list to attach.
+      Promise.resolve(null),
     ]);
 
     res.status(200).json({
       success: true,
       data: assignments,
-      clinicPackages: clinic?.packages || [],
       clinicSyncedAt: clinic?.syncedAt || null,
     });
   } catch (error) {
