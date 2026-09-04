@@ -143,9 +143,11 @@ productSchema.index({ isActive: 1 });
 productSchema.index({ sku: 1 });
 // Sparse + unique: many products have no Zenoti id, but a Zenoti id may never
 // map to two products or the importer would fork the catalogue.
+// Partial (string values only) rather than sparse: MongoDB refuses an index
+// that is both, and a refused index means the uniqueness guard never exists.
 productSchema.index(
   { zenotiProductId: 1 },
-  { unique: true, sparse: true, partialFilterExpression: { zenotiProductId: { $type: 'string' } } },
+  { unique: true, partialFilterExpression: { zenotiProductId: { $type: 'string' } } },
 );
 productSchema.index({ 'branchStock.branchId': 1 });
 

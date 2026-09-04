@@ -683,6 +683,11 @@ async function retryFailedBookingPushes({ limit = 10, trigger = 'schedule' } = {
     source: { $in: ['app', 'reception'] },
     zenotiAppointmentId: null,
     zenotiSyncStatus: { $in: ['failed', 'pending'] },
+    // A push that already opened a Zenoti booking (create succeeded, reserve or
+    // confirm did not) is NOT retried automatically: a second create would
+    // duplicate it. Those stay flagged in the panel for the desk's "Create in
+    // Zenoti now", which a person can check against Zenoti's diary first.
+    zenotiBookingId: null,
     // Confirmed only: an unconfirmed booking has no business in Zenoti yet.
     status: 'Confirmed',
     eventAt: { $gte: new Date() },

@@ -1548,9 +1548,18 @@ exports.verifyConsultationPayment = async (req, res) => {
       specialistId: bookingData.specialistId,
       specialistName: bookingData.specialistName,
       specialistTier: bookingData.specialistTier,
-      status: isDermatologistSlot ? 'Confirmed' : 'Awaiting Confirmation',
-      confirmedDate: isDermatologistSlot ? new Date(bookingData.preferredDate) : undefined,
-      confirmedTime: isDermatologistSlot ? slotTime : undefined,
+      /*
+       * Always "Awaiting Confirmation", even for a paid dermatologist slot.
+       *
+       * This used to create a dermatologist-slot booking already Confirmed,
+       * which (now that confirmation is what creates the Zenoti appointment)
+       * would have put it in Zenoti the moment the customer paid. The clinic's
+       * rule is that the desk approves every appointment first. The exact slot
+       * is still held in the diary (slotHeld covers Awaiting), so nobody else
+       * can take it while the desk confirms; confirmedDate/Time are set by the
+       * panel's Confirm button.
+       */
+      status: 'Awaiting Confirmation',
       paymentId: payment._id,
       razorpayOrderId: razorpay_order_id,
       razorpayPaymentId: razorpay_payment_id,

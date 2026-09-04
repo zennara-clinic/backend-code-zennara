@@ -99,15 +99,22 @@ async function syncProducts({ trigger = 'manual' } = {}) {
       entry.productType = entry.productType || row.productType || null;
       entry.formulation = entry.formulation || row.formulation || null;
 
+      // Only a NUMERIC quantity counts. Zenoti's product list does not carry
+      // stock for every account; treating "absent" as 0 would zero the app
+      // store's stock for every matched product on the first run and show
+      // every item as out of stock. Absent quantities leave stock untouched.
       const qty = Number(row.quantity);
-      const quantity = Number.isFinite(qty) && qty >= 0 ? qty : 0;
-      entry.branchStock.push({
-        branchId: branch?._id || null,
-        zenotiCenterId: centerId,
-        branchName: centre.name,
-        quantity,
-      });
-      entry.total += quantity;
+      const hasQuantity = row.quantity !== null && row.quantity !== undefined && Number.isFinite(qty) && qty >= 0;
+      if (hasQuantity) {
+        entry.branchStock.push({
+          branchId: branch?._id || null,
+          zenotiCenterId: centerId,
+          branchName: centre.name,
+          quantity: qty,
+        });
+        entry.total += qty;
+        entry.hasQuantity = true;
+      }
       merged.set(key, entry);
     }
   }
@@ -147,8 +154,10 @@ async function syncProducts({ trigger = 'manual' } = {}) {
       if (entry.brand) product.brand = entry.brand;
       if (entry.productCategory) product.productCategory = entry.productCategory;
       if (entry.productType) product.productType = entry.productType;
-      product.branchStock = entry.branchStock;
-      product.stock = entry.total;
+      if (entry.hasQuantity) {
+        product.branchStock = entry.branchStock;
+        product.stock = entry.total;
+      }
       product.zenotiSyncedAt = new Date();
 
       await product.save({ validateModifiedOnly: true });

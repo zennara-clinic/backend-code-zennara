@@ -661,6 +661,7 @@ exports.rejectReschedule = async (req, res) => {
     }
     booking.status = 'Confirmed';
     booking.rescheduleRejected = true;
+    booking.$locals.zenotiStaffAction = true; // the desk declined the change — a person decided
     await booking.save();
     await booking.populate('consultationId', 'name');
 

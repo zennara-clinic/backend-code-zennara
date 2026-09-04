@@ -413,7 +413,7 @@ exports.getFormStatusForBooking = async (req, res) => {
       });
     }
 
-    const submitted = ['submitted', 'reviewed', 'completed'].includes(String(form.status || '').toLowerCase());
+    const submitted = ['submitted', 'approved', 'reviewed', 'completed'].includes(String(form.status || '').toLowerCase());
     return res.json({
       success: true,
       data: {

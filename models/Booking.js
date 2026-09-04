@@ -560,6 +560,11 @@ bookingSchema.post('save', function (doc) {
   if (doc.$locals?.skipZenotiWrite) return;
   if (!doc._becameConfirmed) return;
   if (doc.zenotiAppointmentId || doc.source === 'zenoti') return;
+  // A person at the desk must have made the decision: the panel's Confirm sets
+  // zenotiStaffAction, and a reception-created booking is a desk decision by
+  // definition. Any automated path that happens to write "Confirmed" does NOT
+  // reach Zenoti — that is the whole point of the approval step.
+  if (!doc.$locals?.zenotiStaffAction && doc.source !== 'reception') return;
   setImmediate(() => {
     try {
       require('../services/zenotiWriteService').syncBooking(doc._id).catch(() => {});

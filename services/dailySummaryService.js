@@ -46,7 +46,7 @@ async function buildSummary(dateKey = clinicDateKey(new Date())) {
 
   const [bookings, branches, newPatients, lowStock] = await Promise.all([
     Booking.find(window)
-      .select('status consultationStage specialistName preferredLocation fullName followUp source eventAt confirmedTime slotTime')
+      .select('userId status consultationStage specialistName preferredLocation fullName followUp source eventAt confirmedTime slotTime')
       .sort({ eventAt: 1 })
       .lean(),
     Branch.find({ isActive: true }).select('name').lean(),

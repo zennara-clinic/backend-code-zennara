@@ -49,6 +49,33 @@ function record(po, status, req, note) {
   });
 }
 
+
+/**
+ * Totals for a plain (lean) order. The model's virtuals do the same for a
+ * hydrated document, but list endpoints return lean rows and the
+ * mongoose-lean-virtuals plugin is not installed — so they are derived here
+ * rather than trusted to appear.
+ */
+function withTotals(po) {
+  if (!po) return po;
+  const lines = (po.lines || []).map((l) => ({
+    ...l,
+    pendingQuantity: Math.max(0, (l.requestedQuantity || 0) - (l.receivedQuantity || 0)),
+  }));
+  const requested = lines.reduce((n, l) => n + (l.requestedQuantity || 0), 0);
+  const received = lines.reduce((n, l) => n + (l.receivedQuantity || 0), 0);
+  const rejected = lines.reduce((n, l) => n + (l.rejectedQuantity || 0), 0);
+  const value = lines.reduce((n, l) => {
+    const net = (l.requestedQuantity || 0) * (l.unitCost || 0);
+    return n + net + (net * (l.taxPercent || 0)) / 100;
+  }, 0);
+  return {
+    ...po,
+    lines,
+    totals: { requested, received, rejected, pending: Math.max(0, requested - received), estimatedValue: Math.round(value) },
+  };
+}
+
 /** GET /api/purchase-orders — vendor-wise and branch-wise listing. */
 exports.listOrders = async (req, res) => {
   try {
@@ -76,11 +103,11 @@ exports.listOrders = async (req, res) => {
         .limit(perPage)
         .populate('vendorId', 'name contactPerson phone email')
         .populate('branchId', 'name')
-        .lean({ virtuals: true }),
+        .lean(),
       PurchaseOrder.countDocuments(query),
     ]);
 
-    return res.json({ success: true, count: orders.length, total, data: orders });
+    return res.json({ success: true, count: orders.length, total, data: orders.map(withTotals) });
   } catch (error) {
     console.error('listOrders failed:', error);
     return res.status(500).json({ success: false, message: 'Could not load purchase orders' });
@@ -93,9 +120,9 @@ exports.getOrder = async (req, res) => {
     const po = await PurchaseOrder.findById(req.params.id)
       .populate('vendorId', 'name contactPerson phone email gstNumber')
       .populate('branchId', 'name address')
-      .lean({ virtuals: true });
+      .lean();
     if (!po) return res.status(404).json({ success: false, message: 'Purchase order not found' });
-    return res.json({ success: true, data: po });
+    return res.json({ success: true, data: withTotals(po) });
   } catch (error) {
     console.error('getOrder failed:', error);
     return res.status(500).json({ success: false, message: 'Could not load the purchase order' });
@@ -403,7 +430,7 @@ exports.productHistory = async (req, res) => {
       .sort({ createdAt: -1 })
       .limit(200)
       .populate('vendorId', 'name')
-      .lean({ virtuals: true });
+      .lean();
 
     const rows = orders.flatMap((po) =>
       (po.lines || [])
@@ -439,11 +466,11 @@ exports.vendorHistory = async (req, res) => {
     if (!mongoose.isValidObjectId(vendorId)) {
       return res.status(400).json({ success: false, message: 'Invalid vendor' });
     }
-    const orders = await PurchaseOrder.find({ vendorId })
+    const orders = (await PurchaseOrder.find({ vendorId })
       .sort({ createdAt: -1 })
       .limit(200)
       .populate('branchId', 'name')
-      .lean({ virtuals: true });
+      .lean()).map(withTotals);
 
     const summary = orders.reduce(
       (acc, po) => {

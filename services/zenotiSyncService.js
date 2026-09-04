@@ -81,9 +81,12 @@ function escapeRegExp(s) {
  */
 async function hydrateGuestIdentity(guest) {
   if (!guest || !guest.zenotiGuestId) return guest;
+  // Name only. A guest with a name but no phone/email is common on the roster
+  // crawl (thousands of rows); fetching each one would turn the import into a
+  // call per guest and trip Zenoti's rate limit. A missing NAME is rare and is
+  // exactly the "Zennara Guest" bug, so that one is worth the round-trip.
   const missingName = !String(guest.fullName || '').trim();
-  const missingContact = !guest.phone && !guest.email;
-  if (!missingName && !missingContact) return guest;
+  if (!missingName) return guest;
   if (!zenoti.isConfigured()) return guest;
 
   try {
