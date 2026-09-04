@@ -25,6 +25,7 @@ const ZenotiGuestData = require('../models/ZenotiGuestData');
 const zenoti = require('./zenotiService');
 const { CENTERS } = require('../config/zenoti');
 const logger = require('../utils/logger');
+const { normalizeName, findByName } = require('../utils/nameMatch');
 
 const norm = (v) => String(v || '').trim().toLowerCase();
 const slugify = (v) => norm(v).replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
@@ -69,7 +70,13 @@ async function syncServices(stats) {
     seenIds.add(svc.id);
     try {
       let doc = await Consultation.findOne({ zenotiServiceId: svc.id });
-      if (!doc) doc = await Consultation.findOne({ name: new RegExp(`^${svc.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+      if (!doc) {
+        // Normalised match against every UNLINKED service, so "Laser Hair
+        // Removal (LHR)" meets Zenoti's "Laser Hair Removal".
+        const pool = await Consultation.find({ zenotiServiceId: { $in: [null, ''] } }).select('name zenotiServiceId').lean();
+        const hit = findByName(pool, svc.name);
+        if (hit) doc = await Consultation.findById(hit._id);
+      }
       // Same name, already linked to a different Zenoti service: not this one.
       if (doc && doc.zenotiServiceId && doc.zenotiServiceId !== svc.id) { stats.services.failed += 1; logger.warn('Service mirror skipped: name linked to another Zenoti service', { name: svc.name }); continue; }
 
@@ -160,7 +167,11 @@ async function syncPackages(stats) {
     seenIds.add(pkg.id);
     try {
       let doc = await Package.findOne({ zenotiPackageId: pkg.id });
-      if (!doc) doc = await Package.findOne({ name: new RegExp(`^${pkg.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+      if (!doc) {
+        const pool = await Package.find({ zenotiPackageId: { $in: [null, ''] } }).select('name zenotiPackageId').lean();
+        const hit = findByName(pool, pkg.name);
+        if (hit) doc = await Package.findById(hit._id);
+      }
       if (doc && doc.zenotiPackageId && doc.zenotiPackageId !== pkg.id) { stats.packages.failed += 1; logger.warn('Package mirror skipped: name linked to another Zenoti package', { name: pkg.name }); continue; }
 
       if (!doc) {

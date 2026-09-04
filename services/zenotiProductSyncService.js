@@ -28,6 +28,7 @@ const Branch = require('../models/Branch');
 const zenoti = require('./zenotiService');
 const { CENTERS } = require('../config/zenoti');
 const logger = require('../utils/logger');
+const { findByName } = require('../utils/nameMatch');
 
 /** Branch documents keyed by the branch name our centre map points at. */
 async function branchIndex() {
@@ -161,7 +162,11 @@ async function syncProducts({ trigger = 'manual' } = {}) {
       let product = await Product.findOne({ zenotiProductId: entry.zenotiProductId });
       if (!product && entry.sku) product = await Product.findOne({ sku: entry.sku });
       if (!product && entry.sku) product = await Product.findOne({ code: entry.sku });
-      if (!product) product = await Product.findOne({ name: entry.name });
+      if (!product) {
+        const pool = await Product.find({ zenotiProductId: { $in: [null, ''] } }).select('name').lean();
+        const hit = findByName(pool, entry.name);
+        if (hit) product = await Product.findById(hit._id);
+      }
       // A same-name product already tied to a DIFFERENT Zenoti item is not this item.
       if (product && product.zenotiProductId && product.zenotiProductId !== entry.zenotiProductId) {
         stats.errors += 1;
