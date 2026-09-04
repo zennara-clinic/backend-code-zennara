@@ -431,7 +431,12 @@ exports.verifyProductPayment = async (req, res) => {
     const processedItems = [];
     for (const item of itemsToProcess) {
       const { productId, quantity } = item;
-      const updated = await Product.findOneAndUpdate(
+      // No count kept for this product (trackStock:false — Zenoti-mirrored):
+      // confirm it is still on sale and move on without touching `stock`.
+      const untracked = await Product.findOne({ _id: productId, trackStock: false }).select('_id isActive').lean();
+      const updated = untracked
+        ? (untracked.isActive ? untracked : null)
+        : await Product.findOneAndUpdate(
         { 
           _id: productId,
           stock: { $gte: quantity },
@@ -451,7 +456,8 @@ exports.verifyProductPayment = async (req, res) => {
         for (const processed of processedItems) {
           await Product.findByIdAndUpdate(
             processed.productId,
-            { $inc: { stock: processed.quantity } }
+            { $inc: { stock: processed.quantity } },
+            // (no-op for untracked products: the filter below excludes them)
           );
         }
 
@@ -514,7 +520,7 @@ exports.verifyProductPayment = async (req, res) => {
       });
     } catch (error) {
       for (const processed of processedItems) {
-        await Product.findByIdAndUpdate(processed.productId, { $inc: { stock: processed.quantity } });
+        await Product.updateOne({ _id: processed.productId, trackStock: { $ne: false } }, { $inc: { stock: processed.quantity } });
       }
       if (error?.code === 11000
           && (error?.keyPattern?.razorpayOrderId || error?.keyPattern?.razorpayPaymentId)) {

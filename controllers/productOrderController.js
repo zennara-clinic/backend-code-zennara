@@ -101,7 +101,9 @@ exports.createOrderLegacyUnpaid = async (req, res) => {
     // Second pass: atomically reduce stock using findByIdAndUpdate to prevent race conditions
     for (const { product, quantity } of itemsToProcess) {
       // Use atomic update with $inc to prevent race conditions
-      const updated = await Product.findOneAndUpdate(
+      const updated = product.trackStock === false
+        ? (product.isActive ? product : null) // untracked: never decrement
+        : await Product.findOneAndUpdate(
         { 
           _id: product._id, 
           stock: { $gte: quantity }, // Ensure stock is still sufficient
