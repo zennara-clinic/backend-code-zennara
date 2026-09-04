@@ -119,6 +119,19 @@ async function mirrorGuestPackages(user, packages) {
     try {
       const pkg = await packageFor(zp);
       if (!pkg) continue;
+      // Zenoti's catalogue hides package line items; the purchase shows them.
+      // A package still without a service list takes this purchase's.
+      if (!(pkg.services || []).length && (zp.services || []).length) {
+        const P = await getPools();
+        const services = zp.services.filter((svc) => svc?.name).map((svc) => {
+          const c = (svc.serviceId && P.consultationByZenotiId.get(lower(svc.serviceId))) || P.consultationByName(svc.name);
+          return { serviceId: c?.id || '', serviceName: c?.name || svc.name, servicePrice: c?.price || 0, sessions: Math.max(1, Number(svc.total) || 1) };
+        });
+        if (services.length) {
+          await Package.updateOne({ _id: pkg._id, $or: [{ services: { $size: 0 } }, { services: { $exists: false } }] }, { $set: { services } });
+          pkg.services = services;
+        }
+      }
       const branch = zp.centerName ? (await getPools()).branchByName(zp.centerName) : null;
 
       let a = await PackageAssignment.findOne({ zenotiUserPackageId: String(zp.id) });
