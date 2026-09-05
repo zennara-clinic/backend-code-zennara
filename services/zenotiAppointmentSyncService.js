@@ -352,7 +352,8 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
   const price = amountOf(appointment);
   if (price > 0 || isNew) booking.amount = price > 0 ? price : (booking.amount || 0);
   booking.source = booking.source === 'zenoti' || isNew ? 'zenoti' : booking.source;
-  booking.paymentMethod = booking.paymentMethod || 'Other';
+  // A Zenoti visit is settled at the desk, never through the app's gateway.
+  booking.paymentMethod = booking.source === 'zenoti' ? 'Clinic' : (booking.paymentMethod || 'Other');
   // Zenoti calls every service provider a therapist. First classify the
   // employee against the separately mirrored Zenoti Doctor roster; only then
   // may it be linked to an onboarded app Doctor. This prevents aestheticians

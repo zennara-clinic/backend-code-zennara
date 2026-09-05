@@ -62,14 +62,23 @@ exports.getDashboard = async (req, res) => {
 
     // ---- pull the window's rows (small enough to shape in memory) ---------
     const bookingFields = 'consultationId externalServiceName externalServiceCategory status amount paymentStatus paymentMethod paidAt createdAt confirmedDate preferredDate specialistId specialistName specialistTier zenotiTherapistId zenotiTherapistName source preferredLocation branchId rating userId isPackageIncluded';
+    // Clinic (Zenoti) package purchases and counter sales are ALSO mirrored into
+    // PackageAssignment / ProductOrder (source:'zenoti') so guests see them in
+    // the app. For revenue they are read from the Zenoti mirror below — the
+    // complete list, by sale date — so the app-side rows must exclude them or
+    // every clinic sale is counted twice, once as "app" and once as "clinic".
+    const appOnly = { source: { $ne: 'zenoti' } };
     const [bookings, paidBookings, prevPaidBookings, orders, prevOrders, packages, prevPackages, memberships, prevMemberships] = await Promise.all([
-      Booking.find({ ...bookingBranch, ...slotIn(start, end) }).select(bookingFields).lean(),
-      Booking.find({ ...bookingBranch, ...paidIn(start, end) }).select(bookingFields).lean(),
-      Booking.find({ ...bookingBranch, ...paidIn(prevStart, prevEnd) }).select('amount').lean(),
-      ProductOrder.find({ createdAt: { $gte: start, $lte: end }, ...(branchName ? {} : {}) }).select('pricing paymentStatus paymentMethod orderStatus createdAt userId items').lean(),
-      ProductOrder.find({ createdAt: { $gte: prevStart, $lte: prevEnd }, paymentStatus: 'Paid' }).select('pricing').lean(),
-      PackageAssignment.find({ ...pkgBranch, createdAt: { $gte: start, $lte: end } }).select('pricing payment status createdAt packageDetails packageId userId').lean(),
-      PackageAssignment.find({ ...pkgBranch, createdAt: { $gte: prevStart, $lte: prevEnd }, 'payment.isReceived': true }).select('pricing').lean(),
+      // $and, not a spread: both the centre filter and the window use `$or`, and
+      // spreading them let the window silently replace the centre — so a
+      // centre's Overview showed every centre's visits.
+      Booking.find({ $and: [bookingBranch, slotIn(start, end)] }).select(bookingFields).lean(),
+      Booking.find({ $and: [bookingBranch, paidIn(start, end)] }).select(bookingFields).lean(),
+      Booking.find({ $and: [bookingBranch, paidIn(prevStart, prevEnd)] }).select('amount').lean(),
+      ProductOrder.find({ ...appOnly, createdAt: { $gte: start, $lte: end } }).select('pricing paymentStatus paymentMethod orderStatus createdAt userId items').lean(),
+      ProductOrder.find({ ...appOnly, createdAt: { $gte: prevStart, $lte: prevEnd }, paymentStatus: 'Paid', orderStatus: { $nin: ['Cancelled', 'Returned'] } }).select('pricing').lean(),
+      PackageAssignment.find({ ...pkgBranch, ...appOnly, createdAt: { $gte: start, $lte: end } }).select('pricing payment status createdAt packageDetails packageId userId preferredLocation branchId').lean(),
+      PackageAssignment.find({ ...pkgBranch, ...appOnly, createdAt: { $gte: prevStart, $lte: prevEnd }, 'payment.isReceived': true }).select('pricing').lean(),
       Payment.find({ orderType: 'ZenMembership', status: 'captured', createdAt: { $gte: start, $lte: end } }).select('amount method createdAt userId').lean(),
       Payment.find({ orderType: 'ZenMembership', status: 'captured', createdAt: { $gte: prevStart, $lte: prevEnd } }).select('amount userId').lean(),
     ]);
@@ -122,23 +131,29 @@ exports.getDashboard = async (req, res) => {
     const membershipRev = sum(membershipsScoped, (m) => m.amount);
 
     // Clinic (Zenoti) retail + package sales live in the mirror, by sale date.
+    // Grouped by centre and clinic day so the same rows feed the total, the
+    // "revenue by centre" card and the daily chart — one source, one number.
     const zMatch = branchName ? { branchName } : {};
-    const [zOrders, zPackages] = await Promise.all([
-      ZenotiGuestData.aggregate([
-        { $match: zMatch }, { $unwind: '$orders' },
-        { $addFields: { d: { $convert: { input: '$orders.saleDate', to: 'date', onError: null, onNull: null } } } },
-        { $match: { d: { $gte: start, $lte: end } } },
-        { $group: { _id: null, revenue: { $sum: { $ifNull: ['$orders.price', 0] } }, count: { $sum: 1 }, units: { $sum: { $ifNull: ['$orders.quantity', 1] } } } },
-      ]),
-      ZenotiGuestData.aggregate([
-        { $match: zMatch }, { $unwind: '$packages' },
-        { $addFields: { d: { $convert: { input: '$packages.purchaseDate', to: 'date', onError: null, onNull: null } } } },
-        { $match: { d: { $gte: start, $lte: end } } },
-        { $group: { _id: null, revenue: { $sum: { $ifNull: ['$packages.price', 0] } }, count: { $sum: 1 } } },
-      ]),
+    const clinicSales = (field, dateField, s, e) => ZenotiGuestData.aggregate([
+      { $match: zMatch }, { $unwind: `$${field}` },
+      { $addFields: { d: { $convert: { input: `$${field}.${dateField}`, to: 'date', onError: null, onNull: null } } } },
+      { $match: { d: { $gte: s, $lte: e } } },
+      { $group: {
+        _id: { branch: '$branchName', day: { $dateToString: { format: '%Y-%m-%d', date: '$d', timezone: 'Asia/Kolkata' } } },
+        revenue: { $sum: { $ifNull: [`$${field}.price`, 0] } }, count: { $sum: 1 },
+      } },
     ]);
-    const clinicProductRev = zOrders[0]?.revenue || 0;
-    const clinicPackageRev = zPackages[0]?.revenue || 0;
+    const [zOrderRows, zPackageRows, zPrevOrders, zPrevPackages] = await Promise.all([
+      clinicSales('orders', 'saleDate', start, end),
+      clinicSales('packages', 'purchaseDate', start, end),
+      clinicSales('orders', 'saleDate', prevStart, prevEnd),
+      clinicSales('packages', 'purchaseDate', prevStart, prevEnd),
+    ]);
+    const zOrders = [{ revenue: sum(zOrderRows, (r) => r.revenue), count: sum(zOrderRows, (r) => r.count) }];
+    const zPackages = [{ revenue: sum(zPackageRows, (r) => r.revenue), count: sum(zPackageRows, (r) => r.count) }];
+    const clinicProductRev = zOrders[0].revenue;
+    const clinicPackageRev = zPackages[0].revenue;
+    const prevClinicRev = sum(zPrevOrders, (r) => r.revenue) + sum(zPrevPackages, (r) => r.revenue);
 
     const streams = [
       { key: 'consultations', label: 'Consultations', revenue: round(consultRev), count: bookings.filter(isConsult).length, app: round(consultRev - clinicConsultRev), clinic: round(clinicConsultRev) },
@@ -154,11 +169,15 @@ exports.getDashboard = async (req, res) => {
       zenMembershipStartDate: { $gte: prevStart, $lte: prevEnd },
     }).select('_id zenMembershipAmount').lean();
     const prevPaidMemberIds = new Set(prevMemberships.map((p) => String(p.userId)));
+    // Same composition as the current window (app rows + clinic mirror), or the
+    // comparison would flatter every period against a previous one that never
+    // included the clinic's own package and retail sales.
     const prevRevenue = round(sum(prevPaidBookings, (x) => x.amount) + sum(prevOrders, (o) => o.pricing && o.pricing.total) + sum(prevPackages, (p) => p.pricing && p.pricing.finalAmount)
+      + prevClinicRev
       + sum(prevMemberships, (m) => m.amount)
       + sum(prevMembers.filter((u) => !prevPaidMemberIds.has(String(u._id))), (u) => u.zenMembershipAmount));
     // A previous window with nothing in it is "no comparable data", not a 0% drop.
-    const prevHasData = prevPaidBookings.length + prevOrders.length + prevPackages.length + prevMemberships.length + prevMembers.length > 0;
+    const prevHasData = prevPaidBookings.length + prevOrders.length + prevPackages.length + prevMemberships.length + prevMembers.length + zPrevOrders.length + zPrevPackages.length > 0;
     const growth = prevHasData && prevRevenue > 0 ? round(((totalRevenue - prevRevenue) / prevRevenue) * 100) : null;
 
     // ---- counts -----------------------------------------------------------
@@ -176,6 +195,8 @@ exports.getDashboard = async (req, res) => {
       bookings: bookings.length, completed, cancelled, noShow,
       consultations: bookings.filter(isConsult).length,
       treatments: bookings.filter((x) => !isConsult(x)).length,
+      completedConsultations: bookings.filter((x) => x.status === 'Completed' && isConsult(x)).length,
+      completedTreatments: bookings.filter((x) => x.status === 'Completed' && !isConsult(x)).length,
       upcoming: bookings.filter((x) => ['Confirmed', 'Awaiting Confirmation', 'Rescheduled'].includes(x.status)).length,
       awaitingConfirmation: bookings.filter((x) => x.status === 'Awaiting Confirmation').length,
       noShowRate: bookings.length ? round((noShow / bookings.length) * 100) : 0,
@@ -280,14 +301,21 @@ exports.getDashboard = async (req, res) => {
     const branchNameById = new Map(branches.map((x) => [String(x._id), x.name]));
     paidBookings.forEach((bk) => bump(bk.preferredLocation || branchNameById.get(String(bk.branchId)), Number(bk.amount) || 0, 0));
     bookings.forEach((bk) => bump(bk.preferredLocation || branchNameById.get(String(bk.branchId)), 0, 1));
+    // Packages sold here carry a centre; clinic package and retail sales carry
+    // the guest's home centre. Only app product orders have no centre at all.
+    paidPackages.forEach((p) => bump(p.preferredLocation || branchNameById.get(String(p.branchId)), (p.pricing && p.pricing.finalAmount) || 0, 0));
+    [...zPackageRows, ...zOrderRows].forEach((r) => bump(r._id.branch, Number(r.revenue) || 0, 0));
     const revenueByCentre = Object.values(centreAgg).map((r) => ({ ...r, revenue: round(r.revenue) })).sort((a, b) => b.revenue - a.revenue);
 
+    // Money the clinic took at the desk (every Zenoti-paid visit or sale) is
+    // "Clinic"; the gateway label belongs only to what the app itself charged.
     const payMix = {};
     const addPay = (m, amt) => { const k = m || 'Other'; payMix[k] = round((payMix[k] || 0) + amt); };
-    paidBookings.forEach((bk) => addPay(bk.paymentMethod, Number(bk.amount) || 0));
+    paidBookings.forEach((bk) => addPay(bk.source === 'zenoti' ? 'Clinic' : bk.paymentMethod, Number(bk.amount) || 0));
     paidOrders.forEach((o) => addPay(o.paymentMethod === 'COD' ? 'Cash' : 'Razorpay', (o.pricing && o.pricing.total) || 0));
     paidPackages.forEach((p) => addPay(p.payment && p.payment.paymentMethod, (p.pricing && p.pricing.finalAmount) || 0));
     membershipsScoped.forEach((m) => addPay('Razorpay', m.amount || 0));
+    if (clinicProductRev + clinicPackageRev > 0) addPay('Clinic', clinicProductRev + clinicPackageRev);
 
     const series = {};
     for (let i = 0; i < days; i += 1) { const d = new Date(start.getTime() + i * 86400000); series[dayKey(d)] = { date: dayKey(d), consultations: 0, treatments: 0, products: 0, packages: 0, memberships: 0, total: 0, bookings: 0 }; }
@@ -296,6 +324,10 @@ exports.getDashboard = async (req, res) => {
     paidOrders.forEach((o) => add(o.createdAt, 'products', (o.pricing && o.pricing.total) || 0));
     paidPackages.forEach((p) => add((p.payment && p.payment.receivedDate) || p.createdAt, 'packages', (p.pricing && p.pricing.finalAmount) || 0));
     membershipsScoped.forEach((m) => add(m.createdAt, 'memberships', m.amount || 0));
+    // Clinic sales by their sale day, so the chart adds up to the total above.
+    const addClinic = (key, rows) => rows.forEach((r) => { const row = series[r._id.day]; if (!row) return; row[key] = round(row[key] + (Number(r.revenue) || 0)); row.total = round(row.total + (Number(r.revenue) || 0)); });
+    addClinic('products', zOrderRows);
+    addClinic('packages', zPackageRows);
     bookings.forEach((bk) => { const row = series[dayKey(bk.confirmedDate || bk.preferredDate)]; if (row) row.bookings += 1; });
 
     res.json({

@@ -300,7 +300,7 @@ const bookingSchema = new mongoose.Schema({
   },
   paymentMethod: {
     type: String,
-    enum: ['Razorpay', 'Cash', 'Card', 'UPI', 'Package', 'Membership', 'Other'],
+    enum: ['Razorpay', 'Cash', 'Card', 'UPI', 'Package', 'Membership', 'Clinic', 'Other'],
     default: 'Razorpay'
   },
   paidAt: Date,

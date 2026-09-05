@@ -150,7 +150,7 @@ async function mirrorGuestPackages(user, packages) {
       };
       a.userDetails = { fullName: user.fullName, email: user.email, phone: user.phone, patientId: user.patientId, memberType: user.memberType };
       a.pricing = { ...(a.pricing?.toObject?.() || a.pricing || {}), originalAmount: Number(zp.price) > 0 ? Number(zp.price) : pkg.price, discountPercentage: 0, isZenMemberDiscount: false };
-      a.payment = { isReceived: true, receivedDate: zp.purchaseDate ? new Date(zp.purchaseDate) : new Date(), paymentMethod: 'Other', transactionId: zp.invoice?.number || zp.invoice?.receiptNumber || null };
+      a.payment = { isReceived: true, receivedDate: zp.purchaseDate ? new Date(zp.purchaseDate) : new Date(), paymentMethod: 'Clinic', transactionId: zp.invoice?.number || zp.invoice?.receiptNumber || null };
       a.validFrom = zp.startDate ? new Date(zp.startDate) : (zp.purchaseDate ? new Date(zp.purchaseDate) : a.validFrom);
       a.validUntil = zp.neverExpires ? null : (zp.endDate ? new Date(zp.endDate) : a.validUntil);
       a.preferredLocation = branch?.name || zp.centerName || a.preferredLocation || '';

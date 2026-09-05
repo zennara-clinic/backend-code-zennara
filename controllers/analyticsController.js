@@ -6,6 +6,9 @@ const Consultation = require('../models/Consultation');
 const Branch = require('../models/Branch');
 const User = require('../models/User');
 const Inventory = require('../models/Inventory');
+// Registered here so populate('packageId') works even when this controller is
+// the first thing to touch packages in a process (scripts, tests).
+require('../models/Package');
 const {
   addClinicDays, clinicDateKey, clinicDayEnd, clinicDayStart, formatClinicDate, parseClockMinutes,
 } = require('../utils/bookingTime');
@@ -260,49 +263,66 @@ exports.getFinancialAnalytics = async (req, res) => {
   }
 };
 
-// Get Monthly Revenue Trend (last 12 months)
+/**
+ * Monthly revenue, last 12 clinic months, with the SAME definition as the
+ * dashboard: money actually charged (Booking.amount when paid, order and
+ * package totals, membership payments, and the clinic's own Zenoti package and
+ * retail sales by sale date). The old version priced visits from the catalogue
+ * — which every mirrored clinic visit lacks — bucketed by server-local month,
+ * and double counted the mirrored clinic sales, so it never matched the tiles.
+ */
 exports.getMonthlyRevenueTrend = async (req, res) => {
   try {
-    const monthlyData = [];
-    
-    for (let i = 11; i >= 0; i--) {
-      const date = new Date();
-      date.setMonth(date.getMonth() - i);
-      const startOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
-      const endOfMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59);
-      
-      const bookings = await Booking.find({
-        createdAt: { $gte: startOfMonth, $lte: endOfMonth },
-        status: { $in: ['Confirmed', 'Completed', 'In Progress'] },
-        ...branchScope(req)
-      }).populate('consultationId', 'price');
-      
-      const orders = await ProductOrder.find({
-        createdAt: { $gte: startOfMonth, $lte: endOfMonth },
-        orderStatus: { $nin: ['Cancelled', 'Returned'] }
-      });
-      
-      const packages = await PackageAssignment.find({
-        createdAt: { $gte: startOfMonth, $lte: endOfMonth },
-        status: { $in: ['Active', 'Completed'] }
-      });
-      
-      const consultationRevenue = bookings.reduce((sum, b) => sum + (b.consultationId?.price || 0), 0);
-      const productRevenue = orders.reduce((sum, o) => sum + o.pricing.total, 0);
-      const packageRevenue = packages.reduce((sum, p) => sum + p.pricing.finalAmount, 0);
-      
-      monthlyData.push({
-        month: startOfMonth.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
-        consultationRevenue,
-        productRevenue,
-        packageRevenue,
-        totalRevenue: consultationRevenue + productRevenue + packageRevenue
-      });
-    }
-    
+    const ZenotiGuestData = require('../models/ZenotiGuestData');
+    const Payment = require('../models/Payment');
+    const todayKey = clinicDateKey(new Date());
+    const months = [];
+    let cursor = `${todayKey.slice(0, 8)}01`;
+    for (let i = 0; i < 12; i += 1) { months.unshift(cursor); cursor = `${addClinicDays(cursor, -1).slice(0, 8)}01`; }
+    const start = clinicDayStart(months[0]);
+    const end = clinicDayEnd(todayKey);
+
+    const scope = branchScope(req);
+    const branchName = scope.preferredLocation
+      || (scope.branchId ? (await Branch.findById(scope.branchId).select('name').lean())?.name || null : null);
+    const bookingBranch = scope.branchId ? { $or: [{ branchId: scope.branchId }, { branchId: null, preferredLocation: branchName }] } : scope;
+    const paidWindow = { paymentStatus: 'paid', $or: [{ paidAt: { $gte: start, $lte: end } }, { paidAt: null, createdAt: { $gte: start, $lte: end } }] };
+    const appOnly = { source: { $ne: 'zenoti' } };
+    const clinic = (field, dateField) => ZenotiGuestData.aggregate([
+      { $match: branchName ? { branchName } : {} }, { $unwind: `$${field}` },
+      { $addFields: { d: { $convert: { input: `$${field}.${dateField}`, to: 'date', onError: null, onNull: null } } } },
+      { $match: { d: { $gte: start, $lte: end } } },
+      { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$d', timezone: 'Asia/Kolkata' } }, revenue: { $sum: { $ifNull: [`$${field}.price`, 0] } } } },
+    ]);
+
+    const [bookings, orders, packages, memberships, zOrders, zPackages] = await Promise.all([
+      Booking.find({ $and: [bookingBranch, paidWindow] }).select('amount paidAt createdAt').lean(),
+      ProductOrder.find({ ...appOnly, paymentStatus: 'Paid', orderStatus: { $nin: ['Cancelled', 'Returned'] }, createdAt: { $gte: start, $lte: end } }).select('pricing createdAt').lean(),
+      PackageAssignment.find({
+        ...appOnly, 'payment.isReceived': true, ...(branchName ? { preferredLocation: branchName } : {}),
+        $or: [{ 'payment.receivedDate': { $gte: start, $lte: end } }, { 'payment.receivedDate': null, createdAt: { $gte: start, $lte: end } }],
+      }).select('pricing payment createdAt').lean(),
+      Payment.find({ orderType: 'ZenMembership', status: 'captured', createdAt: { $gte: start, $lte: end } }).select('amount createdAt').lean(),
+      clinic('orders', 'saleDate'),
+      clinic('packages', 'purchaseDate'),
+    ]);
+
+    const buckets = new Map(months.map((m) => [m.slice(0, 7), {
+      month: formatClinicDate(clinicDayStart(m), { month: 'short', year: 'numeric' }),
+      monthKey: m.slice(0, 7), consultationRevenue: 0, productRevenue: 0, packageRevenue: 0, membershipRevenue: 0, totalRevenue: 0,
+    }]));
+    const add = (key, field, amt) => { const b = buckets.get(key); if (!b) return; const n = Number(amt) || 0; b[field] += n; b.totalRevenue += n; };
+    const monthOf = (d) => (d ? clinicDateKey(d).slice(0, 7) : null);
+    bookings.forEach((b) => add(monthOf(b.paidAt || b.createdAt), 'consultationRevenue', b.amount));
+    orders.forEach((o) => add(monthOf(o.createdAt), 'productRevenue', o.pricing && o.pricing.total));
+    packages.forEach((p) => add(monthOf((p.payment && p.payment.receivedDate) || p.createdAt), 'packageRevenue', p.pricing && p.pricing.finalAmount));
+    memberships.forEach((m) => add(monthOf(m.createdAt), 'membershipRevenue', m.amount));
+    zOrders.forEach((r) => add(r._id, 'productRevenue', r.revenue));
+    zPackages.forEach((r) => add(r._id, 'packageRevenue', r.revenue));
+
     res.status(200).json({
       success: true,
-      data: monthlyData
+      data: [...buckets.values()].map((b) => ({ ...b, totalRevenue: Math.round(b.totalRevenue) })),
     });
   } catch (error) {
     console.error('Error fetching monthly revenue trend:', error);
@@ -633,69 +653,62 @@ exports.getPatientAcquisitionTrend = async (req, res) => {
 // Get Top Valuable Patients
 exports.getTopPatients = async (req, res) => {
   try {
-    const { limit = 5 } = req.query;
-    
-    // Aggregate spending from all sources
-    const topPatients = await Booking.aggregate([
-      {
-        $match: {
-          status: { $in: ['Confirmed', 'Completed', 'In Progress'] },
-          ...branchScope(req),
-          ...dateScope(req)
-        }
-      },
-      {
-        $lookup: {
-          from: 'consultations',
-          localField: 'consultationId',
-          foreignField: '_id',
-          as: 'consultation'
-        }
-      },
-      {
-        $unwind: '$consultation'
-      },
-      {
-        $group: {
-          _id: '$userId',
-          totalSpent: { $sum: '$consultation.price' },
-          visitCount: { $sum: 1 }
-        }
-      },
-      {
-        $sort: { totalSpent: -1 }
-      },
-      {
-        $limit: parseInt(limit)
-      },
-      {
-        $lookup: {
-          from: 'users',
-          localField: '_id',
-          foreignField: '_id',
-          as: 'patient'
-        }
-      },
-      {
-        $unwind: '$patient'
-      },
-      {
-        $project: {
-          _id: 1,
-          name: '$patient.fullName',
-          fullName: '$patient.fullName',
-          email: '$patient.email',
-          phone: '$patient.phone',
-          totalSpent: 1,
-          visitCount: 1,
-          visits: "$visitCount"
-        }
-      }
+    // Spend is what the guest actually paid — visits (Booking.amount when
+    // paid), app packages and orders, and the clinic's own Zenoti package and
+    // retail sales — inside the requested window and centre. The old version
+    // summed CATALOGUE prices and dropped every visit without a catalogue link,
+    // which is most clinic history.
+    const limit = Math.min(50, parseInt(req.query.limit, 10) || 5);
+    const ZenotiGuestData = require('../models/ZenotiGuestData');
+    const { publicEmail } = require('../config/zenoti');
+    const scope = branchScope(req);
+    const branchName = scope.preferredLocation
+      || (scope.branchId ? (await Branch.findById(scope.branchId).select('name').lean())?.name || null : null);
+    const start = req.query.startDate ? clinicDayStart(req.query.startDate) : null;
+    const end = req.query.endDate ? clinicDayEnd(req.query.endDate) : null;
+    const inWindow = (d) => Boolean(d) && (!start || d >= start) && (!end || d <= end);
+    const windowOn = (field) => (start || end ? { [field]: { ...(start ? { $gte: start } : {}), ...(end ? { $lte: end } : {}) } } : {});
+
+    const spend = new Map();
+    const visits = new Map();
+    const bump = (uid, amt, visit) => {
+      if (!uid) return;
+      const k = String(uid);
+      spend.set(k, (spend.get(k) || 0) + (Number(amt) || 0));
+      if (visit) visits.set(k, (visits.get(k) || 0) + 1);
+    };
+
+    const bookingBranch = scope.branchId ? { $or: [{ branchId: scope.branchId }, { branchId: null, preferredLocation: branchName }] } : scope;
+    const appOnly = { source: { $ne: 'zenoti' } };
+    const clinic = (field, dateField) => ZenotiGuestData.aggregate([
+      { $match: branchName ? { branchName } : {} }, { $unwind: `$${field}` },
+      { $addFields: { d: { $convert: { input: `$${field}.${dateField}`, to: 'date', onError: null, onNull: null } } } },
+      ...(start || end ? [{ $match: windowOn('d') }] : [{ $match: { d: { $ne: null } } }]),
+      { $group: { _id: '$userId', revenue: { $sum: { $ifNull: [`$${field}.price`, 0] } } } },
     ]);
-    
+    const [bookings, packages, orders, zPackages, zOrders] = await Promise.all([
+      Booking.find({ $and: [bookingBranch, { paymentStatus: 'paid' }, ...(start || end ? [{ $or: [windowOn('paidAt'), { paidAt: null, ...windowOn('createdAt') }] }] : [])] }).select('userId amount paidAt createdAt').lean(),
+      PackageAssignment.find({ ...appOnly, 'payment.isReceived': true, ...(branchName ? { preferredLocation: branchName } : {}) }).select('userId pricing payment createdAt').lean(),
+      ProductOrder.find({ ...appOnly, paymentStatus: 'Paid', orderStatus: { $nin: ['Cancelled', 'Returned'] }, ...windowOn('createdAt') }).select('userId pricing createdAt').lean(),
+      clinic('packages', 'purchaseDate'),
+      clinic('orders', 'saleDate'),
+    ]);
+    bookings.forEach((b) => bump(b.userId, b.amount, true));
+    packages.forEach((p) => { if (!start && !end || inWindow((p.payment && p.payment.receivedDate) || p.createdAt)) bump(p.userId, p.pricing && p.pricing.finalAmount, false); });
+    orders.forEach((o) => bump(o.userId, o.pricing && o.pricing.total, false));
+    zPackages.forEach((r) => bump(r._id, r.revenue, false));
+    zOrders.forEach((r) => bump(r._id, r.revenue, false));
+
+    const top = [...spend.entries()].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).slice(0, limit);
+    const users = await User.find({ _id: { $in: top.map(([id]) => id) } }).select('fullName email phone').lean();
+    const byId = new Map(users.map((u) => [String(u._id), u]));
     res.status(200).json({
       success: true,
-      data: topPatients
+      data: top.map(([id, totalSpent]) => {
+        const u = byId.get(id) || {};
+        const visitCount = visits.get(id) || 0;
+        return { _id: id, name: u.fullName, fullName: u.fullName, email: publicEmail(u.email), phone: u.phone, totalSpent: Math.round(totalSpent), visitCount, visits: visitCount };
+      }),
     });
   } catch (error) {
     console.error('Error fetching top patients:', error);
@@ -960,10 +973,10 @@ exports.getAppointmentAnalytics = async (req, res) => {
       });
     }
 
-    // 6. No-Show Rate by Service Type
+    // 6. No-Show Rate by Service Type (clinic visits carry their Zenoti category)
     const serviceTypeStats = {};
     bookings.forEach(booking => {
-      const serviceType = booking.consultationId?.category || 'Unknown';
+      const serviceType = booking.consultationId?.category || booking.externalServiceCategory || 'Other';
       if (!serviceTypeStats[serviceType]) {
         serviceTypeStats[serviceType] = { total: 0, noShow: 0 };
       }
@@ -975,12 +988,14 @@ exports.getAppointmentAnalytics = async (req, res) => {
 
     const noShowByService = Object.keys(serviceTypeStats).map(service => ({
       service,
-      noShowRate: serviceTypeStats[service].total > 0 
+      noShowRate: serviceTypeStats[service].total > 0
         ? ((serviceTypeStats[service].noShow / serviceTypeStats[service].total) * 100).toFixed(1)
         : 0,
+      // `count` is what the panel chart reads; the older name stays for callers.
+      count: serviceTypeStats[service].noShow,
       noShowCount: serviceTypeStats[service].noShow,
       totalBookings: serviceTypeStats[service].total
-    }));
+    })).filter((row) => row.count > 0).sort((a, b) => b.count - a.count);
 
     // 7. Average Time Between Bookings (per patient)
     const patientBookings = {};
@@ -1015,12 +1030,14 @@ exports.getAppointmentAnalytics = async (req, res) => {
 
     const upcomingThisWeek = await Booking.countDocuments({
       ...slotRange(startOfWeek, endOfWeek),
+      ...branchScope(req),
       status: { $in: ['Awaiting Confirmation', 'Confirmed', 'Rescheduled'] }
     });
 
     // 9. Pending Confirmations Count
     const pendingConfirmations = await Booking.countDocuments({
       status: 'Awaiting Confirmation',
+      ...branchScope(req),
       ...slotRange(clinicDayStart(today), clinicDayEnd(addClinicDays(today, 365)))
     });
 
@@ -1081,34 +1098,39 @@ exports.getServiceAnalytics = async (req, res) => {
     const start = startDate ? new Date(startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const end = endDate ? new Date(endDate) : new Date();
     
-    // Get all bookings with consultation details
+    // Visits by their slot day (like the dashboard), revenue = what was charged
+    // when paid. Clinic visits without a catalogue link keep their Zenoti
+    // service name and category instead of vanishing from every chart.
+    const slotStart = startDate ? clinicDayStart(startDate) : start;
+    const slotEnd = endDate ? clinicDayEnd(endDate) : end;
     const bookings = await Booking.find({
-      createdAt: { $gte: start, $lte: end },
+      $or: [{ confirmedDate: { $gte: slotStart, $lte: slotEnd } }, { confirmedDate: null, preferredDate: { $gte: slotStart, $lte: slotEnd } }],
       status: { $in: ['Confirmed', 'Completed', 'In Progress'] },
       ...branchScope(req)
-    }).populate('consultationId', 'name category price duration');
+    }).populate('consultationId', 'name category price duration_minutes');
 
-    // Get all consultations/services
-    const allServices = await Consultation.find();
+    // The live catalogue only — hidden Zenoti shells would otherwise fill the
+    // "needs attention" list with services nobody can book.
+    const allServices = await Consultation.find({ isActive: { $ne: false } });
 
     // 1. Top 10 Services by Revenue
     const serviceRevenue = {};
     bookings.forEach(booking => {
-      const serviceId = booking.consultationId?._id?.toString();
-      const serviceName = booking.consultationId?.name;
-      const price = booking.consultationId?.price || 0;
-      
+      const serviceId = booking.consultationId?._id?.toString() || (booking.externalServiceName ? `external:${booking.externalServiceName}` : null);
+      const serviceName = booking.consultationId?.name || booking.externalServiceName;
+      const revenue = booking.paymentStatus === 'paid' ? Number(booking.amount) || 0 : 0;
+
       if (serviceId && serviceName) {
         if (!serviceRevenue[serviceId]) {
           serviceRevenue[serviceId] = {
             id: serviceId,
             name: serviceName,
-            category: booking.consultationId.category,
+            category: booking.consultationId?.category || booking.externalServiceCategory || 'Other',
             revenue: 0,
             bookings: 0
           };
         }
-        serviceRevenue[serviceId].revenue += price;
+        serviceRevenue[serviceId].revenue += revenue;
         serviceRevenue[serviceId].bookings += 1;
       }
     });
@@ -1151,25 +1173,15 @@ exports.getServiceAnalytics = async (req, res) => {
       .sort((a, b) => a.bookings - b.bookings)
       .slice(0, 10);
 
-    // 5. Average Service Duration vs Scheduled
+    // 5. Duration comparison: nothing records the actual chair time yet, so
+    // this stays empty rather than the simulated numbers it used to invent.
     const durationComparison = [];
-    Object.values(serviceRevenue).forEach(service => {
-      const serviceData = allServices.find(s => s._id.toString() === service.id);
-      if (serviceData && serviceData.duration) {
-        durationComparison.push({
-          name: service.name,
-          scheduled: serviceData.duration,
-          actual: serviceData.duration + Math.floor(Math.random() * 10 - 5), // Simulated actual duration
-          variance: Math.floor(Math.random() * 10 - 5)
-        });
-      }
-    });
 
-    // 6. Service Category Performance
+    // 6. Service Category Performance (charged amounts, clinic categories too)
     const categoryPerformance = {};
     bookings.forEach(booking => {
-      const category = booking.consultationId?.category || 'Other';
-      const price = booking.consultationId?.price || 0;
+      const category = booking.consultationId?.category || booking.externalServiceCategory || 'Other';
+      const price = booking.paymentStatus === 'paid' ? Number(booking.amount) || 0 : 0;
       
       if (!categoryPerformance[category]) {
         categoryPerformance[category] = {
@@ -1197,27 +1209,34 @@ exports.getServiceAnalytics = async (req, res) => {
       createdAt: { $gte: startOfMonth }
     }).select('name category price createdAt');
 
-    // 8. Package Utilization Rate
+    // 8. Package Utilization Rate — sessions used of sessions sold, summed per
+    // package across every assignment made in the window. Assignments hold a
+    // `sessions[]` list (Scheduled/Booked/Completed/Cancelled); the old code
+    // read a `services` field that does not exist, so this was always empty.
     const packageAssignments = await PackageAssignment.find({
-      createdAt: { $gte: start, $lte: end }
-    }).populate('packageId', 'name services');
+      createdAt: { $gte: slotStart, $lte: slotEnd },
+      status: { $ne: 'Cancelled' },
+      ...(branchScope(req).preferredLocation ? { preferredLocation: branchScope(req).preferredLocation } : {}),
+    }).select('packageId packageDetails sessions').populate('packageId', 'name').lean();
 
-    const packageUtilization = [];
+    const utilByPackage = new Map();
     for (const assignment of packageAssignments) {
-      if (assignment.packageId && assignment.services) {
-        const totalSessions = assignment.services.reduce((sum, service) => sum + service.sessionsIncluded, 0);
-        const usedSessions = assignment.services.reduce((sum, service) => sum + service.sessionsCompleted, 0);
-        const utilizationRate = totalSessions > 0 ? (usedSessions / totalSessions) * 100 : 0;
-
-        packageUtilization.push({
-          packageName: assignment.packageId.name,
-          totalSessions,
-          usedSessions,
-          remainingSessions: totalSessions - usedSessions,
-          utilizationRate: parseFloat(utilizationRate.toFixed(1))
-        });
-      }
+      const name = assignment.packageId?.name || assignment.packageDetails?.name;
+      if (!name) continue;
+      const sessions = (assignment.sessions || []).filter((s) => s.status !== 'Cancelled');
+      const row = utilByPackage.get(name) || { name, packageName: name, total: 0, used: 0, assignments: 0 };
+      row.total += sessions.length;
+      row.used += sessions.filter((s) => s.status === 'Completed').length;
+      row.assignments += 1;
+      utilByPackage.set(name, row);
     }
+    const packageUtilization = [...utilByPackage.values()]
+      .filter((r) => r.total > 0)
+      .map((r) => ({
+        ...r, totalSessions: r.total, usedSessions: r.used, remainingSessions: r.total - r.used,
+        utilizationRate: parseFloat(((r.used / r.total) * 100).toFixed(1)),
+      }))
+      .sort((a, b) => b.used - a.used);
 
     // Response
     res.status(200).json({
