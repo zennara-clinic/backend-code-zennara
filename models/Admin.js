@@ -88,6 +88,8 @@ const AdminSchema = new mongoose.Schema({
    */
   sessionVersion: { type: Number, default: 1 },
   phone: { type: String, default: null, trim: true },
+  /** Profile photo shown in the panel's top bar and staff lists (S3 URL). */
+  photo: { type: String, default: null, trim: true },
   isActive: {
     type: Boolean,
     default: true

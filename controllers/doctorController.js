@@ -552,6 +552,8 @@ async function ensureDoctorLogin(doctor) {
   if (!account.doctorId || String(account.doctorId) !== String(doctor._id)) { account.doctorId = doctor._id; changed = true; }
   if (account.name !== doctor.name) { account.name = doctor.name; changed = true; }
   if ((account.phone || null) !== (doctor.phone || null)) { account.phone = doctor.phone || null; changed = true; }
+  // The app card photo doubles as the panel avatar.
+  if (doctor.photo && (account.photo || null) !== doctor.photo) { account.photo = doctor.photo; changed = true; }
   if (changed) await account.save({ validateModifiedOnly: true });
   return account;
 }

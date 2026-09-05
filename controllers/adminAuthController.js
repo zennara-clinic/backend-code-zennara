@@ -32,6 +32,7 @@ async function buildAdminPayload(admin) {
     name: admin.name,
     role: admin.role,
     phone: admin.phone || null,
+    photo: admin.photo || null,
     branchId: admin.branchId || null,
     branchIds: (admin.branchIds && admin.branchIds.length) ? admin.branchIds : (admin.branchId ? [admin.branchId] : []),
     doctorId: admin.doctorId || null,
@@ -755,5 +756,64 @@ exports.logoutAll = async (req, res) => {
     return res.json({ success: true, message: 'Signed out on every device' });
   } catch (error) {
     return res.status(500).json({ success: false, message: 'Could not sign out everywhere' });
+  }
+};
+
+/**
+ * Self-service profile: name, phone and photo for the signed-in account. The
+ * email is the sign-in address and moves through updateMyContact. A doctor's
+ * app card mirrors the same identity, so a dermatologist's own change lands
+ * on the Doctor row too (ensureDoctorLogin would otherwise copy it back).
+ */
+exports.updateMyProfile = async (req, res) => {
+  try {
+    const { name, phone, photo } = req.body || {};
+    const admin = await Admin.findById(req.admin._id);
+    if (!admin) return res.status(404).json({ success: false, message: 'Account not found' });
+
+    if (name !== undefined) {
+      const next = String(name).trim();
+      if (next.length < 2) return res.status(400).json({ success: false, message: 'Enter your name' });
+      admin.name = next;
+    }
+    if (phone !== undefined) admin.phone = String(phone || '').trim() || null;
+    if (photo !== undefined) {
+      const next = photo ? String(photo).trim() : null;
+      if (next && !/^https?:\/\//i.test(next)) return res.status(400).json({ success: false, message: 'The photo must be an uploaded image' });
+      admin.photo = next;
+    }
+    await admin.save({ validateModifiedOnly: true });
+
+    if (admin.role === 'doctor' && admin.doctorId) {
+      try {
+        const Doctor = require('../models/Doctor');
+        const doctor = await Doctor.findById(admin.doctorId);
+        if (doctor) {
+          if (name !== undefined) doctor.name = admin.name;
+          if (phone !== undefined) doctor.phone = admin.phone;
+          if (photo !== undefined) doctor.photo = admin.photo;
+          await doctor.save({ validateModifiedOnly: true });
+        }
+      } catch (syncError) {
+        console.error('⚠️ Doctor profile sync failed (account already updated):', syncError.message);
+      }
+    }
+
+    await AdminAuditLog.logAction({
+      adminId: admin._id,
+      adminEmail: admin.email,
+      action: 'STAFF_UPDATED',
+      resource: 'ADMIN',
+      resourceId: String(admin._id),
+      details: { self: true, fields: ['name', 'phone', 'photo'].filter((k) => req.body?.[k] !== undefined) },
+      ipAddress: req.adminIp || req.ip,
+      userAgent: req.adminUserAgent || req.get('user-agent'),
+    }).catch(() => undefined);
+
+    const payload = await buildAdminPayload(admin.toObject());
+    return res.status(200).json({ success: true, message: 'Saved', data: payload });
+  } catch (error) {
+    console.error('❌ Update my profile failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not save your profile. Please try again.' });
   }
 };
