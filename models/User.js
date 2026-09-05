@@ -369,6 +369,24 @@ const UserSchema = new mongoose.Schema({
     }
   },
   
+  // Phone push tokens (Expo). Several devices may share one account.
+  pushTokens: [{
+    token: { type: String, required: true },
+    platform: { type: String, default: null },
+    updatedAt: { type: Date, default: Date.now }
+  }],
+  // What the guest wants to hear about. Every channel defaults to on; the
+  // notification helper and the WhatsApp sender consult these before sending.
+  notificationPreferences: {
+    appointments: { type: Boolean, default: true },
+    prescriptions: { type: Boolean, default: true },
+    orders: { type: Boolean, default: true },
+    packages: { type: Boolean, default: true },
+    promotions: { type: Boolean, default: true },
+    whatsapp: { type: Boolean, default: true },
+    push: { type: Boolean, default: true }
+  },
+
   // Timestamps
   createdAt: {
     type: Date,

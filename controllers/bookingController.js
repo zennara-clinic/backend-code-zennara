@@ -79,6 +79,11 @@ exports.createBooking = async (req, res) => {
       });
     }
 
+    // A new guest's first appointment is a dermatologist consultation; the app
+    // hides treatment booking for them, and this enforces it for any client.
+    const gate = await require('../utils/guestEligibility').serviceBookingBlock(req.user._id, consultation);
+    if (gate) return res.status(gate.status).json({ success: false, code: gate.code, message: gate.message });
+
     // A treatment set to charge for online booking must go through payment —
     // this direct, pay-at-clinic path is only for those with the toggle off
     // (or no price). Prevents bypassing the payment gate from a client.

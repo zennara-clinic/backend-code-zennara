@@ -212,6 +212,29 @@ exports.saveNote = async (req, res) => {
     await note.save();
     await note.populate('userId', 'fullName email phone patientId dateOfBirth gender drugAllergies');
 
+    // Tell the guest in-app (and on their phone) the moment it is signed — once.
+    if (note.status === 'Completed' && !note.guestNotifiedAt) {
+      try {
+        const who = note.doctorName ? `Dr ${String(note.doctorName).replace(/^dr\.?\s*/i, '')} has` : 'Your dermatologist has';
+        await require('../utils/notificationHelper').create({
+          userId: note.userId?._id || note.userId,
+          type: 'consultation',
+          title: 'Your prescription is ready',
+          message: `${who} signed your prescription. Open My Prescriptions to view it.`,
+          relatedId: note._id,
+          relatedModel: null,
+          priority: 'high',
+          actionUrl: `/prescription/${note._id}`,
+          metadata: { kind: 'prescription', prescriptionId: String(note._id), bookingId: String(note.bookingId) },
+        });
+        note.guestNotifiedAt = new Date();
+        note.$locals.skipZenotiWrite = true;
+        await note.save({ validateModifiedOnly: true });
+      } catch (notifyError) {
+        console.error('Prescription notification failed:', notifyError.message);
+      }
+    }
+
     // Signing sends the prescription to the guest's inbox in the same breath —
     // viewable in the body, downloadable as the attachment.
     let emailed = false;

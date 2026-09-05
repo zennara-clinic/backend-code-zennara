@@ -38,6 +38,8 @@ class NotificationHelper {
       }
       const notification = new Notification(data);
       await notification.save();
+      // A guest's notification also goes to their phone, if they want it.
+      if (data.userId) require('../services/pushService').pushNotification(notification).catch(() => {});
       return notification;
     } catch (error) {
       console.error('Error creating notification:', error);

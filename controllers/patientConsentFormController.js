@@ -77,6 +77,7 @@ exports.createConsentForm = async (req, res) => {
     });
 
     await consentForm.save();
+    require('../services/zenotiWriteService').syncFormNote('consent', consentForm).catch(() => {});
 
     res.status(201).json({
       success: true,

@@ -43,6 +43,7 @@ const serializeUser = (user) => ({
   // and can be fetched via /api/zenoti/*.
   source: user.source || 'app',
   zenotiLinked: Boolean(user.zenotiGuestId),
+  notificationPreferences: user.notificationPreferences || {},
   createdAt: user.createdAt,
 });
 
@@ -1573,5 +1574,56 @@ exports.emailUserData = async (req, res) => {
       success: false,
       message: 'Could not email your data right now. Please try again or contact support.'
     });
+  }
+};
+
+// @desc    Register this device for push notifications
+// @route   POST /api/auth/push-token   { token, platform }
+exports.registerPushToken = async (req, res) => {
+  try {
+    const token = String(req.body?.token || '').trim();
+    if (!/^Expo(nent)?PushToken\[[^\]]+\]$/.test(token)) {
+      return res.status(400).json({ success: false, message: 'A valid Expo push token is required' });
+    }
+    const platform = String(req.body?.platform || '').slice(0, 20) || null;
+    // One row per device token, even across re-installs on the same account.
+    await User.updateOne({ _id: req.user._id }, { $pull: { pushTokens: { token } } });
+    await User.updateOne({ _id: req.user._id }, { $push: { pushTokens: { token, platform, updatedAt: new Date() } } });
+    // The same physical device must not keep notifying a previous account.
+    await User.updateMany({ _id: { $ne: req.user._id }, 'pushTokens.token': token }, { $pull: { pushTokens: { token } } });
+    return res.json({ success: true, message: 'Push notifications enabled on this device' });
+  } catch (error) {
+    console.error('registerPushToken failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not enable push notifications' });
+  }
+};
+
+// @desc    Forget this device (sign-out, or the guest turned push off)
+// @route   DELETE /api/auth/push-token   { token }
+exports.removePushToken = async (req, res) => {
+  try {
+    const token = String(req.body?.token || req.query?.token || '').trim();
+    if (token) await User.updateOne({ _id: req.user._id }, { $pull: { pushTokens: { token } } });
+    return res.json({ success: true });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Could not update push settings' });
+  }
+};
+
+// @desc    Notification preferences
+// @route   PUT /api/auth/notification-preferences
+exports.updateNotificationPreferences = async (req, res) => {
+  try {
+    const allowed = ['appointments', 'prescriptions', 'orders', 'packages', 'promotions', 'whatsapp', 'push'];
+    const set = {};
+    for (const key of allowed) {
+      if (typeof req.body?.[key] === 'boolean') set[`notificationPreferences.${key}`] = req.body[key];
+    }
+    if (!Object.keys(set).length) return res.status(400).json({ success: false, message: 'Nothing to update' });
+    const user = await User.findByIdAndUpdate(req.user._id, { $set: set }, { new: true }).select('notificationPreferences').lean();
+    return res.json({ success: true, data: user.notificationPreferences });
+  } catch (error) {
+    console.error('updateNotificationPreferences failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not save your preferences' });
   }
 };

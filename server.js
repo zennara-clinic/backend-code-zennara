@@ -200,6 +200,7 @@ connectDB();
 require('./utils/seedRoles').seedRoles();
 startBookingScheduler();
 require('./utils/bookingScheduler').startCheckInCodeJob();
+require('./utils/bookingScheduler').startRefillReminderJob();
 BookingStatusService.startAutoChecker();
 require('./utils/contactChangeScheduler').startContactChangeScheduler();
 require('./utils/zenotiScheduler').startZenotiScheduler();
@@ -270,6 +271,7 @@ app.use('/api/admin/analytics', require('./routes/analytics'));
 app.use('/api/notifications', require('./routes/notification'));
 app.use('/api/payments', require('./routes/payment'));
 app.use('/api/pre-consult-forms', require('./routes/preConsultForm'));
+app.use('/api/prescriptions', require('./routes/prescriptions'));
 app.use('/api/patient-consent-forms', require('./routes/patientConsentForm'));
 // Clinical photographs (before / during / after). Staff-only; see the route file.
 app.use('/api/patient-photos', require('./routes/patientPhoto'));

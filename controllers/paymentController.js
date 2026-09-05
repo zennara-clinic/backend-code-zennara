@@ -1212,6 +1212,10 @@ exports.createConsultationPayment = async (req, res) => {
       });
     }
 
+    // New guests book a consultation first — enforced before any money moves.
+    const gate = await require('../utils/guestEligibility').serviceBookingBlock(req.user._id, consultation);
+    if (gate) return res.status(gate.status).json({ success: false, code: gate.code, message: gate.message });
+
     // The clinic's backend-managed working days/hours are authoritative. Do
     // this before creating a Razorpay order so a stale client cannot pay for a
     // closed day or an old time range.

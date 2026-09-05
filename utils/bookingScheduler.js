@@ -325,3 +325,71 @@ function startCheckInCodeJob() {
 }
 module.exports.sendUpcomingCheckInCodes = sendUpcomingCheckInCodes;
 module.exports.startCheckInCodeJob = startCheckInCodeJob;
+
+/* ---------------------------------------------------------------------------
+ * Refill reminders.
+ *
+ * A prescription line carries a duration ("14 days", "1 month") or an explicit
+ * refill interval. Two days before that runs out the guest hears once — in-app,
+ * on the phone, and on WhatsApp when they allow it — with a link straight back
+ * to the prescription so "order again" is one tap. Only prescriptions signed in
+ * the last six months are considered; older courses are long finished.
+ * ------------------------------------------------------------------------- */
+async function sendRefillReminders() {
+  const ConsultationNote = require('../models/ConsultationNote');
+  const User = require('../models/User');
+  const NotificationHelper = require('./notificationHelper');
+  const { refillDueAt } = require('../controllers/prescriptionController');
+  const { allows } = require('../services/pushService');
+  const whatsapp = require('../services/whatsappService');
+  const now = Date.now();
+  const soon = now + 2 * 86400000;
+  const sixMonthsAgo = new Date(now - 183 * 86400000);
+  const notes = await ConsultationNote.find({ status: 'Completed', completedAt: { $gte: sixMonthsAgo }, 'prescription.0': { $exists: true } })
+    .select('userId doctorName completedAt createdAt prescription').populate('prescription.productId', 'name isActive');
+  let sent = 0;
+  for (const note of notes) {
+    const due = [];
+    note.prescription.forEach((item, index) => {
+      if (item.refillReminderSentAt) return;
+      const at = refillDueAt(note, item);
+      if (at && at.getTime() <= soon && at.getTime() >= now - 14 * 86400000) due.push({ item, index });
+    });
+    if (!due.length) continue;
+    const user = await User.findById(note.userId).select('fullName phone notificationPreferences').lean();
+    if (!user) continue;
+    const names = due.map(({ item }) => item.medicine).join(', ');
+    const orderable = due.some(({ item }) => item.productId && item.productId.isActive !== false);
+    const notification = {
+      userId: user._id,
+      type: 'reminder',
+      title: due.length === 1 ? 'Time for a refill' : 'Time for refills',
+      message: `${names} ${due.length === 1 ? 'is' : 'are'} about to run out.${orderable ? ' Order again from your prescription for doorstep delivery.' : ' Contact the clinic to refill.'}`,
+      relatedId: note._id,
+      relatedModel: null,
+      priority: 'medium',
+      actionUrl: `/prescription/${note._id}`,
+      metadata: { kind: 'refill', prescriptionId: String(note._id), medicines: names, productIds: due.map(({ item }) => item.productId?._id).filter(Boolean).map(String) },
+    };
+    if (allows(user, notification, 'push') || user.notificationPreferences?.prescriptions !== false) {
+      await NotificationHelper.create(notification).catch(() => {});
+    }
+    if (user.phone && allows(user, notification, 'whatsapp')) {
+      await whatsapp.sendMessage(user.phone, `Hi ${String(user.fullName || '').split(' ')[0] || 'there'}, ${names} from your Zennara prescription ${due.length === 1 ? 'is' : 'are'} about to run out. ${orderable ? 'Open the Zennara app → My Prescriptions to order again for doorstep delivery.' : 'Reply here or call the clinic to arrange a refill.'}`).catch(() => {});
+    }
+    due.forEach(({ index }) => { note.prescription[index].refillReminderSentAt = new Date(); });
+    note.$locals.skipZenotiWrite = true;
+    await note.save({ validateModifiedOnly: true }).catch(() => {});
+    sent += 1;
+  }
+  if (sent) console.log(`💊 Refill reminders sent: ${sent}`);
+  return sent;
+}
+module.exports.sendRefillReminders = sendRefillReminders;
+
+/** 10:00 IST daily — a reminder that arrives at a reasonable hour. */
+function startRefillReminderJob() {
+  cron.schedule('0 10 * * *', () => { sendRefillReminders().catch((e) => console.error('Refill reminders failed:', e.message)); }, { timezone: 'Asia/Kolkata' });
+  console.log('💊 Refill reminder scheduler started - 10:00 IST daily');
+}
+module.exports.startRefillReminderJob = startRefillReminderJob;

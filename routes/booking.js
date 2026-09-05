@@ -31,6 +31,8 @@ const { manualCleanup } = require('../utils/bookingScheduler');
 
 // Public routes
 router.get('/available-slots', getAvailableTimeSlots);
+// What the signed-in guest may book today (new guests: a consultation first).
+router.get('/eligibility', protect, require('../controllers/prescriptionController').eligibility);
 
 // Admin routes
 /*

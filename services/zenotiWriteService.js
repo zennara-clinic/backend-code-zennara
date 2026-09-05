@@ -289,7 +289,8 @@ async function ensureGuest(user) {
   // ("referral_source is mandatory"). The valid id comes from the org's config
   // (Zenoti portal → Admin/Setup → Referral Sources) and isn't exposed to this
   // API key. Set ZENOTI_REFERRAL_SOURCE_ID in .env and it's attached here.
-  const referralSourceId = process.env.ZENOTI_REFERRAL_SOURCE_ID;
+  // Default: the org's "Internet" source (id read live from /centers/{id}/referrals).
+  const referralSourceId = process.env.ZENOTI_REFERRAL_SOURCE_ID || 'c196993f-e7c7-45b5-a51f-c8b664b21282';
   if (referralSourceId) {
     payload.referral = { referral_source_id: referralSourceId };
   }
@@ -847,7 +848,12 @@ async function syncBookingState(bookingId, { staffAction = false } = {}) {
       if (!invoiceId) throw new Error('Zenoti invoice id is required to cancel this booking.');
       await liveWrite('cancelAppointment', () => zenoti.request(`/v1/invoices/${invoiceId}/cancel`, {
         method: 'PUT',
-        query: { comments: booking.cancellationReason || 'Cancelled from Zennara' },
+        query: {
+          comments: booking.cancellationReason || 'Cancelled from Zennara',
+          // Zenoti validates reason_id when the org has cancel reasons configured
+          // (this org has none today); set ZENOTI_CANCEL_REASON_ID once it does.
+          ...(process.env.ZENOTI_CANCEL_REASON_ID ? { reason_id: process.env.ZENOTI_CANCEL_REASON_ID } : {}),
+        },
       }));
       booking.zenotiSyncStatus = 'synced';
     } else if (booking.status === 'No Show') {
@@ -1000,3 +1006,47 @@ module.exports = {
   resolveTherapistId,
   looseKey,
 };
+
+/**
+ * A form the guest completed in the app (pre-consultation intake, treatment
+ * consent) is recorded against the Zenoti guest as a note, so the clinic sees
+ * it in the CRM it works from. Zenoti's own form-submission contract is not
+ * documented for this key; a note is the reliable, readable equivalent. Never
+ * copies medical answers verbatim — a short summary and where to find it.
+ */
+async function syncFormNote(kind, form) {
+  if (!form || isOff()) return;
+  try {
+    const User = require('../models/User');
+    const Booking = require('../models/Booking');
+    const user = await User.findById(form.userId).select('zenotiGuestId zenotiCenterId').lean();
+    if (!user?.zenotiGuestId) return;
+    const booking = form.bookingId ? await Booking.findById(form.bookingId).select('referenceNumber preferredLocation preferredDate').lean() : null;
+    const centerId = user.zenotiCenterId || clinicCenterIdForBranch(booking?.preferredLocation);
+    const centerName = require('../config/zenoti').centerById(centerId)?.name || booking?.preferredLocation || '';
+    const label = kind === 'consent' ? 'Treatment consent form' : 'Pre-consultation form';
+    const lines = [
+      `${label} completed in the Zennara app on ${clinicDay(new Date())}.`,
+      booking ? `Visit: ${booking.referenceNumber || ''} ${booking.preferredDate ? clinicDay(booking.preferredDate) : ''}`.trim() : null,
+      kind === 'consent' && form.treatmentProcedure ? `Procedure: ${form.treatmentProcedure}` : null,
+      kind === 'consent' ? `Consent given: ${form.consentGiven ? 'yes' : 'no'}${form.marketingPhotoConsent ? ' · photo consent: yes' : ''}` : null,
+      'Full answers are in the Zennara panel under the guest\'s Forms.',
+    ].filter(Boolean);
+    const payload = {
+      alert: false,
+      center: { id: centerId, name: centerName },
+      entity_name: kind === 'consent' ? 'ZennaraConsentForm' : 'ZennaraIntakeForm',
+      entity_pk: 0,
+      is_private: false,
+      note_type: 2,
+      notes: lines.join('\n'),
+      ...(process.env.ZENOTI_UPDATED_BY_ID ? { added_by: { id: process.env.ZENOTI_UPDATED_BY_ID, name: 'Zennara' } } : {}),
+    };
+    logWrite(`createFormNote:${kind}`, { guestId: user.zenotiGuestId, characterCount: payload.notes.length }, { formId: form._id });
+    if (!isLive()) return;
+    await liveWrite('createNote', () => zenoti.request(`/v1/guests/${user.zenotiGuestId}/notes`, { method: 'POST', body: payload }));
+  } catch (error) {
+    logger.warn('Zenoti form note failed', { kind, formId: form?._id, error: error.message });
+  }
+}
+module.exports.syncFormNote = syncFormNote;

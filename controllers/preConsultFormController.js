@@ -245,6 +245,8 @@ exports.submitForm = async (req, res) => {
 
     form.status = 'Submitted';
     await form.save();
+    // The clinic works from Zenoti — leave a note there that the intake is done.
+    require('../services/zenotiWriteService').syncFormNote('intake', form).catch(() => {});
 
     res.status(200).json({
       success: true,

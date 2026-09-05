@@ -36,6 +36,10 @@ const prescriptionItemSchema = new mongoose.Schema(
     availableQuantity: { type: Number, default: null },
     /** Schedule H drugs need a doctor's signature on the printed slip. */
     isScheduleH: { type: Boolean, default: false },
+    /** Days after the prescription date when a refill falls due; derived from `duration` when the doctor leaves it blank. */
+    refillAfterDays: { type: Number, default: null },
+    /** When the refill nudge for this line went out — sent once. */
+    refillReminderSentAt: { type: Date, default: null },
   },
   { _id: false },
 );
@@ -86,6 +90,8 @@ const consultationNoteSchema = new mongoose.Schema(
     /** When (and where) the signed prescription was emailed to the guest. */
     prescriptionEmailedAt: { type: Date, default: null },
     prescriptionEmailedTo: { type: String, default: null },
+    /** When the guest was told in-app that this prescription is ready. */
+    guestNotifiedAt: { type: Date, default: null },
 
     /** Services or packages assigned out of this consultation. */
     assignedServices: [

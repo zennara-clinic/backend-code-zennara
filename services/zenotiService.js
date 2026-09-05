@@ -112,6 +112,10 @@ async function request(path, opts = {}) {
         headers: {
           Authorization: `apikey ${API_KEY}`,
           Accept: 'application/json',
+          // Two routes (product invoices, referral sources) refuse requests that
+          // do not name the calling application — verified live 2026-09-05.
+          application_name: process.env.ZENOTI_APPLICATION_NAME || 'Zennara',
+          application_version: process.env.ZENOTI_APPLICATION_VERSION || '1.0.0',
           ...(body ? { 'Content-Type': 'application/json' } : {}),
         },
         body: body ? JSON.stringify(body) : undefined,

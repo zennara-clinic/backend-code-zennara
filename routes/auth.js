@@ -56,6 +56,10 @@ router.post('/resend-otp', validateLogin, resendOTP);
 router.post('/logout', protect, logout);
 router.post('/logout-all', protect, logoutAll);
 router.get('/me', protect, getMe);
+// Phone push + what the guest wants to be told about.
+router.post('/push-token', protect, require('../controllers/authController').registerPushToken);
+router.delete('/push-token', protect, require('../controllers/authController').removePushToken);
+router.put('/notification-preferences', protect, require('../controllers/authController').updateNotificationPreferences);
 router.get('/stats', protect, getUserStats);
 router.put('/profile', protect, validateUpdateProfile, updateProfile);
 router.post('/upgrade-membership', protect, upgradeMembership);
