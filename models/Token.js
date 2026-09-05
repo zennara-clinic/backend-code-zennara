@@ -25,7 +25,6 @@ const TokenSchema = new mongoose.Schema({
   tokenHash: {
     type: String,
     default: null,
-    index: true,
   },
   type: {
     type: String,
