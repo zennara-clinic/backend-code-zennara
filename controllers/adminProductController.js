@@ -1,4 +1,5 @@
 const Product = require('../models/Product');
+const AdminAuditLog = require('../models/AdminAuditLog');
 const Formulation = require('../models/Formulation');
 
 /** A product's formulation must be one the clinic has defined. */
@@ -17,9 +18,9 @@ const NotificationHelper = require('../utils/notificationHelper');
  * size, HSN, retail vs consumable) plus our own Rx/OTC decision and vendor.
  * Applied on create and update; an undefined key leaves the field alone.
  */
-const EXTRA_STRING = ['sku', 'brand', 'productType', 'productCategory', 'productSubCategory', 'packSize', 'hsn', 'rxReason'];
-const EXTRA_NUMBER = ['mrp', 'lowStockThreshold'];
-const EXTRA_BOOL = ['isRetail', 'trackStock'];
+const EXTRA_STRING = ['sku', 'brand', 'productType', 'productCategory', 'productSubCategory', 'packSize', 'hsn', 'rxReason', 'packName', 'vendorName', 'templateStatus', 'batchTracking', 'consumptionOrder'];
+const EXTRA_NUMBER = ['mrp', 'lowStockThreshold', 'reorderLevel', 'targetLevel', 'buyingPrice'];
+const EXTRA_BOOL = ['isRetail', 'trackStock', 'isAppProduct'];
 function applyProductExtras(product, body) {
   if (body.price !== undefined && Number(body.price) !== Number(product.price)) product.priceSource = 'panel';
   for (const key of EXTRA_STRING) {
@@ -40,6 +41,10 @@ function applyProductExtras(product, body) {
     else { product.isRx = body.isRx === true || body.isRx === 'true'; product.rxSource = 'manual'; }
   }
   if (body.vendorId !== undefined) product.vendorId = body.vendorId || null;
+  // Template enums must be exact; anything else clears the field rather than failing the save.
+  if (product.batchTracking && !['Batchable', 'Non Batchable'].includes(product.batchTracking)) product.batchTracking = /batch/i.test(product.batchTracking) && !/non/i.test(product.batchTracking) ? 'Batchable' : 'Non Batchable';
+  if (product.consumptionOrder && !['FIFO', 'ByExpiry'].includes(product.consumptionOrder)) product.consumptionOrder = /exp/i.test(product.consumptionOrder) ? 'ByExpiry' : 'FIFO';
+  if (body.stock !== undefined && Number.isFinite(Number(body.stock))) { product.stockSource = 'panel'; product.stockUpdatedAt = new Date(); }
 }
 
 // @desc    Get all products (Admin)
@@ -76,7 +81,21 @@ exports.getAllProducts = async (req, res) => {
      *   rx         — prescription items, wherever they sit
      *   unpriced   — mirrored but never priced or published
      */
-    const { kind, branchId, category } = req.query;
+    const { kind, branchId, category, catalogue, subCategory, hsn, vendor, status: templateStatus, stockFilter } = req.query;
+    /*
+     * `catalogue=app` (the panel's default) shows only what Commerce sells —
+     * the curated OTC list — not Zenoti's whole master. `catalogue=all` opens
+     * the full master for the Inventory side of the house.
+     */
+    if (catalogue === 'app') query.isAppProduct = true;
+    else if (catalogue === 'master') query.isAppProduct = { $ne: true };
+    if (subCategory && subCategory !== 'All') query.productSubCategory = subCategory;
+    if (hsn) query.hsn = { $regex: String(hsn).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+    if (vendor && vendor !== 'All') query.vendorName = { $regex: `^${String(vendor).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, $options: 'i' };
+    if (templateStatus && templateStatus !== 'All') query.templateStatus = templateStatus;
+    if (stockFilter === 'out') query.stock = { $lte: 0 };
+    else if (stockFilter === 'low') query.$expr = { $and: [{ $gt: ['$stock', 0] }, { $lte: ['$stock', { $ifNull: ['$reorderLevel', 5] }] }] };
+    else if (stockFilter === 'in') query.$expr = { $gt: ['$stock', { $ifNull: ['$reorderLevel', 5] }] };
     if (kind === 'retail') query.isRetail = true;
     else if (kind === 'consumable') query.isRetail = false;
     else if (kind === 'rx') query.isRx = true;
@@ -120,13 +139,18 @@ exports.getAllProducts = async (req, res) => {
     const products = await Product.find(query).sort(sortOption);
 
     // Tab counts, independent of the current filter, so the tabs never lie.
-    const [allCount, retailCount, consumableCount, rxCount, unpricedCount] = await Promise.all([
+    const [allCount, retailCount, consumableCount, rxCount, unpricedCount, appCount, facets] = await Promise.all([
       Product.countDocuments({}),
       Product.countDocuments({ isRetail: true }),
       Product.countDocuments({ isRetail: false }),
       Product.countDocuments({ isRx: true }),
       Product.countDocuments({ $or: [{ price: 0 }, { price: null }] }),
+      Product.countDocuments({ isAppProduct: true }),
+      // Filter menus for the catalogue view: distinct categories, sub-categories, vendors, statuses.
+      Product.aggregate([{ $match: catalogue === 'app' ? { isAppProduct: true } : {} }, { $group: { _id: null, categories: { $addToSet: '$productCategory' }, subCategories: { $addToSet: '$productSubCategory' }, vendors: { $addToSet: '$vendorName' }, statuses: { $addToSet: '$templateStatus' }, hsn: { $addToSet: '$hsn' } } }]),
     ]);
+    const clean = (arr) => (arr || []).filter((x) => x && String(x).trim()).sort();
+    const f0 = facets[0] || {};
 
     // Calculate stats
     const stats = {
@@ -141,7 +165,8 @@ exports.getAllProducts = async (req, res) => {
     res.json({
       success: true,
       data: products,
-      buckets: { all: allCount, retail: retailCount, consumable: consumableCount, rx: rxCount, unpriced: unpricedCount },
+      buckets: { all: allCount, retail: retailCount, consumable: consumableCount, rx: rxCount, unpriced: unpricedCount, app: appCount },
+      facets: { categories: clean(f0.categories), subCategories: clean(f0.subCategories), vendors: clean(f0.vendors), statuses: clean(f0.statuses), hsn: clean(f0.hsn) },
       stats
     });
   } catch (error) {
@@ -592,5 +617,193 @@ exports.getProductStatistics = async (req, res) => {
       message: 'Failed to fetch statistics',
       error: error.message
     });
+  }
+};
+
+
+/* ------------------------------------------------------------------------ */
+/* App Stock template — import / export for the Commerce catalogue           */
+/* ------------------------------------------------------------------------ */
+/*
+ * The sheet the pharmacy team maintains is the source of truth for what the
+ * app sells and at what stock level. Import matches each row to a product
+ * that already exists here (by code, then by exact name) and writes OUR
+ * fields only. It never creates anything in Zenoti and never calls Zenoti —
+ * the import is one-directional by design (product master lives in Zenoti;
+ * commerce facts — price, stock, HSN, vendor, re-order levels — live here).
+ */
+const { parseAppStockWorkbook, toTemplateRows, TEMPLATE_HEADERS } = require('../utils/appStockTemplate');
+
+function sheetsFromUpload(file) {
+  if (!file) throw Object.assign(new Error('Attach the App Stock template (.xlsx or .csv).'), { status: 400 });
+  const XLSX = require('xlsx');
+  const name = String(file.originalname || '').toLowerCase();
+  if (name.endsWith('.csv')) {
+    const { parseCsv } = require('../utils/bulkCsv');
+    return [{ name: 'CSV', rows: parseCsv(file.buffer.toString('utf8')) }];
+  }
+  const wb = XLSX.read(file.buffer, { type: 'buffer' });
+  return wb.SheetNames.map((n) => ({ name: n, rows: XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, defval: '' }) }));
+}
+
+async function matchTemplateRows(sheets) {
+  const all = await Product.find({}).select('_id name code sku isActive isAppProduct isRx price stock image').lean();
+  const byCode = new Map(); const byName = new Map();
+  for (const p of all) {
+    if (p.code) byCode.set(String(p.code).trim().toUpperCase(), p);
+    if (p.sku) byCode.set(String(p.sku).trim().toUpperCase(), p);
+    byName.set(String(p.name).trim().toLowerCase(), p);
+  }
+  const plan = new Map(); // productId → { product, template?, otc?, rx? }
+  const unmatched = [];
+  for (const sheet of sheets) {
+    for (const row of sheet.rows) {
+      const hit = (row.code && byCode.get(row.code.toUpperCase())) || (row.name && byName.get(row.name.toLowerCase())) || null;
+      if (!hit) { unmatched.push(`${row.code || ''} ${row.name || ''}`.trim()); continue; }
+      const entry = plan.get(String(hit._id)) || { product: hit };
+      if (sheet.kind === 'template') entry.template = row;
+      else if (sheet.classification === 'rx') entry.rx = row;
+      else entry.otc = row;
+      plan.set(String(hit._id), entry);
+    }
+  }
+  return { plan, unmatched };
+}
+
+/** Which of our fields a row would change on a product (for the preview and the audit). */
+function changesFor(entry) {
+  const fields = [];
+  const t = entry.template; const c = entry.otc || entry.rx;
+  const p = entry.product;
+  if (t) fields.push('stock', 'price', 'buyingPrice', 'reorderLevel', 'targetLevel', 'gst', 'vendor', 'pack', 'batchTracking');
+  if (c) { if (c.hsn) fields.push('hsn'); if (c.subCategory) fields.push('subCategory'); if (!t && c.stock !== null) fields.push('stock'); if (c.mrp) fields.push('mrp'); }
+  if (entry.otc && !p.isAppProduct) fields.push('→ commerce catalogue');
+  if (entry.otc && !p.isActive && (Number(p.price) > 0 || (t && t.price) || entry.otc.mrp)) fields.push('→ live in app');
+  if (entry.rx && p.isRx !== true) fields.push('→ Rx');
+  if (entry.rx && (p.isAppProduct || p.isActive)) fields.push('→ off the app');
+  return fields;
+}
+
+function summarisePlan(plan, unmatched, sheets) {
+  const out = { sheets: sheets.map((s) => ({ sheetName: s.sheetName, kind: s.kind, classification: s.classification, rows: s.rows.length, skipped: s.skipped })), matched: plan.size, unmatched: unmatched.length, willUpdate: 0, willPublish: 0, willUnpublish: 0, rxFlagged: 0, samples: { unmatched: unmatched.slice(0, 10), changes: [] } };
+  for (const e of plan.values()) {
+    const f = changesFor(e);
+    if (f.length) out.willUpdate += 1;
+    if (f.includes('→ live in app')) out.willPublish += 1;
+    if (f.includes('→ off the app')) out.willUnpublish += 1;
+    if (e.rx) out.rxFlagged += 1;
+    if (out.samples.changes.length < 12 && f.length) out.samples.changes.push({ name: e.product.name, code: e.product.code || e.product.sku || null, fields: f });
+  }
+  return out;
+}
+
+// POST /api/admin/products/app-stock/preview  (multipart: file)
+exports.appStockPreview = async (req, res) => {
+  try {
+    const sheets = parseAppStockWorkbook(sheetsFromUpload(req.file));
+    if (!sheets.length) return res.status(400).json({ success: false, message: 'That file is not the App Stock template or the Rx/OTC classification sheet. Export the template from this page and fill it in.' });
+    const { plan, unmatched } = await matchTemplateRows(sheets);
+    return res.json({ success: true, data: summarisePlan(plan, unmatched, sheets) });
+  } catch (error) {
+    return res.status(error.status || 500).json({ success: false, message: error.message || 'Could not read that file' });
+  }
+};
+
+/** Apply the plan. Exported so the one-time bootstrap script can reuse it. */
+async function applyAppStockPlan(plan, { adminName = 'import' } = {}) {
+  const now = new Date();
+  const stats = { applied: 0, published: 0, unpublished: 0, rxFlagged: 0 };
+  for (const e of plan.values()) {
+    const product = await Product.findById(e.product._id);
+    if (!product) continue;
+    const t = e.template; const c = e.otc || e.rx;
+    const before = product.toObject();
+    if (t) {
+      if (t.category) product.productCategory = t.category;
+      if (t.formulation) product.formulation = t.formulation;
+      if (t.brand) product.brand = t.brand;
+      if (t.batchTracking) product.batchTracking = /non/i.test(t.batchTracking) ? 'Non Batchable' : 'Batchable';
+      if (t.consumptionOrder) product.consumptionOrder = /exp/i.test(t.consumptionOrder) ? 'ByExpiry' : 'FIFO';
+      if (t.stock !== null) { product.stock = Math.max(0, t.stock); product.trackStock = true; product.stockSource = 'template'; product.stockUpdatedAt = now; }
+      if (t.reorderLevel !== null) { product.reorderLevel = t.reorderLevel; product.lowStockThreshold = t.reorderLevel; }
+      if (t.targetLevel !== null) product.targetLevel = t.targetLevel;
+      if (t.packName) product.packName = t.packName;
+      if (t.packSize) product.packSize = String(t.packSize);
+      if (t.buyingPrice !== null) product.buyingPrice = t.buyingPrice;
+      if (t.price !== null && t.price > 0) { product.price = t.price; product.priceSource = 'template'; }
+      if (t.gst !== null) product.gstPercentage = t.gst;
+      if (t.vendorName) product.vendorName = t.vendorName;
+      if (t.templateStatus) product.templateStatus = t.templateStatus;
+      if (t.code && !product.code) product.code = t.code;
+    }
+    if (c) {
+      if (c.category && !product.productCategory) product.productCategory = c.category;
+      if (c.subCategory) product.productSubCategory = c.subCategory;
+      if (c.hsn) product.hsn = c.hsn;
+      if (c.vendorName && !product.vendorName) product.vendorName = c.vendorName;
+      if (c.mrp) product.mrp = c.mrp;
+      if (!t && c.stock !== null) { product.stock = Math.max(0, c.stock); product.trackStock = true; product.stockSource = 'template'; product.stockUpdatedAt = now; }
+      if (!(Number(product.price) > 0) && c.mrp) { product.price = c.mrp; product.priceSource = 'template'; }
+    }
+    if (e.otc) {
+      product.isAppProduct = true;
+      product.isRetail = true;
+      product.isRx = false; product.rxSource = 'import'; product.rxReason = e.otc.reason || 'OTC — sell directly (pharmacy sheet)';
+      if (Number(product.price) > 0 && !product.isActive) { product.isActive = true; stats.published += 1; }
+    }
+    if (e.rx) {
+      product.isRx = true; product.rxSource = 'import'; product.rxReason = e.rx.reason || 'Prescription required (pharmacy sheet)';
+      if (product.isAppProduct || product.isActive) stats.unpublished += 1;
+      product.isAppProduct = false; product.isActive = false;
+      stats.rxFlagged += 1;
+    }
+    if (JSON.stringify(product.toObject()) !== JSON.stringify(before)) { await product.save({ validateModifiedOnly: true }); stats.applied += 1; }
+  }
+  void adminName;
+  return stats;
+}
+exports.applyAppStockPlan = applyAppStockPlan;
+exports.matchTemplateRows = matchTemplateRows;
+
+// POST /api/admin/products/app-stock/import  (multipart: file)
+exports.appStockImport = async (req, res) => {
+  try {
+    const sheets = parseAppStockWorkbook(sheetsFromUpload(req.file));
+    if (!sheets.length) return res.status(400).json({ success: false, message: 'That file is not the App Stock template or the Rx/OTC classification sheet.' });
+    const { plan, unmatched } = await matchTemplateRows(sheets);
+    const summary = summarisePlan(plan, unmatched, sheets);
+    const stats = await applyAppStockPlan(plan, { adminName: req.admin?.name });
+    await AdminAuditLog.logAction({ adminId: req.admin?._id, adminEmail: req.admin?.email, action: 'BULK_IMPORT', resource: 'PRODUCT', details: { source: 'app-stock-template', file: req.file?.originalname, ...stats, unmatched: unmatched.length }, ipAddress: req.adminIp || req.ip, userAgent: req.adminUserAgent, status: 'SUCCESS' }).catch(() => {});
+    return res.json({ success: true, message: `${stats.applied} product${stats.applied === 1 ? '' : 's'} updated${stats.published ? `, ${stats.published} published to the app` : ''}${stats.unpublished ? `, ${stats.unpublished} taken off the app (Rx)` : ''}${unmatched.length ? `, ${unmatched.length} rows not found` : ''}.`, data: { ...summary, ...stats } });
+  } catch (error) {
+    console.error('app stock import failed:', error);
+    return res.status(error.status || 500).json({ success: false, message: error.message || 'Could not import that file' });
+  }
+};
+
+// GET /api/admin/products/app-stock/export?catalogue=app|all
+exports.appStockExport = async (req, res) => {
+  try {
+    const XLSX = require('xlsx');
+    const q = req.query.catalogue === 'all' ? {} : { isAppProduct: true };
+    const products = await Product.find(q).sort({ productCategory: 1, name: 1 }).lean();
+    const stamp = new Date().toISOString().slice(0, 10);
+    const aoa = [
+      [`Zennara — App Stock Template (Commerce catalogue, exported ${stamp})`],
+      ['Edit and re-import from Commerce › Products › Import. Code is the match key; Opening Quantity becomes the stock on hand. Nothing here is written to Zenoti.'],
+      TEMPLATE_HEADERS,
+      ...toTemplateRows(products),
+    ];
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    ws['!cols'] = TEMPLATE_HEADERS.map((h) => ({ wch: Math.max(12, h.length + 4) }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Stock_Import_Template');
+    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="AppStock_Template_${req.query.catalogue === 'all' ? 'AllProducts' : 'Commerce'}_${stamp}.xlsx"`);
+    return res.send(buf);
+  } catch (error) {
+    console.error('app stock export failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not build the export' });
   }
 };

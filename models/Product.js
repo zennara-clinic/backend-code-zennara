@@ -136,10 +136,31 @@ const productSchema = new mongoose.Schema({
   isKit: { type: Boolean, default: false },
   zenotiCategoryId: { type: String, default: null, trim: true },
   zenotiSubCategoryId: { type: String, default: null, trim: true },
+  /*
+   * Commerce catalogue flag (2026-09-06). Zenoti's product master holds ~674
+   * items; the app sells a curated subset — the OTC list the pharmacy signed
+   * off. Only rows with isAppProduct true appear under Commerce › Products and
+   * in the app. The Zenoti sync creates new master rows with this false and
+   * never flips it; the App Stock template import and the panel do.
+   */
+  isAppProduct: { type: Boolean, default: false, index: true },
+  /* ---- App Stock template fields (JH retail import / export sheet) ---- */
+  batchTracking: { type: String, enum: ['Batchable', 'Non Batchable', null], default: null },
+  consumptionOrder: { type: String, enum: ['FIFO', 'ByExpiry', null], default: null },
+  reorderLevel: { type: Number, default: null, min: 0 },
+  targetLevel: { type: Number, default: null, min: 0 },
+  packName: { type: String, default: null, trim: true },
+  buyingPrice: { type: Number, default: null, min: 0 },
+  vendorName: { type: String, default: null, trim: true },
+  /** Sheet status: 'VPA confirmed' | 'estimated' | 'needs price' — how trustworthy the buying price is. */
+  templateStatus: { type: String, default: null, trim: true },
+  /** Where `stock` last came from: 'template' import, 'panel' edit, or 'order' movement. */
+  stockSource: { type: String, default: null },
+  stockUpdatedAt: { type: Date, default: null },
   /** Zenoti's MRP (max_retail_price). `price` is what we charge; it starts from the MRP. */
   mrp: { type: Number, default: null },
   /** Where `price` came from: adopted from Zenoti's MRP, or set in the panel. */
-  priceSource: { type: String, enum: ['zenoti-mrp', 'panel', null], default: null },
+  priceSource: { type: String, enum: ['zenoti-mrp', 'panel', 'template', null], default: null },
   /** Pack size as Zenoti records it, e.g. "1 ML", "30 GM". */
   packSize: { type: String, default: null, trim: true },
   hsn: { type: String, default: null, trim: true },

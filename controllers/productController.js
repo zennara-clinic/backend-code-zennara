@@ -15,7 +15,7 @@ exports.getAllProducts = async (req, res) => {
      * their description) but cannot be ordered; utils/orderPricing refuses
      * them at checkout.
      */
-    const query = { isActive: true, isRetail: { $ne: false } };
+    const query = { isActive: true, isAppProduct: true };
     
     if (formulation && formulation !== 'All') {
       query.formulation = formulation;
@@ -116,7 +116,7 @@ exports.getProductsByFormulation = async (req, res) => {
     const { formulation } = req.params;
     const { limit } = req.query;
     
-    const query = { formulation, isActive: true, isRetail: { $ne: false } };
+    const query = { formulation, isActive: true, isAppProduct: true };
     
     let productsQuery = Product.find(query).sort({ createdAt: -1 });
     
@@ -151,7 +151,7 @@ exports.searchProducts = async (req, res) => {
     
     const searchQuery = {
       isActive: true,
-      isRetail: { $ne: false },
+      isAppProduct: true,
       $or: [
         { name: { $regex: query, $options: 'i' } },
         { description: { $regex: query, $options: 'i' } },

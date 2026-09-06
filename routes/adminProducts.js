@@ -13,6 +13,9 @@ const {
 } = require('../controllers/adminProductController');
 const { protectAdmin, requireRole, requirePermission, auditLog } = require('../middleware/auth');
 const { adminSensitiveOperationsLimiter } = require('../middleware/rateLimiter');
+const multer = require('multer');
+const appStockUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
+const productCtrl = require('../controllers/adminProductController');
 
 // All routes require admin authentication
 router.use(protectAdmin);
@@ -21,7 +24,13 @@ router.use(protectAdmin);
 // The catalogue is also read where products are only named: coupon scoping,
 // inventory lines and the analytics report.
 const VIEW = requirePermission('products.view', 'coupons.view', 'coupons.manage', 'inventory.view', 'analytics.view');
+const MANAGE = requirePermission('products.manage');
 router.get('/statistics', VIEW, getProductStatistics);
+
+// App Stock template — the Commerce catalogue's import / export sheet. One-way: never writes to Zenoti.
+router.get('/app-stock/export', VIEW, productCtrl.appStockExport);
+router.post('/app-stock/preview', MANAGE, appStockUpload.single('file'), productCtrl.appStockPreview);
+router.post('/app-stock/import', MANAGE, appStockUpload.single('file'), auditLog('BULK_IMPORT', 'PRODUCT'), productCtrl.appStockImport);
 
 // Bulk operations
 router.patch('/bulk-update',
