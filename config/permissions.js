@@ -42,6 +42,9 @@ const GROUPS = [
     permissions: [
       { key: 'bookings.view', label: 'View bookings' },
       { key: 'bookings.manage', label: 'Create / edit / cancel bookings' },
+      { key: 'billing.view', label: 'View invoices & today\'s sales' },
+      { key: 'billing.manage', label: 'Raise invoices, take payments, apply discounts' },
+      { key: 'billing.void', label: 'Void / reopen invoices, void payments', sensitive: true },
       { key: 'patients.view', label: 'View patients' },
       { key: 'patients.manage', label: 'Edit patient records' },
       { key: 'patients.delete', label: 'Delete / restore patient accounts', sensitive: true },

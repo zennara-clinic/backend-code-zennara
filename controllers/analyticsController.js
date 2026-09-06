@@ -1478,14 +1478,21 @@ module.exports = exports;
  */
 exports.getTodaysSales = async (req, res) => {
   try {
+    const Invoice = require('../models/Invoice');
     const day = req.query.date && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : null;
     const start = clinicDayStart(day || new Date());
     const end = clinicDayEnd(day || new Date());
     const scope = branchScope(req);
     const inDay = (field) => ({ [field]: { $gte: start, $lte: end } });
+    const invScope = scope.branchId ? { branchId: scope.branchId } : {};
 
-    const [visits, orders, packages] = await Promise.all([
-      Booking.find({ ...scope, paymentStatus: 'paid', amount: { $gt: 0 }, $or: [inDay('paidAt'), { paidAt: null, ...inDay('checkOutTime') }] })
+    const [invoices, visits, orders, packages] = await Promise.all([
+      // Every bill raised or settled on the day, open / closed / void alike (Zenoti's register).
+      Invoice.find({ ...invScope, $or: [inDay('issuedAt'), inDay('closedAt')] })
+        .select('invoiceNumber receiptNumber guest userId lines totals status source payments closedAt issuedAt createdByName closedByName')
+        .sort({ issuedAt: -1 }).lean(),
+      // Visits paid without a bill (app / Razorpay, legacy desk "mark paid", Zenoti-mirrored).
+      Booking.find({ ...scope, invoiceId: null, paymentStatus: 'paid', amount: { $gt: 0 }, $or: [inDay('paidAt'), { paidAt: null, ...inDay('checkOutTime') }] })
         .populate('consultationId', 'name').populate('userId', 'fullName phone patientId')
         .select('referenceNumber fullName mobileNumber amount paymentMethod paidAt checkOutTime status specialistName consultationId externalServiceName userId preferredLocation zenotiSource source')
         .sort({ paidAt: -1 }).lean(),
@@ -1493,47 +1500,63 @@ exports.getTodaysSales = async (req, res) => {
         .populate('userId', 'fullName phone patientId')
         .select('orderNumber userId items totalAmount finalAmount paymentMethod paymentStatus orderStatus paidAt createdAt')
         .sort({ createdAt: -1 }).lean().catch(() => []),
-      PackageAssignment.find({ ...(scope.branchId ? { branchId: scope.branchId } : {}), 'payment.isReceived': true, ...inDay('payment.receivedDate') })
+      PackageAssignment.find({ ...(scope.branchId ? { branchId: scope.branchId } : {}), invoiceId: null, 'payment.isReceived': true, ...inDay('payment.receivedDate') })
         .populate('userId', 'fullName phone patientId')
         .select('assignmentId packageDetails.packageName pricing.finalAmount payment userId createdAt')
         .sort({ 'payment.receivedDate': -1 }).lean(),
     ]);
 
+    const methodsOf = (inv) => { const s = {}; for (const p of inv.payments || []) if (!p.voided) s[p.method === 'Custom' ? (p.customName || 'Custom') : p.method] = (s[p.method === 'Custom' ? (p.customName || 'Custom') : p.method] || 0) + p.amount; return s; };
     const rows = [
+      ...invoices.map((i) => {
+        const m = methodsOf(i);
+        return {
+          kind: 'invoice', id: i._id, ref: i.invoiceNumber, receipt: i.receiptNumber || null,
+          customer: i.guest?.name || null, phone: i.guest?.phone || null, patientId: i.guest?.patientId || null, userId: i.userId || null,
+          items: (i.lines || []).map((l) => `${l.name} (${l.qty})`), amount: i.status === 'void' ? 0 : (i.totals?.total || 0), due: i.status === 'void' ? 0 : (i.totals?.due || 0),
+          method: Object.keys(m).join(' + ') || null, methods: m, at: i.closedAt || i.issuedAt, status: i.status.toUpperCase(), source: i.source === 'zenoti' ? 'Zenoti' : i.source === 'app' ? 'App' : 'Desk', staff: i.closedByName || i.createdByName || null,
+        };
+      }),
       ...visits.map((b) => ({
-        kind: 'visit', id: b._id, ref: b.referenceNumber || b.zenotiSource?.invoiceNumber || null,
-        customer: b.userId?.fullName || b.fullName, phone: b.userId?.phone || b.mobileNumber || null, patientId: b.userId?.patientId || null,
+        kind: 'visit', id: b._id, ref: b.referenceNumber || b.zenotiSource?.invoiceNumber || null, receipt: b.zenotiSource?.receiptNumber || null,
+        customer: b.userId?.fullName || b.fullName, phone: b.userId?.phone || b.mobileNumber || null, patientId: b.userId?.patientId || null, userId: b.userId?._id || null,
         items: [`${b.consultationId?.name || b.externalServiceName || 'Service'} (1)`], amount: b.amount || 0, due: 0,
-        method: b.paymentMethod || 'Clinic', at: b.paidAt || b.checkOutTime || null, status: 'CLOSED', source: b.source === 'zenoti' ? 'Zenoti' : b.source === 'app' ? 'App' : 'Desk', staff: b.specialistName || null,
+        method: b.paymentMethod || 'Clinic', methods: { [b.paymentMethod || 'Clinic']: b.amount || 0 }, at: b.paidAt || b.checkOutTime || null, status: 'CLOSED', source: b.source === 'zenoti' ? 'Zenoti' : b.source === 'app' ? 'App' : 'Desk', staff: b.specialistName || null,
       })),
       ...orders.map((o) => ({
-        kind: 'order', id: o._id, ref: o.orderNumber || null,
-        customer: o.userId?.fullName || null, phone: o.userId?.phone || null, patientId: o.userId?.patientId || null,
+        kind: 'order', id: o._id, ref: o.orderNumber || null, receipt: null,
+        customer: o.userId?.fullName || null, phone: o.userId?.phone || null, patientId: o.userId?.patientId || null, userId: o.userId?._id || null,
         items: (o.items || []).map((i) => `${i.name || i.productName || 'Product'} (${i.quantity || 1})`), amount: o.finalAmount ?? o.totalAmount ?? 0, due: 0,
-        method: o.paymentMethod || null, at: o.paidAt || o.createdAt || null, status: String(o.orderStatus || '').toUpperCase() || 'PAID', source: 'App', staff: null,
+        method: o.paymentMethod || null, methods: { [o.paymentMethod || 'Online']: o.finalAmount ?? o.totalAmount ?? 0 }, at: o.paidAt || o.createdAt || null, status: String(o.orderStatus || '').toUpperCase() || 'PAID', source: 'App', staff: null,
       })),
       ...packages.map((p) => ({
-        kind: 'package', id: p._id, ref: p.assignmentId || null,
-        customer: p.userId?.fullName || null, phone: p.userId?.phone || null, patientId: p.userId?.patientId || null,
+        kind: 'package', id: p._id, ref: p.assignmentId || null, receipt: null,
+        customer: p.userId?.fullName || null, phone: p.userId?.phone || null, patientId: p.userId?.patientId || null, userId: p.userId?._id || null,
         items: [`${p.packageDetails?.packageName || 'Package'} (1)`], amount: p.pricing?.finalAmount || 0, due: 0,
-        method: p.payment?.paymentMethod || null, at: p.payment?.receivedDate || p.createdAt || null, status: 'CLOSED', source: 'Desk', staff: null,
+        method: p.payment?.paymentMethod || null, methods: { [p.payment?.paymentMethod || 'Other']: p.pricing?.finalAmount || 0 }, at: p.payment?.receivedDate || p.createdAt || null, status: 'CLOSED', source: 'Desk', staff: null,
       })),
     ].sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0));
 
     const byMethod = {};
-    for (const r of rows) byMethod[r.method || 'Unknown'] = (byMethod[r.method || 'Unknown'] || 0) + (r.amount || 0);
-    // What is still owed today: visits done or in progress today with an unpaid value.
-    const dueRows = await Booking.find({ ...scope, paymentStatus: { $ne: 'paid' }, amount: { $gt: 0 }, status: { $in: ['In Progress', 'Completed'] }, $or: [inDay('checkOutTime'), inDay('checkInTime'), inDay('preferredDate')] })
+    for (const r of rows) { if (r.status === 'VOID') continue; for (const [m, v] of Object.entries(r.methods || {})) byMethod[m] = (byMethod[m] || 0) + (v || 0); }
+    const live = rows.filter((r) => r.status !== 'VOID');
+    const collected = live.reduce((n, r) => n + Math.max(0, (r.amount || 0) - (r.due || 0)), 0);
+    const invoiceDue = live.reduce((n, r) => n + (r.due || 0), 0);
+    // Visits done or in progress today that have neither been billed nor paid.
+    const dueRows = await Booking.find({ ...scope, invoiceId: null, paymentStatus: { $ne: 'paid' }, amount: { $gt: 0 }, status: { $in: ['In Progress', 'Completed'] }, $or: [inDay('checkOutTime'), inDay('checkInTime'), inDay('preferredDate')] })
       .select('amount').lean();
+    const sumKind = (k) => live.filter((r) => r.kind === k).reduce((n, r) => n + (r.amount || 0), 0);
+    const invoiceLines = (kind) => invoices.filter((i) => i.status !== 'void').reduce((n, i) => n + (i.lines || []).filter((l) => l.kind === kind).reduce((m, l) => m + (l.total || 0), 0), 0);
 
     return res.json({
       success: true,
       data: {
         date: day || clinicDateKeySafe(start),
         totals: {
-          count: rows.length, amount: rows.reduce((n, r) => n + (r.amount || 0), 0),
-          visits: visits.reduce((n, b) => n + (b.amount || 0), 0), products: orders.reduce((n, o) => n + (o.finalAmount ?? o.totalAmount ?? 0), 0), packages: packages.reduce((n, p) => n + (p.pricing?.finalAmount || 0), 0),
-          due: dueRows.reduce((n, b) => n + (b.amount || 0), 0), dueCount: dueRows.length,
+          count: live.length, amount: collected,
+          visits: sumKind('visit') + invoiceLines('service'), products: sumKind('order') + invoiceLines('product'), packages: sumKind('package') + invoiceLines('package'),
+          due: invoiceDue + dueRows.reduce((n, b) => n + (b.amount || 0), 0), dueCount: live.filter((r) => r.due > 0).length + dueRows.length,
+          open: invoices.filter((i) => i.status === 'open').length, void: invoices.filter((i) => i.status === 'void').length,
           byMethod,
         },
         rows,

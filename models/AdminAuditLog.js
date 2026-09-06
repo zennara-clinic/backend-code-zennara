@@ -61,6 +61,7 @@ const AdminAuditLogSchema = new mongoose.Schema({
       'BOOKING_CREATED',
       'BOOKING_RESCHEDULED',
       'BOOKING_UPDATED',
+      'INVOICE_CREATED', 'INVOICE_UPDATED', 'INVOICE_CLOSED', 'INVOICE_REOPENED', 'INVOICE_VOIDED', 'PAYMENT_RECORDED', 'PAYMENT_VOIDED',
 
       // Catalogue (services, categories, packages, coupons)
       'CATALOGUE_CREATED',
@@ -133,7 +134,7 @@ const AdminAuditLogSchema = new mongoose.Schema({
     enum: [
       'AUTH', 'PRODUCT', 'ORDER', 'USER', 'ADMIN', 'SETTINGS', 'SECURITY',
       'BOOKING', 'CATALOGUE', 'DOCTOR', 'BRANCH', 'INVENTORY', 'VENDOR',
-      'REVIEW', 'SUPPORT', 'CLINICAL',
+      'REVIEW', 'SUPPORT', 'CLINICAL', 'INVOICE',
     ]
   },
   resourceId: {

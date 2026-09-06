@@ -90,6 +90,9 @@ const packageSchema = new mongoose.Schema({
    * 12 = one year, 6 = six months.
    */
   validityMonths: { type: Number, default: 12, min: 1, max: 60 },
+  /** GST on the package when sold at the desk; `price` is the tax-inclusive figure the app shows. */
+  taxPercent: { type: Number, default: 5, min: 0 },
+  priceIncludesTax: { type: Boolean, default: true },
   /** Zenoti's series terms (validity, schedule, freeze count, T&Cs), stored raw. */
   zenotiSeriesTerms: { type: mongoose.Schema.Types.Mixed, default: null }
 }, {

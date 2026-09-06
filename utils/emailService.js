@@ -519,6 +519,19 @@ exports.sendCheckInSuccessful = async (email, fullName, appointmentData, branch 
  * resets the password. Set DOCTOR_PANEL_URL in the environment to include a
  * sign-in button.
  */
+/** The GST receipt for a desk bill, as the email body (the HTML is the receipt itself). */
+exports.sendInvoiceEmail = async (email, guestName, { html, invoiceNumber, total, centre }) => {
+  const subject = `Your Zennara invoice ${invoiceNumber}${total !== undefined ? ` · ₹${Number(total).toLocaleString('en-IN')}` : ''}`;
+  const body = `
+    <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#1a1a1a">
+      <p>Hi ${guestName || 'there'},</p>
+      <p>Thank you for visiting us at ${centre || 'Zennara'}. Your tax invoice is below. If anything looks wrong, reply to this email or call the clinic.</p>
+      <div style="border:1px solid #e5e5e5;border-radius:8px;padding:8px;background:#fff">${html}</div>
+      <p style="color:#666;font-size:12px;margin-top:16px">Zennara Clinics</p>
+    </div>`;
+  return sendEmail(email, subject, body);
+};
+
 exports.sendDoctorCredentials = async (email, name, { password, mode = 'created', panel = 'Dermatologist' } = {}) => {
   const { getDoctorCredentialsTemplate } = require('../Email Templates/doctorCredentialsTemplate');
   const panelUrl = panel === 'Therapist'

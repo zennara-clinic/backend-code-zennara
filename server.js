@@ -289,6 +289,7 @@ app.use('/api/zenoti', require('./routes/zenoti'));
 app.use('/api/admin/zenoti', require('./routes/adminZenoti'));
 // Held time on provider diaries (Zenoti block-outs + desk blocks).
 app.use('/api/provider-blocks', require('./routes/providerBlock'));
+app.use('/api/invoices', require('./routes/invoice'));
 app.use('/api/banners', require('./routes/banner'));
 app.use('/api/contact-change', require('./routes/contactChange'));
 app.use('/api/admin/contact-change-requests', require('./routes/adminContactChange'));

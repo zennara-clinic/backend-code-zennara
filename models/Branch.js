@@ -129,6 +129,7 @@ const branchSchema = new mongoose.Schema({
    */
   invoicePrefix: { type: String, default: null, trim: true, uppercase: true },
   gstin: { type: String, default: null, trim: true, uppercase: true },
+  pan: { type: String, default: null, trim: true, uppercase: true },
   legalName: { type: String, default: null, trim: true },
   stateCode: { type: String, default: '36', trim: true },
 

@@ -342,6 +342,8 @@ const bookingSchema = new mongoose.Schema({
   zenotiAppointmentGroupId: { type: String, default: null, index: true },
   zenotiAppointmentSegmentId: { type: String, default: null },
   zenotiInvoiceId: { type: String, default: null, index: true },
+  /** The desk bill (Invoice) that settled this visit, once one exists. */
+  invoiceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice', default: null, index: true },
   zenotiInvoiceItemId: { type: String, default: null },
   zenotiServiceId: { type: String, default: null, index: true },
   externalServiceName: { type: String, default: null, trim: true },

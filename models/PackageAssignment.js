@@ -86,6 +86,8 @@ const packageAssignmentSchema = new mongoose.Schema({
       default: null
     }
   },
+  /** The desk bill this package was sold on (null for app / legacy sales). */
+  invoiceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice', default: null, index: true },
   status: {
     type: String,
     enum: ['Active', 'Expired', 'Cancelled', 'Completed'],
