@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const ProductOrder = require('../models/ProductOrder');
 const Product = require('../models/Product');
+const ProductStockMovement = require('../models/ProductStockMovement');
 const Payment = require('../models/Payment');
 const razorpayService = require('./razorpayService');
 
@@ -46,6 +47,10 @@ async function restoreStockOnce(orderId, reason) {
 
       if (operations.length) {
         await Product.bulkWrite(operations, { session });
+        ProductStockMovement.insertMany(
+          order.items.map((item) => ({ productId: asId(item.productId), source: 'app-order', refId: `${order._id}:restore:${item.productId}`, delta: Number(item.quantity), note: `Order ${order.orderNumber || order._id} — ${reason}` })),
+          { ordered: false },
+        ).catch(() => {});
       }
 
       order.stockRestoredAt = new Date();

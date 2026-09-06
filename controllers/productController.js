@@ -204,6 +204,31 @@ exports.getFormulations = async (req, res) => {
   }
 };
 
+
+// @desc    Catalogue categories → sub-categories with counts (what the shop shows as tabs/chips)
+// @route   GET /api/products/categories/list
+exports.getCategories = async (req, res) => {
+  try {
+    const rows = await Product.aggregate([
+      { $match: { isActive: true, isAppProduct: true } },
+      { $group: { _id: { c: { $ifNull: ['$productCategory', 'Other'] }, s: '$productSubCategory' }, n: { $sum: 1 } } },
+      { $group: { _id: '$_id.c', count: { $sum: '$n' }, subs: { $push: { name: '$_id.s', count: '$n' } } } },
+      { $sort: { count: -1, _id: 1 } },
+    ]);
+    res.json({
+      success: true,
+      data: rows.map((r) => ({
+        name: r._id,
+        count: r.count,
+        subCategories: r.subs.filter((x) => x.name).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name)),
+      })),
+    });
+  } catch (error) {
+    console.error('Get categories error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch categories', error: error.message });
+  }
+};
+
 // @desc    Check stock availability
 // @route   POST /api/products/check-stock
 // @access  Public

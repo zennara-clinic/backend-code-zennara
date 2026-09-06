@@ -24,6 +24,20 @@ const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const norm = (v) => (v === null || v === undefined ? null : String(v).trim() || null);
 
 /** Zenoti invoice-item `type` → our line kind. */
+async function applyProductLinesToStock(zenotiInvoiceId, lines) {
+  const Product = require('../models/Product');
+  const { moveStock } = require('../utils/productStock');
+  const productLines = lines.map((l, i) => ({ l, i })).filter(({ l }) => l.kind === 'product' && l.code && l.qty > 0);
+  if (!productLines.length) return;
+  const codes = [...new Set(productLines.map(({ l }) => String(l.code).toUpperCase()))];
+  const products = await Product.find({ isAppProduct: true, $or: [{ code: { $in: codes } }, { sku: { $in: codes } }] }).select('_id code sku').lean();
+  const byCode = new Map(); for (const p of products) { if (p.code) byCode.set(String(p.code).toUpperCase(), p._id); if (p.sku) byCode.set(String(p.sku).toUpperCase(), p._id); }
+  for (const { l, i } of productLines) {
+    const productId = byCode.get(String(l.code).toUpperCase()); if (!productId) continue;
+    await moveStock({ productId, delta: -Number(l.qty), source: 'zenoti-sale', refId: `${zenotiInvoiceId}:${i}`, note: `Zenoti bill line: ${l.name}` });
+  }
+}
+
 const ITEM_KIND = { 0: 'service', 1: 'product', 2: 'package', 3: 'membership', 4: 'membership', 5: 'custom' };
 /** Zenoti payment names → our tender methods. */
 function methodFor(name) {
@@ -127,6 +141,9 @@ async function mirrorInvoice(zenotiInvoiceId, { detail = false, booking = null }
         };
       });
     }
+    // Product lines on a clinic bill take the item off the app catalogue's count
+    // too — idempotent per invoice line, so re-mirroring never double-counts.
+    try { await applyProductLinesToStock(id, inv.lines || []); } catch (_) { /* stock is best-effort here */ }
     if (guest) {
       inv.guest = {
         name: [guest.first_name, guest.last_name].filter(Boolean).join(' ').trim() || inv.guest?.name || null,

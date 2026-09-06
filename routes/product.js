@@ -6,12 +6,14 @@ const {
   getProductsByFormulation,
   searchProducts,
   getFormulations,
+  getCategories,
   checkStock
 } = require('../controllers/productController');
 
 // Public routes
 router.get('/', getAllProducts);
 router.get('/formulations/list', getFormulations);
+router.get('/categories/list', getCategories);
 router.get('/formulation/:formulation', getProductsByFormulation);
 router.get('/search/:query', searchProducts);
 router.post('/check-stock', checkStock);

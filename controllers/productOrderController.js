@@ -1,5 +1,6 @@
 const ProductOrder = require('../models/ProductOrder');
 const Product = require('../models/Product');
+const ProductStockMovement = require('../models/ProductStockMovement');
 const Address = require('../models/Address');
 const User = require('../models/User');
 const NotificationHelper = require('../utils/notificationHelper');
@@ -172,6 +173,11 @@ exports.createOrderLegacyUnpaid = async (req, res) => {
       paymentMethod,
       notes
     });
+    // Product ledger: one row per reserved item (the $inc above already moved the count).
+    ProductStockMovement.insertMany(
+      processedItems.filter((it) => it.trackStock !== false).map((it) => ({ productId: it.productId || it.product?._id, source: 'app-order', refId: `${order._id}:${it.productId || it.product?._id}`, delta: -Number(it.quantity), note: `Order ${order.orderNumber || order._id}` })),
+      { ordered: false },
+    ).catch(() => {});
     
     // Populate order details
     const populatedOrder = await ProductOrder.findById(order._id)

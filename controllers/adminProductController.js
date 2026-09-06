@@ -1,5 +1,7 @@
 const Product = require('../models/Product');
 const AdminAuditLog = require('../models/AdminAuditLog');
+const ProductStockMovement = require('../models/ProductStockMovement');
+const { loadCanon, snapProduct } = require('../utils/taxonomy');
 const Formulation = require('../models/Formulation');
 
 /** A product's formulation must be one the clinic has defined. */
@@ -252,7 +254,10 @@ exports.createProduct = async (req, res) => {
       isPopular: isPopular || false
     });
     applyProductExtras(product, req.body);
+    // Category / sub-category / formulation snap to the catalogue's spelling.
+    snapProduct(product, await loadCanon(Product));
     await product.save();
+    if (Number(product.stock) > 0) await ProductStockMovement.create({ productId: product._id, source: 'panel', delta: product.stock, before: 0, after: product.stock, note: 'Created', by: req.admin?._id || null }).catch(() => {});
 
     // Create notification for new product
     try {
@@ -346,7 +351,11 @@ exports.updateProduct = async (req, res) => {
       formulation: product.formulation
     });
     
+    snapProduct(product, await loadCanon(Product));
+    const stockChanged = product.isModified('stock');
+    const prev = stockChanged ? Number((await Product.findById(product._id).select('stock').lean())?.stock) || 0 : null;
     await product.save();
+    if (stockChanged && prev !== Number(product.stock)) await ProductStockMovement.create({ productId: product._id, source: 'panel', delta: Number(product.stock) - prev, before: prev, after: Number(product.stock), note: 'Edited on the product page', by: req.admin?._id || null }).catch(() => {});
     console.log('Product saved successfully with code:', product.code);
 
     // Create notification for product update
@@ -512,7 +521,10 @@ exports.updateStock = async (req, res) => {
       });
     }
 
+    const prevStock = Number(product.stock) || 0;
     product.stock = stock;
+    product.stockSource = 'panel'; product.stockUpdatedAt = new Date();
+    if (Number(stock) !== prevStock) await ProductStockMovement.create({ productId: product._id, source: 'panel', delta: Number(stock) - prevStock, before: prevStock, after: Number(stock), note: req.body.reason || 'Stock updated', by: req.admin?._id || null }).catch(() => {});
     await product.save();
 
     res.json({
@@ -710,7 +722,10 @@ exports.appStockPreview = async (req, res) => {
 };
 
 /** Apply the plan. Exported so the one-time bootstrap script can reuse it. */
-async function applyAppStockPlan(plan, { adminName = 'import' } = {}) {
+async function applyAppStockPlan(plan, {
+ adminName = 'import' } = {}) {
+  const canon = await loadCanon(Product);
+  const ledger = [];
   const now = new Date();
   const stats = { applied: 0, published: 0, unpublished: 0, rxFlagged: 0 };
   for (const e of plan.values()) {
@@ -724,7 +739,11 @@ async function applyAppStockPlan(plan, { adminName = 'import' } = {}) {
       if (t.brand) product.brand = t.brand;
       if (t.batchTracking) product.batchTracking = /non/i.test(t.batchTracking) ? 'Non Batchable' : 'Batchable';
       if (t.consumptionOrder) product.consumptionOrder = /exp/i.test(t.consumptionOrder) ? 'ByExpiry' : 'FIFO';
-      if (t.stock !== null) { product.stock = Math.max(0, t.stock); product.trackStock = true; product.stockSource = 'template'; product.stockUpdatedAt = now; }
+      if (t.stock !== null) {
+        const prevStock = Number(product.stock) || 0; const nextStock = Math.max(0, t.stock);
+        product.stock = nextStock; product.trackStock = true; product.stockSource = 'template'; product.stockUpdatedAt = now;
+        if (nextStock !== prevStock) ledger.push({ productId: product._id, source: 'template', delta: nextStock - prevStock, before: prevStock, after: nextStock, note: 'App Stock template import', at: now });
+      }
       if (t.reorderLevel !== null) { product.reorderLevel = t.reorderLevel; product.lowStockThreshold = t.reorderLevel; }
       if (t.targetLevel !== null) product.targetLevel = t.targetLevel;
       if (t.packName) product.packName = t.packName;
@@ -760,6 +779,7 @@ async function applyAppStockPlan(plan, { adminName = 'import' } = {}) {
     if (JSON.stringify(product.toObject()) !== JSON.stringify(before)) { await product.save({ validateModifiedOnly: true }); stats.applied += 1; }
   }
   void adminName;
+  if (ledger.length) await ProductStockMovement.insertMany(ledger, { ordered: false }).catch(() => {});
   return stats;
 }
 exports.applyAppStockPlan = applyAppStockPlan;
@@ -805,5 +825,18 @@ exports.appStockExport = async (req, res) => {
   } catch (error) {
     console.error('app stock export failed:', error);
     return res.status(500).json({ success: false, message: 'Could not build the export' });
+  }
+};
+
+
+// @desc    A product's own stock ledger (template imports, panel edits, app orders, Zenoti sales)
+// @route   GET /api/admin/products/:id/stock-movements
+exports.getStockMovements = async (req, res) => {
+  try {
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 100));
+    const rows = await ProductStockMovement.find({ productId: req.params.id }).sort({ at: -1 }).limit(limit).populate('by', 'name').lean();
+    res.json({ success: true, data: rows });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to load stock movements', error: error.message });
   }
 };

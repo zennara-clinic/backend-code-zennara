@@ -28,6 +28,7 @@ const MANAGE = requirePermission('products.manage');
 router.get('/statistics', VIEW, getProductStatistics);
 
 // App Stock template — the Commerce catalogue's import / export sheet. One-way: never writes to Zenoti.
+router.get('/:id/stock-movements', protectAdmin, VIEW, adminProductController.getStockMovements);
 router.get('/app-stock/export', VIEW, productCtrl.appStockExport);
 router.post('/app-stock/preview', MANAGE, appStockUpload.single('file'), productCtrl.appStockPreview);
 router.post('/app-stock/import', MANAGE, appStockUpload.single('file'), auditLog('BULK_IMPORT', 'PRODUCT'), productCtrl.appStockImport);
