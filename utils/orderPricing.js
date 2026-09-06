@@ -126,6 +126,11 @@ async function computeOrderPricing({ items, couponCode, city }) {
     if (!product.isActive) {
       return { ok: false, status: 400, message: `Product is not available: ${product.name}` };
     }
+    // Prescription products (Schedule H) are shown in the app with their
+    // description but sold at the clinic only, against a prescription.
+    if (product.isRx === true) {
+      return { ok: false, status: 400, code: 'RX_ONLY', message: `${product.name} is a prescription product — available at the clinic with a valid prescription.` };
+    }
     // trackStock false = no count exists for this product (Zenoti-mirrored);
     // the sale goes through and nothing is decremented.
     if (product.trackStock !== false && product.stock < item.quantity) {

@@ -173,6 +173,14 @@ exports.cancelMember = async (req, res) => {
   } catch (e) { return fail(res, 500, e.message); }
 };
 
+/** GET /api/memberships/me — the signed-in guest's own membership (app). */
+exports.me = async (req, res) => {
+  const m = await currentMembership(req.user._id);
+  if (!m) return res.json({ success: true, data: null });
+  const plan = m.assignment ? await Membership.findById(m.assignment.membershipId).select('name benefits terms').lean() : null;
+  return res.json({ success: true, data: { kind: m.kind, name: m.name, memberNumber: m.memberNumber, validUntil: m.validUntil, discounts: m.discounts, credits: m.credits, benefits: plan?.benefits || [], terms: plan?.terms || '', validFrom: m.assignment?.validFrom || null, redemptions: (m.assignment?.redemptions || []).filter((r) => !r.reversed).slice(-20).reverse() } });
+};
+
 /** The guest's current membership as the bill and the profile see it. */
 exports.currentForUser = async (req, res) => {
   if (!isId(req.params.userId)) return fail(res, 400, 'userId required');

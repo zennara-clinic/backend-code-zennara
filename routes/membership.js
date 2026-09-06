@@ -1,7 +1,10 @@
 const express = require('express');
 const router = express.Router();
 const ctrl = require('../controllers/membershipController');
-const { protectAdmin, requirePermission } = require('../middleware/auth');
+const { protectAdmin, protect, requirePermission } = require('../middleware/auth');
+
+// App: the signed-in guest's own membership (before the admin gate).
+router.get('/me', protect, ctrl.me);
 
 router.use(protectAdmin);
 const VIEW = requirePermission('memberships.view', 'memberships.manage', 'packages.view', 'patients.view');

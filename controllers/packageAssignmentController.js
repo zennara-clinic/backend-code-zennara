@@ -1148,9 +1148,12 @@ exports.getUserPackages = async (req, res) => {
       Promise.resolve(null),
     ]);
 
+    // Balances, freeze and grace state travel with each package so the app can
+    // show "2/3 left", "frozen" or "in grace period" without a second call.
+    const data = assignments.map((a) => ({ ...a.toObject(), balances: a.serviceBalances(), redeemable: a.redeemable({ branchId: a.branchId || null }) }));
     res.status(200).json({
       success: true,
-      data: assignments,
+      data,
       clinicSyncedAt: clinic?.syncedAt || null,
     });
   } catch (error) {
@@ -1185,7 +1188,7 @@ exports.getUserPackageById = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: assignment
+      data: { ...assignment.toObject(), balances: assignment.serviceBalances(), redeemable: assignment.redeemable({ branchId: assignment.branchId || null }) }
     });
   } catch (error) {
     console.error('Get user package error:', error);
