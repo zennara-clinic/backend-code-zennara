@@ -231,6 +231,18 @@ async function syncProducts({ trigger = 'manual' } = {}) {
       if (entry.productSubCategory) product.productSubCategory = entry.productSubCategory;
       if (entry.productType) product.productType = entry.productType;
       if (entry.mrp !== null) product.mrp = entry.mrp;
+      /*
+       * Zenoti's API publishes only the printed MRP — there is no separate
+       * "sale price" field on the product feed (verified 2026-09-06). A
+       * mirrored product used to land with price 0, which reads as "free" in
+       * every list and blocks it from the app. So: when we have no price of
+       * our own, adopt the MRP. The panel can change it afterwards and the
+       * sync never overwrites a price someone set here.
+       */
+      if (!(Number(product.price) > 0) && Number(entry.mrp) > 0) {
+        product.price = Number(entry.mrp);
+        if (!product.priceSource) product.priceSource = 'zenoti-mrp';
+      }
       if (entry.packSize) product.packSize = entry.packSize;
       if (entry.hsn) product.hsn = entry.hsn;
       if (entry.isRetail !== null) product.isRetail = entry.isRetail;

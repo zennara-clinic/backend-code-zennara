@@ -1,7 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const ctrl = require('../controllers/stockControlController');
+const multer = require('multer');
 const { protectAdmin, requirePermission, auditLog } = require('../middleware/auth');
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } });
 
 router.use(protectAdmin);
 const VIEW = requirePermission('inventory.view', 'stockLedger.view');
@@ -13,6 +15,10 @@ const MANAGE = requirePermission('inventory.manage');
 router.get('/current', VIEW, ctrl.currentStock);
 router.get('/valuation', VIEW, ctrl.valuation);
 router.post('/adjust', MANAGE, auditLog('INVENTORY_UPDATED', 'INVENTORY'), ctrl.adjust);
+
+// Zenoti's Current stock / Audit inventory export → our per-centre shelf.
+router.post('/import/preview', COUNT, upload.single('file'), ctrl.importPreview);
+router.post('/import', RECONCILE, upload.single('file'), auditLog('STOCK_UPDATED', 'INVENTORY'), ctrl.importCommit);
 
 router.get('/counts', VIEW, ctrl.listCounts);
 router.post('/counts', COUNT, auditLog('INVENTORY_UPDATED', 'INVENTORY'), ctrl.createCount);

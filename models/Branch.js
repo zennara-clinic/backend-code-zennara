@@ -126,6 +126,8 @@ const branchSchema = new mongoose.Schema({
    * invoices; `training` is Zenoti's internal practice centre.
    */
   centreType: { type: String, enum: ['clinic', 'pharmacy', 'training'], default: 'clinic', index: true },
+  /** When a Zenoti stock export was last imported for this centre. */
+  stockImportedAt: { type: Date, default: null },
   /** The clinic a pharmacy belongs to (stock transfers, reporting). */
   parentBranchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', default: null },
   /** The pharmacy centre attached to this clinic (Zenoti keeps them separate). */

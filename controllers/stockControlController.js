@@ -352,3 +352,149 @@ exports.adjust = async (req, res) => {
 };
 
 exports._internal = { sendTransfer };
+
+
+/* ------------------------------------------------------------------------ */
+/* Importing Zenoti's own stock export                                       */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Zenoti's inventory API is not open to our key, but the clinic already
+ * exports Current Stock and Audit Inventory to Excel. Dropping either file in
+ * here brings across on-hand quantities, batches, expiry dates, vendor and the
+ * value Zenoti holds the stock at — per centre, with a ledger row for every
+ * change, so nothing moves silently.
+ */
+async function readSheet(req) {
+  const { readWorkbook } = require('../utils/bulkCsv');
+  const { parseStockSheet } = require('../utils/zenotiStockImport');
+  if (!req.file) throw Object.assign(new Error('Attach the export file (.csv or .xlsx).'), { status: 400 });
+  // readWorkbook returns { headers, records:[{ row, data }] } for both CSV and
+  // Excel; the parser wants plain objects.
+  const book = readWorkbook(req.file);
+  const rows = (book?.records || []).map((r) => r.data || r);
+  return parseStockSheet(rows);
+}
+
+/** Match sheet rows to the centre's shelf: by product code first, then name. */
+async function matchRows(rows, branchId) {
+  const Product = require('../models/Product');
+  const codes = [...new Set(rows.map((r) => r.code).filter(Boolean).map((c) => c.toLowerCase()))];
+  const names = [...new Set(rows.map((r) => r.name).filter(Boolean).map((n) => n.toLowerCase()))];
+  const shelf = await Inventory.find({ branchId }).select('_id code inventoryName qohAllBatches avgCost batchNo batchExpiryDate productId inventoryCategory').lean();
+  const byCode = new Map(); const byName = new Map();
+  for (const row of shelf) {
+    if (row.code) byCode.set(String(row.code).toLowerCase(), row);
+    if (row.inventoryName) byName.set(String(row.inventoryName).toLowerCase(), row);
+  }
+  // Products carried at this centre but with no shelf row yet (rare) can still
+  // be matched through the master, so an import never silently drops a line.
+  const masters = await Product.find({ $or: [{ code: { $in: codes } }, { sku: { $in: codes } }] }).select('_id name code sku').lean();
+  const masterByCode = new Map();
+  for (const m of masters) { if (m.code) masterByCode.set(String(m.code).toLowerCase(), m); if (m.sku) masterByCode.set(String(m.sku).toLowerCase(), m); }
+  void names;
+
+  return rows.map((r) => {
+    const key = r.code ? String(r.code).toLowerCase() : null;
+    const nameKey = r.name ? String(r.name).toLowerCase() : null;
+    const hit = (key && byCode.get(key)) || (nameKey && byName.get(nameKey)) || null;
+    return { row: r, shelf: hit, master: key ? masterByCode.get(key) || null : null };
+  });
+}
+
+function summariseImport(matched) {
+  const out = { rows: matched.length, matched: 0, unmatched: 0, changed: 0, unchanged: 0, quantityDelta: 0, valueAfter: 0, samples: { unmatched: [], changes: [] } };
+  for (const m of matched) {
+    if (!m.shelf) {
+      out.unmatched += 1;
+      if (out.samples.unmatched.length < 8) out.samples.unmatched.push(`${m.row.code || ''} ${m.row.name || ''}`.trim());
+      continue;
+    }
+    out.matched += 1;
+    const before = Number(m.shelf.qohAllBatches) || 0;
+    const after = Number(m.row.quantity) || 0;
+    const cost = m.row.cost ?? m.shelf.avgCost ?? 0;
+    out.valueAfter += after * (Number(cost) || 0);
+    if (before === after && !m.row.batchNo && !m.row.expiry) { out.unchanged += 1; continue; }
+    out.changed += 1;
+    out.quantityDelta += after - before;
+    if (out.samples.changes.length < 10) out.samples.changes.push({ name: m.shelf.inventoryName, code: m.shelf.code, before, after, batchNo: m.row.batchNo || null, expiry: m.row.expiry || null });
+  }
+  out.valueAfter = r2(out.valueAfter);
+  return out;
+}
+
+// POST /api/admin/stock/import/preview  (multipart: file, branchId)
+exports.importPreview = async (req, res) => {
+  try {
+    const branchId = req.body?.branchId;
+    if (!isId(branchId)) return fail(res, 400, 'Choose the centre this export came from.');
+    const branch = await Branch.findById(branchId).select('name').lean();
+    const { rows, headerMap, missing } = await readSheet(req);
+    if (missing.length) return fail(res, 400, `The file is missing ${missing.join(' and ')}. Export "Current stock" or "Audit inventory" from Zenoti without changing the columns.`);
+    const matched = await matchRows(rows, branchId);
+    return res.json({ success: true, data: { branch: branch?.name || null, headerMap, ...summariseImport(matched) } });
+  } catch (e) {
+    return fail(res, e.status || 500, e.message || 'Could not read that file');
+  }
+};
+
+// POST /api/admin/stock/import  (multipart: file, branchId, reason?)
+exports.importCommit = async (req, res) => {
+  try {
+    const branchId = req.body?.branchId;
+    if (!isId(branchId)) return fail(res, 400, 'Choose the centre this export came from.');
+    const branch = await Branch.findById(branchId).select('name').lean();
+    const { rows, missing } = await readSheet(req);
+    if (missing.length) return fail(res, 400, `The file is missing ${missing.join(' and ')}.`);
+    const matched = await matchRows(rows, branchId);
+    const me = who(req);
+    const reason = String(req.body?.reason || '').trim() || `Zenoti stock export imported by ${me.name}`;
+    const now = new Date();
+
+    let applied = 0; let created = 0; const movements = [];
+    for (const m of matched) {
+      const qty = Math.max(0, Number(m.row.quantity) || 0);
+      let shelf = m.shelf;
+      if (!shelf && m.master) {
+        // Carried here but never shelved: create the row rather than lose the count.
+        const doc = await Inventory.create({
+          branchId, productId: m.master._id, inventoryName: m.master.name, code: m.master.code || m.master.sku || m.row.code,
+          inventoryCategory: 'Retail products', qohAllBatches: 0, qohBatchWise: 0, batchMaintenance: m.row.batchNo ? 'Batchable' : 'Non Batchable',
+        });
+        shelf = doc.toObject(); created += 1;
+      }
+      if (!shelf) continue;
+
+      const before = Number(shelf.qohAllBatches) || 0;
+      const set = { qohAllBatches: qty, qohBatchWise: qty, lastCountedAt: now };
+      if (m.row.cost !== null && m.row.cost !== undefined) set.avgCost = m.row.cost;
+      if (m.row.batchNo) { set.batchNo = m.row.batchNo; set.batchMaintenance = 'Batchable'; }
+      if (m.row.expiry) set.batchExpiryDate = m.row.expiry;
+      if (m.row.vendor) set.vendorName = m.row.vendor;
+      if (before === qty && !m.row.batchNo && !m.row.expiry && m.row.cost === null) continue;
+
+      await Inventory.updateOne({ _id: shelf._id }, { $set: set });
+      applied += 1;
+      if (before !== qty) {
+        movements.push({
+          inventoryId: shelf._id, inventoryName: shelf.inventoryName, batchNo: m.row.batchNo || shelf.batchNo || '',
+          type: 'count', delta: qty - before, before, after: qty,
+          reason: `${reason}${m.row.notes ? ` — ${m.row.notes}` : ''}`,
+          branchId, adminId: me.id, adminEmail: me.email, unitCost: m.row.cost ?? shelf.avgCost ?? null,
+        });
+      }
+    }
+    if (movements.length) await StockMovement.insertMany(movements, { ordered: false }).catch(() => {});
+    await Branch.updateOne({ _id: branchId }, { $set: { stockImportedAt: now } }).catch(() => {});
+
+    return res.json({
+      success: true,
+      message: `${applied} shelf row${applied === 1 ? '' : 's'} updated at ${branch?.name || 'the centre'}${created ? `, ${created} created` : ''}${movements.length ? `, ${movements.length} ledger entries written` : ''}.`,
+      data: { ...summariseImport(matched), applied, created, ledgerRows: movements.length },
+    });
+  } catch (e) {
+    console.error('stock import failed:', e);
+    return fail(res, e.status || 500, e.message || 'Could not import that file');
+  }
+};

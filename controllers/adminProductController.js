@@ -21,6 +21,7 @@ const EXTRA_STRING = ['sku', 'brand', 'productType', 'productCategory', 'product
 const EXTRA_NUMBER = ['mrp', 'lowStockThreshold'];
 const EXTRA_BOOL = ['isRetail', 'trackStock'];
 function applyProductExtras(product, body) {
+  if (body.price !== undefined && Number(body.price) !== Number(product.price)) product.priceSource = 'panel';
   for (const key of EXTRA_STRING) {
     if (body[key] !== undefined) product[key] = body[key] === '' || body[key] === null ? null : String(body[key]).trim();
   }

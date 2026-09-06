@@ -40,6 +40,11 @@ function startZenotiScheduler() {
     importer.importRoster({ trigger: 'schedule' }).catch(() => {});
   }, { timezone: 'Asia/Kolkata' });
 
+  // Vendor master (the one purchasing read Zenoti allows us), nightly.
+  cron.schedule('45 2 * * *', () => {
+    require('../services/zenotiVendorSyncService').syncVendors({ trigger: 'schedule' }).catch(() => {});
+  }, { timezone: 'Asia/Kolkata' });
+
   cron.schedule('*/5 * * * *', () => {
     importer.crawlDetails({ limit: 40, trigger: 'schedule' }).catch(() => {});
   });

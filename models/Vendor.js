@@ -1,6 +1,10 @@
 const mongoose = require('mongoose');
 
 const vendorSchema = new mongoose.Schema({
+  /** Zenoti's vendor id and code, for the mirror. */
+  zenotiVendorId: { type: String, default: null, trim: true, lowercase: true, index: true },
+  code: { type: String, default: null, trim: true },
+  zenotiSyncedAt: { type: Date, default: null },
   name: {
     type: String,
     required: [true, 'Vendor name is required'],

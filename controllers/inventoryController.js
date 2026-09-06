@@ -6,10 +6,20 @@ const NotificationHelper = require('../utils/notificationHelper');
 // Get all inventory items with filters
 exports.getAllInventory = async (req, res) => {
   try {
-    const { search, category, batchType, stockFilter } = req.query;
+    const { search, category, batchType, stockFilter, branchId, kind } = req.query;
 
     // Build query
     let query = {};
+
+    /*
+     * Stock is held PER CENTRE (one shelf row per product per centre), so a
+     * list with no centre mixes every centre's rows together and the whole
+     * page reads as out of stock. Scope to the centre the panel is on.
+     */
+    if (branchId && /^[0-9a-f]{24}$/i.test(branchId)) query.branchId = branchId;
+    else if (branchId === 'none') query.branchId = null;
+    if (kind === 'retail') query.inventoryCategory = 'Retail products';
+    else if (kind === 'consumable') query.inventoryCategory = 'Consumables';
 
     // Search filter
     if (search) {
@@ -31,7 +41,7 @@ exports.getAllInventory = async (req, res) => {
     }
 
     // Get inventory items
-    let inventory = await Inventory.find(query).sort({ createdAt: -1 });
+    let inventory = await Inventory.find(query).populate('productId', 'name isRx mrp price productCategory productSubCategory').sort({ inventoryName: 1 });
 
     // Stock filter (applied after query)
     if (stockFilter && stockFilter !== 'all') {
@@ -45,17 +55,20 @@ exports.getAllInventory = async (req, res) => {
     }
 
     // Calculate stats
+    // Stats follow the same scope as the list, so the tiles match the rows.
+    const scope = { ...query };
+    delete scope.$or;
     const stats = {
-      total: await Inventory.countDocuments(),
-      batchable: await Inventory.countDocuments({ batchMaintenance: 'Batchable' }),
-      nonBatchable: await Inventory.countDocuments({ batchMaintenance: 'Non Batchable' }),
-      lowStock: await Inventory.countDocuments({ qohAllBatches: { $gt: 0, $lt: 10 } }),
+      total: await Inventory.countDocuments(scope),
+      batchable: await Inventory.countDocuments({ ...scope, batchMaintenance: 'Batchable' }),
+      nonBatchable: await Inventory.countDocuments({ ...scope, batchMaintenance: 'Non Batchable' }),
+      lowStock: await Inventory.countDocuments({ ...scope, qohAllBatches: { $gt: 0, $lt: 10 } }),
       expired: 0, // Will calculate below
       totalValue: 0
     };
 
     // Calculate expired and total value
-    const allItems = await Inventory.find();
+    const allItems = await Inventory.find(scope);
     allItems.forEach(item => {
       // Check expiry
       if (item.batchExpiryDate) {
