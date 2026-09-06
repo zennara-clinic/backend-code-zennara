@@ -112,6 +112,9 @@ const GROUPS = [
       // Grant this to dermatologists INSTEAD OF inventory.view.
       { key: 'inventory.availability', label: 'View product availability (no prices)' },
       { key: 'inventory.receive', label: 'Receive stock against a purchase order' },
+      { key: 'inventory.count', label: 'Run stock audits (count sheets)' },
+      { key: 'inventory.reconcile', label: 'Reconcile an audit (writes the shelf)', sensitive: true },
+      { key: 'inventory.transfer', label: 'Transfer stock between centres' },
       { key: 'stockLedger.view', label: 'View stock ledger' },
       { key: 'purchaseOrders.view', label: 'View purchase orders' },
       { key: 'purchaseOrders.manage', label: 'Create / edit purchase orders' },

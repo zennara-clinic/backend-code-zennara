@@ -12,7 +12,7 @@ const stockMovementSchema = new mongoose.Schema(
     batchNo: { type: String, default: '' },
     type: {
       type: String,
-      enum: ['consume', 'wastage', 'receive', 'adjust', 'sale', 'return'],
+      enum: ['consume', 'wastage', 'receive', 'adjust', 'sale', 'return', 'transfer_out', 'transfer_in', 'count'],
       required: true,
       index: true,
     },
@@ -25,6 +25,11 @@ const stockMovementSchema = new mongoose.Schema(
     branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', default: null },
     adminId: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', default: null },
     adminEmail: { type: String, default: '' },
+    /** Which audit / transfer produced this row (for the ledger's drill-down). */
+    stockCountId: { type: mongoose.Schema.Types.ObjectId, ref: 'StockCount', default: null },
+    stockTransferId: { type: mongoose.Schema.Types.ObjectId, ref: 'StockTransfer', default: null },
+    /** Unit cost at the time, so the ledger can be valued later. */
+    unitCost: { type: Number, default: null },
   },
   { timestamps: true }
 );

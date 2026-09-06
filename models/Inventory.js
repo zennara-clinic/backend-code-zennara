@@ -137,6 +137,17 @@ const inventorySchema = new mongoose.Schema({
   vendorName: {
     type: String
   },
+  /**
+   * Valuation (Zenoti "Current stock": Avg value / Configured value / Last
+   * procured value). avgCost is a moving average maintained by goods receipts;
+   * configured value uses the selling price; last procured is the most recent
+   * PO price.
+   */
+  avgCost: { type: Number, default: null },
+  lastProcuredPrice: { type: Number, default: null },
+  lastProcuredAt: { type: Date, default: null },
+  lastCountedAt: { type: Date, default: null },
+  lastReconciledAt: { type: Date, default: null },
   packName: {
     type: String,
     trim: true

@@ -291,6 +291,7 @@ app.use('/api/admin/zenoti', require('./routes/adminZenoti'));
 app.use('/api/provider-blocks', require('./routes/providerBlock'));
 app.use('/api/invoices', require('./routes/invoice'));
 app.use('/api/memberships', require('./routes/membership'));
+app.use('/api/admin/stock', require('./routes/stockControl'));
 app.use('/api/banners', require('./routes/banner'));
 app.use('/api/contact-change', require('./routes/contactChange'));
 app.use('/api/admin/contact-change-requests', require('./routes/adminContactChange'));

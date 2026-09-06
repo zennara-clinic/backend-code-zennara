@@ -369,10 +369,16 @@ exports.receiveGoods = async (req, res) => {
  */
 async function applyToStock(po, line, quantity, entry, req) {
   if (line.inventoryId) {
-    const before = await Inventory.findById(line.inventoryId).select('qohAllBatches inventoryName').lean();
+    const before = await Inventory.findById(line.inventoryId).select('qohAllBatches inventoryName avgCost inventoryBuyingPrice batchBuyingPrice').lean();
+    // Moving-average cost (Zenoti's "Avg value"): weight the old shelf at its
+    // average against the new units at this order's price.
+    const unitPrice = Number(line.unitPrice) || 0;
+    const oldQty = Math.max(0, Number(before?.qohAllBatches) || 0);
+    const oldAvg = Number(before?.avgCost) || Number(before?.inventoryBuyingPrice) || Number(before?.batchBuyingPrice) || unitPrice;
+    const avgCost = oldQty + quantity > 0 ? Math.round(((oldQty * oldAvg + quantity * unitPrice) / (oldQty + quantity)) * 100) / 100 : unitPrice;
     const updated = await Inventory.findByIdAndUpdate(
       line.inventoryId,
-      { $inc: { qohAllBatches: quantity, qohBatchWise: quantity } },
+      { $inc: { qohAllBatches: quantity, qohBatchWise: quantity }, $set: { avgCost, ...(unitPrice > 0 ? { lastProcuredPrice: unitPrice, lastProcuredAt: new Date() } : {}) } },
       { new: true },
     ).select('qohAllBatches inventoryName').lean();
     if (updated) {
@@ -388,6 +394,7 @@ async function applyToStock(po, line, quantity, entry, req) {
         branchId: po.branchId || null,
         adminId: req.admin?._id || null,
         adminEmail: req.admin?.email || '',
+        unitCost: unitPrice || null,
       }).catch(() => {});
     }
     return;
