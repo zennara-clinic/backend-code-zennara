@@ -36,10 +36,13 @@ const SYNC_DESCRIPTION_RX = /^Synced from Zenoti on \d{4}-\d{2}-\d{2}\.$/;
 
 /** Branch documents keyed by the branch name our centre map points at. */
 async function branchIndex() {
-  const branches = await Branch.find({}).select('name').lean();
-  const byName = new Map();
-  for (const b of branches) byName.set(String(b.name || '').trim().toLowerCase(), b);
-  return byName;
+  const branches = await Branch.find({}).select('name zenotiCenterId centreType').lean();
+  const byName = new Map(); const byCentre = new Map();
+  for (const b of branches) {
+    byName.set(String(b.name || '').trim().toLowerCase(), b);
+    if (b.zenotiCenterId) byCentre.set(String(b.zenotiCenterId).toLowerCase(), b);
+  }
+  return { byName, byCentre };
 }
 
 const norm = (v) => String(v || '').trim().toLowerCase();
@@ -68,7 +71,7 @@ async function syncProducts({ trigger = 'manual' } = {}) {
   const ZenotiSyncRun = require('../models/ZenotiSyncRun');
   const run = await ZenotiSyncRun.create({ type: 'products', trigger: trigger === 'schedule' ? 'schedule' : 'manual' }).catch(() => null);
 
-  const byName = await branchIndex();
+  const { byName, byCentre } = await branchIndex();
   const stats = { centres: 0, seen: 0, created: 0, updated: 0, errors: 0 };
 
   /** zenotiProductId → the row we are assembling across every centre. */
@@ -85,7 +88,9 @@ async function syncProducts({ trigger = 'manual' } = {}) {
     }
     stats.centres += 1;
 
-    const branch = byName.get(norm(centre.branchName));
+    // The centre's OWN branch (pharmacies included), not its parent clinic —
+    // a pharmacy holds its own range and its own shelf.
+    const branch = byCentre.get(norm(centerId)) || byName.get(norm(centre.branchName));
     for (const row of rows) {
       if (!row?.id) continue;
       stats.seen += 1;
@@ -105,9 +110,21 @@ async function syncProducts({ trigger = 'manual' } = {}) {
         hsn: row.hsn || null,
         isRetail: row.isRetail === true ? true : row.isConsumable === true ? false : null,
         isActive: truthy(row.isActive),
+        barcodes: Array.isArray(row.barcodes) ? row.barcodes : [],
+        isKit: row.isKit === true,
+        zenotiCategoryId: row.categoryId || null,
+        zenotiSubCategoryId: row.raw?.sub_category_id || null,
+        isConsumable: row.isConsumable === true,
+        centres: [],
         branchStock: [],
         total: 0,
       };
+      // Availability: this centre lists the product.
+      if (!entry.centres.some((c) => c.zenotiCenterId === centerId)) {
+        entry.centres.push({ branchId: branch?._id || null, zenotiCenterId: centerId, branchName: branch?.name || centre.name });
+      }
+      if (row.isConsumable === true) entry.isConsumable = true;
+      if (row.isRetail === true) entry.isRetail = true;
       // A later centre may carry a field an earlier one omitted.
       entry.name = entry.name || row.name || null;
       entry.sku = entry.sku || row.code || null;
@@ -149,7 +166,11 @@ async function syncProducts({ trigger = 'manual' } = {}) {
        * store's Product list, where 260 of them would be catalogue noise.
        * Retail items go to Product. Stock is never written for either.
        */
-      if (entry.isRetail === false) {
+      // Consumables keep their legacy Inventory row (the treatment room
+      // consumes from it); every product — retail or consumable — also gets a
+      // master row below, which is what the panel's product list shows and
+      // what the per-centre shelf rows point at.
+      if (entry.isRetail !== true) {
         let inv = await Inventory.findOne({ zenotiProductId: entry.zenotiProductId });
         if (!inv && entry.sku) inv = await Inventory.findOne({ code: entry.sku });
         if (!inv) inv = await Inventory.findOne({ inventoryName: entry.name });
@@ -161,7 +182,6 @@ async function syncProducts({ trigger = 'manual' } = {}) {
         if (entry.brand) inv.orgName = entry.brand;
         inv.zenotiSyncedAt = new Date();
         await inv.save({ validateModifiedOnly: true });
-        continue;
       }
 
       let product = await Product.findOne({ zenotiProductId: entry.zenotiProductId });
@@ -211,6 +231,12 @@ async function syncProducts({ trigger = 'manual' } = {}) {
       if (entry.packSize) product.packSize = entry.packSize;
       if (entry.hsn) product.hsn = entry.hsn;
       if (entry.isRetail !== null) product.isRetail = entry.isRetail;
+      product.productType = entry.isRetail === true ? 'Retail' : entry.isConsumable ? 'Consumable' : product.productType;
+      if (entry.centres.length) product.centres = entry.centres;
+      if (entry.barcodes?.length) product.barcodes = entry.barcodes;
+      if (entry.isKit) product.isKit = true;
+      if (entry.zenotiCategoryId) product.zenotiCategoryId = entry.zenotiCategoryId;
+      if (entry.zenotiSubCategoryId) product.zenotiSubCategoryId = entry.zenotiSubCategoryId;
       // Zenoti's description is only adopted while ours is the sync
       // placeholder — copy written in the panel is never overwritten.
       if (entry.description && (!product.description || SYNC_DESCRIPTION_RX.test(product.description))) {
@@ -238,6 +264,12 @@ async function syncProducts({ trigger = 'manual' } = {}) {
     }
   }
 
+  // Per-centre shelf rows: one Inventory document per product per centre that
+  // lists it, so "what is on the shelf at Jubilee Hills Pharmacy" is a query,
+  // not a guess. Quantities are ours (Zenoti exposes none) and are never reset.
+  try { stats.shelves = await syncCentreShelves(merged, byCentre); }
+  catch (error) { logger.warn('Per-centre shelf sync failed', { error: error.message }); }
+
   // Products mirrored before `trackStock` existed carry no value at all. Zenoti
   // gives no stock, so "never decided" means "not tracked" — set exactly once,
   // and only where the field is absent, so a clinic that later starts counting
@@ -264,4 +296,48 @@ async function syncProducts({ trigger = 'manual' } = {}) {
   return stats;
 }
 
-module.exports = { syncProducts };
+/**
+ * One Inventory row per (product, centre) — Zenoti's "Current stock" list.
+ * Existing quantities, batches and costs are never touched; only identity and
+ * linkage are written, and only when something actually changed.
+ */
+async function syncCentreShelves(merged, byCentre) {
+  const Product = require('../models/Product');
+  const wanted = [];
+  for (const entry of merged.values()) {
+    if (!entry.name) continue;
+    for (const c of entry.centres || []) {
+      if (!c.branchId) continue;
+      wanted.push({ zenotiProductId: entry.zenotiProductId, branchId: c.branchId, zenotiCenterId: c.zenotiCenterId, name: entry.name, code: entry.sku || null, category: entry.isRetail === true ? 'Retail products' : 'Consumables', packSize: entry.packSize || null, brand: entry.brand || null, mrp: entry.mrp ?? null, hsn: entry.hsn || null });
+    }
+  }
+  const ids = [...new Set(wanted.map((w) => w.zenotiProductId))];
+  const products = await Product.find({ zenotiProductId: { $in: ids } }).select('_id zenotiProductId gstPercentage').lean();
+  const productBy = new Map(products.map((p) => [String(p.zenotiProductId), p]));
+  const existing = await Inventory.find({ zenotiProductId: { $in: ids } }).select('_id zenotiProductId branchId productId zenotiCenterId inventoryName code inventoryCategory').lean();
+  const key = (p, b) => `${p}|${b || 'none'}`;
+  const have = new Map(existing.map((e) => [key(e.zenotiProductId, e.branchId), e]));
+  // A legacy consumable row with no centre becomes the row for its first centre
+  // rather than a duplicate.
+  const orphan = new Map(existing.filter((e) => !e.branchId).map((e) => [String(e.zenotiProductId), e]));
+  const ops = [];
+  const claimed = new Set();
+  for (const w of wanted) {
+    const hit = have.get(key(w.zenotiProductId, w.branchId));
+    const product = productBy.get(String(w.zenotiProductId));
+    const set = { productId: product?._id || null, zenotiCenterId: w.zenotiCenterId, branchId: w.branchId, zenotiProductId: w.zenotiProductId, inventoryName: w.name, code: w.code, inventoryCategory: w.category, zenotiSyncedAt: new Date() };
+    if (hit) {
+      if (hit.productId && String(hit.productId) === String(set.productId) && hit.zenotiCenterId === w.zenotiCenterId && hit.inventoryName === w.name) continue;
+      ops.push({ updateOne: { filter: { _id: hit._id }, update: { $set: set } } });
+      continue;
+    }
+    const reuse = !claimed.has(String(w.zenotiProductId)) ? orphan.get(String(w.zenotiProductId)) : null;
+    if (reuse) { claimed.add(String(w.zenotiProductId)); ops.push({ updateOne: { filter: { _id: reuse._id }, update: { $set: set } } }); continue; }
+    ops.push({ insertOne: { document: { ...set, qohAllBatches: 0, qohBatchWise: 0, batchMaintenance: 'Non Batchable', gstPercentage: product?.gstPercentage ?? 0, packName: w.packSize, orgName: w.brand, createdAt: new Date(), updatedAt: new Date() } } });
+  }
+  if (!ops.length) return { rows: wanted.length, written: 0 };
+  const res = await Inventory.bulkWrite(ops, { ordered: false });
+  return { rows: wanted.length, inserted: res.insertedCount || 0, updated: res.modifiedCount || 0 };
+}
+
+module.exports = { syncProducts, syncCentreShelves };

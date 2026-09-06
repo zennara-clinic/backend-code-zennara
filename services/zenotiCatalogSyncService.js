@@ -207,6 +207,20 @@ async function fillPackageFromPurchases(doc, stats) {
 
 async function syncPackages(stats) {
   const { rows } = await collect((c) => zenoti.getCenterPackages(c));
+  const Branch = require('../models/Branch');
+  const branches = await Branch.find({ zenotiCenterId: { $ne: null } }).select('name zenotiCenterId').lean();
+  const branchByCentre = new Map(branches.map((b) => [String(b.zenotiCenterId).toLowerCase(), b]));
+  // Which centres list each package (Zenoti's CENTERS tab on a package):
+  // `collect` already kept a per-centre row for every package it saw.
+  const centresFor = new Map();
+  for (const row of rows) {
+    const arr = [];
+    for (const pc of row.perCentre || []) {
+      const b = branchByCentre.get(String(pc.centerId).toLowerCase());
+      if (!arr.some((x) => x.zenotiCenterId === pc.centerId)) arr.push({ branchId: b?._id || null, zenotiCenterId: pc.centerId, branchName: b?.name || pc.centreName || '' });
+    }
+    centresFor.set(row.id, arr);
+  }
   const seenIds = new Set();
   for (const pkg of rows) {
     seenIds.add(pkg.id);
@@ -238,13 +252,16 @@ async function syncPackages(stats) {
         stats.packages.created += 1;
       } else if (doc.zenotiPackageId !== pkg.id) {
         doc.zenotiPackageId = pkg.id;
-        stats.packages.updated += 1;
-      } else if (!(await fillPackageFromPurchases(doc, stats))) {
-        stats.packages.unchanged += 1;
-        continue;
+      } else {
+        await fillPackageFromPurchases(doc, stats);
       }
       // A freshly created or newly linked shell also gets its contents from sales.
       if (!(doc.services || []).length || !(Number(doc.price) > 0)) await fillPackageFromPurchases(doc, stats);
+      // The Zenoti master (kind, code, validity, grace, freezes, centres)
+      // always applies — it is what makes the catalogue tab meaningful.
+      applyPackageMaster(doc, pkg, centresFor.get(pkg.id) || []);
+      if (!doc.isNew && !doc.isModified()) { stats.packages.unchanged += 1; continue; }
+      if (!doc.isNew) stats.packages.updated += 1;
       await doc.save({ validateModifiedOnly: true });
     } catch (error) {
       stats.packages.failed += 1;
@@ -253,6 +270,17 @@ async function syncPackages(stats) {
   }
   const gone = await Package.find({ zenotiPackageId: { $nin: [...seenIds], $type: 'string' }, isActive: true }).select('name').lean();
   stats.packages.missingFromZenoti = gone.map((g) => g.name);
+  // Anything linked to Zenoti but not listed by a centre is a sale-only row:
+  // a custom package built for one guest, or a retired offer. It keeps its
+  // assignments but leaves the sellable catalogue.
+  const outOfCatalogue = await Package.updateMany(
+    { zenotiPackageId: { $type: 'string', $nin: [...seenIds] } },
+    [{ $set: { inCatalogue: false, origin: 'zenoti', packageType: { $cond: [{ $regexMatch: { input: '$name', regex: /^custom package/i } }, 'custom', { $ifNull: ['$packageType', 'series'] }] } } }],
+  ).catch(() => ({ modifiedCount: 0 }));
+  stats.packages.outOfCatalogue = outOfCatalogue.modifiedCount || 0;
+  // Rows created in our own panel.
+  await Package.updateMany({ zenotiPackageId: { $in: [null, ''] }, origin: { $ne: 'panel' } }, { $set: { origin: 'panel', inCatalogue: true } }).catch(() => {});
+  await Package.updateMany({ 'services.0': { $exists: true }, contentsKnown: { $ne: true } }, { $set: { contentsKnown: true } }).catch(() => {});
 }
 
 /**
@@ -287,6 +315,36 @@ async function syncMemberships(stats) {
       logger.warn('Membership mirror failed', { zenotiMembershipId: m.id, name: m.name, error: error.message });
     }
   }
+}
+
+/**
+ * Zenoti's package master onto our row: code, kind, validity, grace, freeze
+ * allowance, terms and the centres that sell it. Commercial fields the panel
+ * owns (price, description, image, isActive) are never touched here.
+ */
+function applyPackageMaster(doc, pkg, centres) {
+  const raw = pkg.raw || pkg;
+  doc.origin = 'zenoti';
+  doc.inCatalogue = true;
+  if (pkg.code && !doc.code) doc.code = String(pkg.code).toUpperCase();
+  const type = raw.type ?? pkg.type;
+  doc.packageType = /^custom package/i.test(doc.name || '') ? 'custom' : type === 1 ? 'day' : type === 3 ? 'offer' : 'series';
+  if (raw.categoryId) doc.zenotiCategoryId = raw.categoryId;
+  const series = raw.series || pkg.series || {};
+  const validity = series.validity || {};
+  const expiry = Number(validity.expiry);
+  if (Number.isFinite(expiry) && expiry > 0) { doc.validityDays = expiry; doc.neverExpires = false; }
+  else if (validity.expiry_date === null && (expiry === 0 || expiry === -1)) doc.neverExpires = true;
+  const grace = Number(String(validity.grace_period ?? '').replace(/[^\d]/g, ''));
+  if (Number.isFinite(grace) && grace > 0) doc.graceDays = grace;
+  const freezes = Number(series.freezeCount);
+  if (Number.isFinite(freezes) && freezes >= 0) doc.maxFreezes = freezes;
+  const instalments = Number(series.schedule?.number_of_instalments);
+  if (Number.isFinite(instalments) && instalments > 0 && !doc.minPartialPaymentPercent) doc.minPartialPaymentPercent = Math.round(100 / instalments);
+  if (series.terms && !doc.agreementText) doc.agreementText = String(series.terms);
+  if (centres.length) doc.centres = centres;
+  doc.contentsKnown = (doc.services || []).length > 0;
+  return doc;
 }
 
 async function syncCatalog({ trigger = 'schedule', adminId = null } = {}) {

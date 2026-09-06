@@ -178,6 +178,21 @@ const invoiceSchema = new mongoose.Schema({
   /** Zenoti's invoice id/number when this bill mirrors one (read-only). */
   zenotiInvoiceId: { type: String, default: null, index: true },
   zenotiInvoiceNumber: { type: String, default: null },
+  /** What Zenoti says about a mirrored bill, kept verbatim. */
+  zenotiSource: {
+    invoiceNumber: { type: String, default: null },
+    receiptNumber: { type: String, default: null },
+    isClosed: { type: Boolean, default: null },
+    isRefund: { type: Boolean, default: null },
+    appointmentGroupId: { type: String, default: null, index: true },
+    guestId: { type: String, default: null },
+    guestCode: { type: String, default: null },
+    centerId: { type: String, default: null },
+    invoiceDate: { type: Date, default: null },
+    /** When the line items / payments were last pulled (they cost extra calls). */
+    detailFetchedAt: { type: Date, default: null },
+    syncedAt: { type: Date, default: null },
+  },
   /** The member tier that discounted this bill (for the receipt line "Zen member 15% off"). */
   membership: { kind: { type: String, default: null }, name: { type: String, default: null }, memberNumber: { type: String, default: null }, assignmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'MembershipAssignment', default: null } },
   /** What the bill settles (denormalised for search). */
@@ -252,7 +267,12 @@ invoiceSchema.methods.recalc = function () {
   return this.totals;
 };
 
-invoiceSchema.pre('validate', function (next) { this.recalc(); next(); });
+invoiceSchema.pre('validate', function (next) {
+  // A Zenoti-mirrored invoice keeps Zenoti's own figures — recomputing from
+  // the mirrored lines would drift from the bill the guest actually paid.
+  if (this.source !== 'zenoti') this.recalc();
+  next();
+});
 
 invoiceSchema.statics.METHODS = METHODS;
 invoiceSchema.statics.LINE_KINDS = LINE_KINDS;

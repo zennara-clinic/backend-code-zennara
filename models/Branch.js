@@ -120,6 +120,14 @@ const branchSchema = new mongoose.Schema({
    */
   zone: { type: String, default: 'Hyderabad', trim: true },
   isPharmacy: { type: Boolean, default: false, index: true },
+  /**
+   * What this centre is, as Zenoti models it. Only `clinic` centres are
+   * bookable in the app; pharmacies hold retail stock and raise their own
+   * invoices; `training` is Zenoti's internal practice centre.
+   */
+  centreType: { type: String, enum: ['clinic', 'pharmacy', 'training'], default: 'clinic', index: true },
+  /** The clinic a pharmacy belongs to (stock transfers, reporting). */
+  parentBranchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', default: null },
   /** The pharmacy centre attached to this clinic (Zenoti keeps them separate). */
   pharmacyZenotiCenterId: { type: String, default: null, trim: true, lowercase: true },
 

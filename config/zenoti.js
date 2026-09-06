@@ -27,13 +27,13 @@ const RATE_LIMIT_PER_MINUTE = Number(process.env.ZENOTI_RATE_LIMIT || 50);
  * their nearest public clinic for display purposes.
  */
 const CENTERS = {
-  'c9f032b2-4450-4a77-8ec8-641a26908d39': { code: 'ZENJH', name: 'Jubilee Hills', branchName: 'Jubilee Hills', isClinic: true },
-  '9980db29-2a7b-49bd-a685-5d889a7917c6': { code: 'ZNFD', name: 'Financial District', branchName: 'Financial District', isClinic: true },
-  '80963e4e-6625-4b83-8b88-9708c0cb2303': { code: 'ZNKD', name: 'Kondapur', branchName: 'Kondapur', isClinic: true },
-  'e128ca1b-1f1d-4c17-abfb-8ef12a607917': { code: 'TC', name: 'Training Centre', branchName: 'Jubilee Hills', isClinic: false },
-  '1ecf7d59-7ca2-43f5-a884-c8cf63dfc927': { code: 'ZNJHP', name: 'Jubilee Hills Pharmacy', branchName: 'Jubilee Hills', isClinic: false },
-  'f503d08a-851a-4a82-a093-4f95f3e492cb': { code: 'ZNFDP', name: 'Financial District Pharmacy', branchName: 'Financial District', isClinic: false },
-  '8625b58d-fc90-4f89-b461-d38bf475017f': { code: 'ZNKDP', name: 'Kondapur Pharmacy', branchName: 'Kondapur', isClinic: false },
+  'c9f032b2-4450-4a77-8ec8-641a26908d39': { code: 'ZENJH', name: 'Jubilee Hills', branchName: 'Jubilee Hills', isClinic: true, centreType: 'clinic', prefix: 'ZNJH' },
+  '9980db29-2a7b-49bd-a685-5d889a7917c6': { code: 'ZNFD', name: 'Financial District', branchName: 'Financial District', isClinic: true, centreType: 'clinic', prefix: 'ZNFD' },
+  '80963e4e-6625-4b83-8b88-9708c0cb2303': { code: 'ZNKD', name: 'Kondapur', branchName: 'Kondapur', isClinic: true, centreType: 'clinic', prefix: 'ZNKD' },
+  'e128ca1b-1f1d-4c17-abfb-8ef12a607917': { code: 'TC', name: 'Training Centre', branchName: 'Jubilee Hills', isClinic: false, centreType: 'training', prefix: 'ZNTC' },
+  '1ecf7d59-7ca2-43f5-a884-c8cf63dfc927': { code: 'ZNJHP', name: 'Jubilee Hills Pharmacy', branchName: 'Jubilee Hills', isClinic: false, centreType: 'pharmacy', parent: 'Jubilee Hills', prefix: 'ZJHP' },
+  'f503d08a-851a-4a82-a093-4f95f3e492cb': { code: 'ZNFDP', name: 'Financial District Pharmacy', branchName: 'Financial District', isClinic: false, centreType: 'pharmacy', parent: 'Financial District', prefix: 'ZFDP' },
+  '8625b58d-fc90-4f89-b461-d38bf475017f': { code: 'ZNKDP', name: 'Kondapur Pharmacy', branchName: 'Kondapur', isClinic: false, centreType: 'pharmacy', parent: 'Kondapur', prefix: 'ZKDP' },
 };
 
 /** The default branch a guest lands on when their home center can't be mapped. */

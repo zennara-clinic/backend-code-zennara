@@ -121,6 +121,21 @@ const productSchema = new mongoose.Schema({
     branchName: { type: String, default: '', trim: true },
     quantity: { type: Number, default: 0, min: 0 },
   }],
+  /**
+   * Which centres list this product, straight from Zenoti's per-centre product
+   * feed. The pharmacy centres carry the retail range; a clinic carries what
+   * its treatment rooms and desk sell. Availability, not stock.
+   */
+  centres: [{
+    _id: false,
+    branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', default: null },
+    zenotiCenterId: { type: String, default: null, trim: true },
+    branchName: { type: String, default: '', trim: true },
+  }],
+  barcodes: { type: [String], default: [] },
+  isKit: { type: Boolean, default: false },
+  zenotiCategoryId: { type: String, default: null, trim: true },
+  zenotiSubCategoryId: { type: String, default: null, trim: true },
   /** Zenoti's MRP (max_retail_price). Informational; `price` stays the app's selling price. */
   mrp: { type: Number, default: null },
   /** Pack size as Zenoti records it, e.g. "1 ML", "30 GM". */

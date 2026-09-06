@@ -33,7 +33,7 @@ function addressLinePath() {
 async function syncCenters({ trigger = 'schedule', adminId = null } = {}) {
   if (!zenoti.isConfigured()) return { skipped: true };
   const run = await ZenotiSyncRun.create({ type: 'centers', trigger: trigger === 'schedule' ? 'schedule' : 'manual', startedBy: adminId }).catch(() => null);
-  const stats = { seen: 0, updated: 0, unchanged: 0, missingBranch: [], failed: 0 };
+  const stats = { seen: 0, created: 0, updated: 0, unchanged: 0, missingBranch: [], failed: 0 };
   try {
     const json = await zenoti.request('/v1/centers', {});
     const centres = json?.centers || (Array.isArray(json) ? json : []);
@@ -42,14 +42,42 @@ async function syncCenters({ trigger = 'schedule', adminId = null } = {}) {
     for (const c of centres) {
       const id = norm(c.id);
       const cfg = CENTERS[c.id] || CENTERS[id];
-      if (!cfg || !cfg.isClinic) continue;
+      if (!cfg) continue;
       stats.seen += 1;
       try {
+        const centreType = cfg.centreType || (cfg.isClinic ? 'clinic' : 'pharmacy');
+        // A clinic maps onto its existing Branch; a pharmacy / training centre
+        // is its OWN centre in the panel (own stock, own invoices) and is
+        // created on first sync. Guests still map to the clinic — see
+        // branchNameForCenter — so nothing about booking changes.
         let branch = await Branch.findOne({ zenotiCenterId: id });
-        if (!branch) branch = await Branch.findOne({ name: new RegExp(`^${cfg.branchName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+        if (!branch && centreType === 'clinic') branch = await Branch.findOne({ name: new RegExp(`^${cfg.branchName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+        if (!branch && centreType !== 'clinic') branch = await Branch.findOne({ name: new RegExp(`^${cfg.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+        if (!branch && centreType !== 'clinic') {
+          const parent = cfg.parent ? await Branch.findOne({ name: cfg.parent, centreType: 'clinic' }).select('_id zone address contact').lean() : null;
+          branch = new Branch({
+            name: cfg.name,
+            description: centreType === 'pharmacy' ? 'Pharmacy centre — retail stock and pharmacy invoices' : 'Zenoti training centre',
+            address: parent?.address || { line1: cfg.name, city: 'Hyderabad', state: 'Telangana', pincode: '500000' },
+            contact: parent?.contact || { phone: ['7070701088'], email: 'pharmacy@zennara.in' },
+            zone: parent?.zone || 'Hyderabad',
+            // Not bookable in the app: the app's branch list asks for active
+            // centres only, so a pharmacy never reaches a guest's picker.
+            isActive: false,
+            displayOrder: centreType === 'pharmacy' ? 50 : 90,
+          });
+          branch.isPharmacy = centreType === 'pharmacy';
+          branch.centreType = centreType;
+          branch.parentBranchId = parent?._id || null;
+          branch.invoicePrefix = cfg.prefix || null;
+          stats.created += 1;
+        }
         if (!branch) { stats.missingBranch.push(cfg.branchName); continue; }
 
-        const before = JSON.stringify([branch.zenotiCenterId, branch.address, branch.contact, branch.location?.coordinates]);
+        const before = branch.isNew ? '' : JSON.stringify([branch.zenotiCenterId, branch.address, branch.contact, branch.location?.coordinates, branch.centreType, branch.invoicePrefix]);
+        if (branch.centreType !== centreType) branch.centreType = centreType;
+        if (centreType === 'pharmacy' && !branch.isPharmacy) branch.isPharmacy = true;
+        if (!branch.invoicePrefix && cfg.prefix) branch.invoicePrefix = cfg.prefix;
         branch.zenotiCenterId = id;
 
         const addr = c.address_info || {};
@@ -71,7 +99,7 @@ async function syncCenters({ trigger = 'schedule', adminId = null } = {}) {
           branch.set('location', { type: 'Point', coordinates: [lng, lat] });
         }
 
-        const after = JSON.stringify([branch.zenotiCenterId, branch.address, branch.contact, branch.location?.coordinates]);
+        const after = JSON.stringify([branch.zenotiCenterId, branch.address, branch.contact, branch.location?.coordinates, branch.centreType, branch.invoicePrefix]);
         if (before === after) { stats.unchanged += 1; continue; }
         branch.zenotiSyncedAt = new Date();
         await branch.save({ validateModifiedOnly: true });

@@ -151,7 +151,13 @@ async function applyMembershipDiscounts(inv) {
 const populateInvoice = (q) => q.populate('userId', 'fullName phone email patientId gender memberType zenMembershipExpiryDate').populate('branchId', 'name invoicePrefix');
 const loadInvoice = (id) => populateInvoice(Invoice.findById(id));
 const send = (res, inv, status = 200, extra = {}) => res.status(status).json({ success: true, data: inv, ...extra });
-const mustBeOpen = (inv, res) => (inv.status !== 'open' ? (fail(res, 409, `This invoice is ${inv.status}. Reopen it to make changes.`, { code: 'INVOICE_NOT_OPEN' }), false) : true);
+const mustBeOpen = (inv, res) => {
+  // A bill mirrored from Zenoti is a record of what the clinic charged there;
+  // it is never edited here (that would drift from the CRM).
+  if (inv.source === 'zenoti') { fail(res, 409, 'This bill was raised in Zenoti — it is shown here read-only. Change it in Zenoti and refresh.', { code: 'ZENOTI_INVOICE_READONLY' }); return false; }
+  if (inv.status !== 'open') { fail(res, 409, `This invoice is ${inv.status}. Reopen it to make changes.`, { code: 'INVOICE_NOT_OPEN' }); return false; }
+  return true;
+};
 
 /* ------------------------------------------------------------------------ */
 /* Create / read                                                             */
@@ -216,6 +222,8 @@ exports.list = async (req, res) => {
     if (status && status !== 'all') q.status = status;
     if (isId(userId)) q.userId = userId;
     if (isId(bookingId)) q.bookingIds = bookingId;
+    if (req.query.source && req.query.source !== 'all') q.source = req.query.source;
+    if (req.query.due === 'true') q['totals.due'] = { $gt: 0 };
     if (date && /^\d{4}-\d{2}-\d{2}$/.test(date)) q.issuedAt = { $gte: clinicDayStart(date), $lte: clinicDayEnd(date) };
     else if (from || to) { q.issuedAt = {}; if (from) q.issuedAt.$gte = clinicDayStart(from); if (to) q.issuedAt.$lte = clinicDayEnd(to); }
     if (search && String(search).trim()) {
@@ -786,3 +794,75 @@ exports.guestPackages = async (req, res) => {
 };
 
 exports._internal = { applyClose, lineFromBooking, buildLine };
+
+
+/* ------------------------------------------------------------------------ */
+/* Zenoti-mirrored bills                                                     */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * POST /api/invoices/:id/zenoti-refresh — pull this bill's line items and
+ * payments from Zenoti (two API calls) and store them. Called when the desk
+ * opens a mirrored bill that has never been expanded.
+ */
+exports.refreshFromZenoti = async (req, res) => {
+  try {
+    const inv = await Invoice.findById(req.params.id).select('zenotiInvoiceId source').lean();
+    if (!inv) return fail(res, 404, 'Invoice not found');
+    if (!inv.zenotiInvoiceId) return fail(res, 400, 'This bill was raised here, not in Zenoti.');
+    const { mirrorInvoice } = require('../services/zenotiInvoiceSyncService');
+    await mirrorInvoice(inv.zenotiInvoiceId, { detail: true });
+    return send(res, await loadInvoice(req.params.id), 200, { message: 'Refreshed from Zenoti' });
+  } catch (e) {
+    return fail(res, e.status || 502, e.message || 'Could not read the bill from Zenoti');
+  }
+};
+
+/**
+ * GET /api/invoices/for-booking/:bookingId — the bill behind a visit. A
+ * Zenoti visit is mirrored (with its lines and payments) on first open.
+ */
+exports.forBooking = async (req, res) => {
+  try {
+    const Booking = require('../models/Booking');
+    const booking = await Booking.findById(req.params.bookingId).select('invoiceId zenotiInvoiceId').lean();
+    if (!booking) return fail(res, 404, 'Booking not found');
+    if (booking.invoiceId) {
+      const local = await loadInvoice(booking.invoiceId);
+      if (local && (local.source !== 'zenoti' || local.zenotiSource?.detailFetchedAt)) return send(res, local);
+    }
+    if (!booking.zenotiInvoiceId) return fail(res, 404, 'No bill for this visit yet.', { code: 'NO_INVOICE' });
+    const { invoiceForBooking } = require('../services/zenotiInvoiceSyncService');
+    const inv = await invoiceForBooking(req.params.bookingId, { refresh: true });
+    return send(res, await loadInvoice(inv._id));
+  } catch (e) {
+    return fail(res, e.status || 502, e.message || 'Could not load the bill');
+  }
+};
+
+/** GET /api/invoices/summary?from&to&branchId — the register's headline numbers. */
+exports.summary = async (req, res) => {
+  try {
+    const q = {};
+    if (isId(req.query.branchId)) q.branchId = new mongoose.Types.ObjectId(req.query.branchId);
+    if (req.query.from || req.query.to) {
+      q.issuedAt = {};
+      if (req.query.from) q.issuedAt.$gte = clinicDayStart(req.query.from);
+      if (req.query.to) q.issuedAt.$lte = clinicDayEnd(req.query.to);
+    }
+    const rows = await Invoice.aggregate([
+      { $match: q },
+      { $group: { _id: { status: '$status', source: '$source' }, count: { $sum: 1 }, amount: { $sum: '$totals.total' }, paid: { $sum: '$totals.paid' }, due: { $sum: '$totals.due' } } },
+    ]);
+    const out = { total: { count: 0, amount: 0, paid: 0, due: 0 }, byStatus: {}, bySource: {} };
+    for (const r of rows) {
+      const { status, source } = r._id;
+      if (status !== 'void') { out.total.count += r.count; out.total.amount += r.amount; out.total.paid += r.paid; out.total.due += r.due; }
+      out.byStatus[status] = out.byStatus[status] || { count: 0, amount: 0, due: 0 };
+      out.byStatus[status].count += r.count; out.byStatus[status].amount += r.amount; out.byStatus[status].due += r.due;
+      out.bySource[source] = out.bySource[source] || { count: 0, amount: 0 };
+      out.bySource[source].count += r.count; out.bySource[source].amount += r.amount;
+    }
+    return res.json({ success: true, data: out });
+  } catch (e) { return fail(res, 500, 'Could not summarise invoices'); }
+};

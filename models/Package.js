@@ -113,8 +113,30 @@ const packageSchema = new mongoose.Schema({
   /** Short code printed on receipts and used in searches (Zenoti Code*, e.g. 2GFCEXO). */
   code: { type: String, default: null, trim: true, uppercase: true },
   category: { type: String, default: 'Default', trim: true },
-  /** series = a defined package; custom = built for one guest at the desk. */
-  packageType: { type: String, enum: ['series', 'custom'], default: 'series' },
+  /**
+   * Zenoti's package kinds. `series` is the normal multi-session package,
+   * `day` a day package, `offer` a promotional bundle, and `custom` one built
+   * for a single guest at the desk (it never appears in the catalogue).
+   */
+  packageType: { type: String, enum: ['series', 'custom', 'day', 'offer'], default: 'series' },
+  /** Where the row came from: Zenoti's catalogue / a Zenoti sale, or built here. */
+  origin: { type: String, enum: ['zenoti', 'panel'], default: 'panel', index: true },
+  /**
+   * True while the package is still listed by a Zenoti centre. A package sold
+   * to a guest and later retired (or built custom at the desk) stays in the
+   * system for its assignments but is not part of the sellable catalogue.
+   */
+  inCatalogue: { type: Boolean, default: false, index: true },
+  /** Centres that list this package, from Zenoti's per-centre feed. */
+  centres: [{
+    _id: false,
+    branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', default: null },
+    zenotiCenterId: { type: String, default: null, trim: true },
+    branchName: { type: String, default: '', trim: true },
+  }],
+  zenotiCategoryId: { type: String, default: null, trim: true },
+  /** Zenoti exposes no package line items; true once someone fills them in. */
+  contentsKnown: { type: Boolean, default: false },
   /**
    * Validity. `validityMonths` above stays the app's simple figure; these refine it:
    * neverExpires wins, else validityDays when set, else validityMonths. Validity

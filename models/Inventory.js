@@ -11,6 +11,9 @@ const inventorySchema = new mongoose.Schema({
    * physical count impossible. `null` = legacy row not yet attributed.
    */
   branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', default: null, index: true },
+  /** The product master row this shelf entry counts (one row per product per centre). */
+  productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null, index: true },
+  zenotiCenterId: { type: String, default: null, trim: true, index: true },
   vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor', default: null, index: true },
 
   // Basic Information

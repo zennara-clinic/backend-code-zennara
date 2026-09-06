@@ -30,6 +30,12 @@ function startZenotiScheduler() {
     return;
   }
 
+  // Invoices behind recently mirrored appointments (header only, capped) — the
+  // desk pulls a bill's lines on demand when it opens one.
+  cron.schedule('25 * * * *', () => {
+    require('../services/zenotiInvoiceSyncService').syncRecentInvoices({ days: 7, limit: 150, trigger: 'schedule' }).catch(() => {});
+  }, { timezone: 'Asia/Kolkata' });
+
   cron.schedule('30 2 * * *', () => {
     importer.importRoster({ trigger: 'schedule' }).catch(() => {});
   }, { timezone: 'Asia/Kolkata' });

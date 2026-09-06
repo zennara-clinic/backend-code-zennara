@@ -66,6 +66,22 @@ function clinicDate(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+/**
+ * Zenoti's own appointment status, in words. Codes confirmed against live
+ * data (2026-09-06): 1 is by far the commonest and always carries a closed
+ * invoice; -1/-2 are cancellations and no-shows. Anything we have not seen
+ * documented is shown as its raw code rather than guessed at.
+ */
+const ZENOTI_STATUS_LABEL = {
+  '-2': 'No show', '-1': 'Cancelled', '0': 'Booked', '1': 'Serviced (closed)',
+  '2': 'Checked in', '3': 'Confirmed', '4': 'In service', '11': 'Reserved', '21': 'Voided',
+};
+function zenotiStatusLabel(status) {
+  const key = String(status ?? '').trim();
+  if (!key) return null;
+  return ZENOTI_STATUS_LABEL[key] || `Zenoti status ${key}`;
+}
+
 /** Zenoti appointment enum/progress -> the local lifecycle enum. */
 function localStatus(appointment) {
   const status = String(appointment.status ?? '').toLowerCase();
@@ -498,6 +514,7 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
   booking.externalServiceCategory = appointment.serviceSubCategory || appointment.serviceCategory || null;
   booking.zenotiSource = {
     status: appointment.status,
+    statusLabel: zenotiStatusLabel(appointment.status),
     progress: appointment.progress,
     source: appointment.source,
     centerId: appointment.centerId || owner.zenotiCenterId || null,
@@ -518,6 +535,11 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
     createdAt: bookedAt || booking.zenotiSource?.createdAt || null,
     createdByName: appointment.createdByName || booking.zenotiSource?.createdByName || null,
   };
+  // Zenoti records when the guest was checked in at the clinic; without it the
+  // day book cannot show a Zenoti visit as "arrived 10:42".
+  const zCheckIn = clinicDate(appointment.checkinTime);
+  if (zCheckIn && !booking.checkInTime) booking.checkInTime = zCheckIn;
+  if (zCheckIn && !booking.zenotiSource.checkinTime) booking.zenotiSource.checkinTime = appointment.checkinTime;
   booking.zenotiSyncStatus = 'synced';
   booking.zenotiSyncError = null;
   booking.zenotiSyncedAt = new Date();
