@@ -76,6 +76,14 @@ async function validateCouponForOrder(code, orderValue, productIds) {
   if (coupon.usageLimit && coupon.usageCount >= coupon.usageLimit) return { ok: false };
   if (coupon.minOrderValue && orderValue < coupon.minOrderValue) return { ok: false };
 
+  // Category scoping ("Skincare only") — matched on the catalogue's category,
+  // sub-category or formulation, so a coupon written for a sheet category works.
+  if (coupon.applicableCategories && coupon.applicableCategories.length > 0) {
+    const wanted = new Set(coupon.applicableCategories.map((c) => String(c).trim().toLowerCase()));
+    const rows = await Product.find({ _id: { $in: productIds } }).select('productCategory productSubCategory formulation').lean();
+    const inScope = rows.some((p) => [p.productCategory, p.productSubCategory, p.formulation].some((v) => v && wanted.has(String(v).trim().toLowerCase())));
+    if (!inScope) return { ok: false };
+  }
   if (coupon.applicableProducts && coupon.applicableProducts.length > 0) {
     const applicable = coupon.applicableProducts.map(String);
     const hasApplicable = productIds.some((id) => applicable.includes(String(id)));

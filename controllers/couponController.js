@@ -388,7 +388,8 @@ exports.getAvailableCoupons = async (req, res) => {
         { $expr: { $lt: ['$usageCount', '$usageLimit'] } }
       ]
     })
-    .select('-usageCount -perUserLimit -applicableProducts -applicableCategories')
+    // The app needs the scope to say "applies to Skincare" and to pre-check the cart.
+    .select('-usageCount -perUserLimit')
     .sort({ discountValue: -1, createdAt: -1 });
     
     // Filter out any coupons with missing required fields
