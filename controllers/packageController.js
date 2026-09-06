@@ -157,19 +157,43 @@ exports.createPackage = async (req, res) => {
 // @access  Public
 exports.getAllPackages = async (req, res) => {
   try {
-    const { isActive, includeInactive, search, limit } = req.query;
+    const { isActive, includeInactive, search, limit, origin, inCatalogue, packageType, branchId, page } = req.query;
     const q = {};
     // The app only ever sees active packages; staff opt in to the rest.
     if (isActive === 'true' || (!req.admin && includeInactive !== 'true')) q.isActive = true;
     else if (isActive === 'false') q.isActive = false;
-    if (search) q.name = { $regex: String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
-    let find = Package.find(q).sort({ isPopular: -1, createdAt: -1 });
-    if (limit) find = find.limit(Math.min(500, parseInt(limit, 10) || 50));
-    const packages = await find;
+    if (search) {
+      const rx = { $regex: String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
+      q.$or = [{ name: rx }, { code: rx }, { description: rx }];
+    }
+    // Zenoti's catalogue, a guest's custom / retired package, or one of ours.
+    if (origin && origin !== 'all') q.origin = origin;
+    if (inCatalogue === 'true') q.inCatalogue = true;
+    else if (inCatalogue === 'false') q.inCatalogue = false;
+    if (packageType && packageType !== 'all') q.packageType = packageType;
+    if (branchId && /^[0-9a-f]{24}$/i.test(branchId)) q['centres.branchId'] = branchId;
+
+    const perPage = Math.min(500, parseInt(limit, 10) || 100);
+    const pageNo = Math.max(1, parseInt(page, 10) || 1);
+    const [packages, total, counts] = await Promise.all([
+      Package.find(q).sort({ isPopular: -1, name: 1 }).skip((pageNo - 1) * perPage).limit(perPage),
+      Package.countDocuments(q),
+      // Tab counts, independent of the current filter, so the tabs never lie.
+      Package.aggregate([{ $group: { _id: { origin: '$origin', inCatalogue: '$inCatalogue' }, n: { $sum: 1 } } }]),
+    ]);
+    const buckets = { catalogue: 0, sold: 0, ours: 0 };
+    for (const c of counts) {
+      if (c._id.origin === 'panel') buckets.ours += c.n;
+      else if (c._id.inCatalogue) buckets.catalogue += c.n;
+      else buckets.sold += c.n;
+    }
 
     res.status(200).json({
       success: true,
       count: packages.length,
+      total,
+      buckets,
+      pagination: { page: pageNo, limit: perPage, total, pages: Math.ceil(total / perPage) },
       data: packages
     });
   } catch (error) {

@@ -59,9 +59,29 @@ exports.getAllProducts = async (req, res) => {
       query.$or = [
         { name: { $regex: search, $options: 'i' } },
         { description: { $regex: search, $options: 'i' } },
-        { OrgName: { $regex: search, $options: 'i' } }
+        { OrgName: { $regex: search, $options: 'i' } },
+        { code: { $regex: search, $options: 'i' } },
+        { sku: { $regex: search, $options: 'i' } },
+        { productCategory: { $regex: search, $options: 'i' } },
       ];
     }
+
+    /*
+     * Zenoti's product master splits into what the app can sell and what only
+     * the clinic uses. `kind` mirrors that split so the panel can show one tab
+     * per group instead of 708 rows in a single list.
+     *   retail     — sellable stock (isRetail true)
+     *   consumable — treatment-room stock (isRetail false)
+     *   rx         — prescription items, wherever they sit
+     *   unpriced   — mirrored but never priced or published
+     */
+    const { kind, branchId, category } = req.query;
+    if (kind === 'retail') query.isRetail = true;
+    else if (kind === 'consumable') query.isRetail = false;
+    else if (kind === 'rx') query.isRx = true;
+    else if (kind === 'unpriced') { query.$and = [...(query.$and || []), { $or: [{ price: 0 }, { price: null }] }]; }
+    if (branchId && /^[0-9a-f]{24}$/i.test(branchId)) query['centres.branchId'] = branchId;
+    if (category && category !== 'All') query.productCategory = category;
     
     if (isActive !== undefined) {
       query.isActive = isActive === 'true';
@@ -97,7 +117,16 @@ exports.getAllProducts = async (req, res) => {
     }
     
     const products = await Product.find(query).sort(sortOption);
-    
+
+    // Tab counts, independent of the current filter, so the tabs never lie.
+    const [allCount, retailCount, consumableCount, rxCount, unpricedCount] = await Promise.all([
+      Product.countDocuments({}),
+      Product.countDocuments({ isRetail: true }),
+      Product.countDocuments({ isRetail: false }),
+      Product.countDocuments({ isRx: true }),
+      Product.countDocuments({ $or: [{ price: 0 }, { price: null }] }),
+    ]);
+
     // Calculate stats
     const stats = {
       total: products.length,
@@ -111,6 +140,7 @@ exports.getAllProducts = async (req, res) => {
     res.json({
       success: true,
       data: products,
+      buckets: { all: allCount, retail: retailCount, consumable: consumableCount, rx: rxCount, unpriced: unpricedCount },
       stats
     });
   } catch (error) {

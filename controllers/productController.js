@@ -6,9 +6,16 @@ const Product = require('../models/Product');
 exports.getAllProducts = async (req, res) => {
   try {
     const { formulation, search, minPrice, maxPrice, sort, isPopular } = req.query;
-    
-    // Build query
-    const query = { isActive: true };
+
+    /*
+     * The app shop sells RETAIL stock only. Consumables (needles, device
+     * supplies) belong to the treatment room and are mirrored from Zenoti with
+     * isRetail false — they must never reach a guest's product list even if
+     * someone activates one by accident. Prescription items DO appear (with
+     * their description) but cannot be ordered; utils/orderPricing refuses
+     * them at checkout.
+     */
+    const query = { isActive: true, isRetail: { $ne: false } };
     
     if (formulation && formulation !== 'All') {
       query.formulation = formulation;
@@ -109,7 +116,7 @@ exports.getProductsByFormulation = async (req, res) => {
     const { formulation } = req.params;
     const { limit } = req.query;
     
-    const query = { formulation, isActive: true };
+    const query = { formulation, isActive: true, isRetail: { $ne: false } };
     
     let productsQuery = Product.find(query).sort({ createdAt: -1 });
     
@@ -144,6 +151,7 @@ exports.searchProducts = async (req, res) => {
     
     const searchQuery = {
       isActive: true,
+      isRetail: { $ne: false },
       $or: [
         { name: { $regex: query, $options: 'i' } },
         { description: { $regex: query, $options: 'i' } },

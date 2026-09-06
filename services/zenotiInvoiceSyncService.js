@@ -186,11 +186,14 @@ async function mirrorInvoice(zenotiInvoiceId, { detail = false, booking = null }
 async function syncRecentInvoices({ days = 7, limit = 150, detail = false, trigger = 'schedule' } = {}) {
   if (!zenoti.isConfigured()) return { skipped: true };
   const since = new Date(Date.now() - days * 86400000);
+  // Only visits that have already happened: Zenoti opens an invoice the moment
+  // an appointment is booked, so mirroring future ones would fill the register
+  // with empty bills and overstate what is outstanding.
   const bookings = await Booking.find({
     source: 'zenoti', zenotiInvoiceId: { $ne: null },
     $or: [{ invoiceId: null }, { invoiceId: { $exists: false } }],
-    $and: [{ $or: [{ checkOutTime: { $gte: since } }, { preferredDate: { $gte: since } }, { updatedAt: { $gte: since } }] }],
-  }).select('_id zenotiInvoiceId userId fullName mobileNumber').sort({ updatedAt: -1 }).limit(limit).lean();
+    preferredDate: { $gte: since, $lte: new Date() },
+  }).select('_id zenotiInvoiceId userId fullName mobileNumber branchId').sort({ preferredDate: -1 }).limit(limit).lean();
 
   const stats = { considered: bookings.length, created: 0, updated: 0, failed: 0, days, detail };
   const seen = new Set();
