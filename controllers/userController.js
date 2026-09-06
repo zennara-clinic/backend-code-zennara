@@ -149,6 +149,9 @@ exports.getUserById = async (req, res) => {
       medicalHistory: user.medicalHistory || '',
       source: user.source,
       zenotiGuestId: user.zenotiGuestId || null,
+      referralSource: user.referralSource || null,
+      referredByUserId: user.referredByUserId || null,
+      lastVisitAt: user.lastVisitAt || null,
       isActive: user.isActive !== undefined ? user.isActive : true,
       isVerified: user.isVerified,
       emailVerified: user.emailVerified,
@@ -156,6 +159,14 @@ exports.getUserById = async (req, res) => {
       createdAt: user.createdAt,
       lastLogin: user.lastLogin
     };
+
+    // The desk strip (visits, last visit, usual doctor, open bookings, due).
+    // Best-effort: a stats failure must not hide the profile.
+    try {
+      formattedUser.stats = await require('../utils/guestStats').getGuestStats(user._id);
+    } catch (statsError) {
+      formattedUser.stats = null;
+    }
 
     res.status(200).json({
       success: true,
@@ -175,7 +186,7 @@ exports.getUserById = async (req, res) => {
 // @access  Private (Admin only)
 exports.updateUser = async (req, res) => {
   try {
-    const { fullName, phone, email, location, memberType, dateOfBirth, gender, drugAllergies, hasDrugAllergy, medicalHistory, removeProfilePicture } = req.body;
+    const { fullName, phone, email, location, memberType, dateOfBirth, gender, drugAllergies, hasDrugAllergy, medicalHistory, removeProfilePicture, referralSource, referredByUserId } = req.body;
     const { deleteFromCloudinary } = require('../middleware/upload');
 
     const user = await User.findById(req.params.id);
@@ -186,6 +197,10 @@ exports.updateUser = async (req, res) => {
         message: 'User not found'
       });
     }
+
+    // How the guest found us (asked once at the desk, as Zenoti does).
+    if (referralSource !== undefined) user.referralSource = referralSource ? String(referralSource).trim() : null;
+    if (referredByUserId !== undefined) user.referredByUserId = referredByUserId || null;
 
     if (phone && phone !== user.phone) {
       const phoneOwner = await User.exists({
@@ -399,7 +414,7 @@ exports.updateUserStatistics = async (req, res) => {
 // @access  Private (Admin only)
 exports.createUser = async (req, res) => {
   try {
-    const { email, fullName, phone, location, dateOfBirth, gender, memberType } = req.body;
+    const { email, fullName, phone, location, dateOfBirth, gender, memberType, referralSource, referredByUserId } = req.body;
 
     // Validate required fields
     if (!email || !fullName || !phone || !location || !dateOfBirth || !gender) {
@@ -432,6 +447,9 @@ exports.createUser = async (req, res) => {
       dateOfBirth,
       gender,
       memberType: memberType || 'Regular Member',
+      source: 'reception',
+      referralSource: referralSource ? String(referralSource).trim() : null,
+      referredByUserId: referredByUserId || null,
       isVerified: true, // Admin-created users are auto-verified
       emailVerified: true,
       phoneVerified: true

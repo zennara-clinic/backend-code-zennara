@@ -11,6 +11,36 @@ const { DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { s3Client, S3_BUCKET } = require('../config/s3');
 const NotificationHelper = require('../utils/notificationHelper');
 
+/**
+ * Catalogue attributes the panel may set beyond the original store fields.
+ * Mirrors what Zenoti keeps per product (SKU, brand, category, MRP, pack
+ * size, HSN, retail vs consumable) plus our own Rx/OTC decision and vendor.
+ * Applied on create and update; an undefined key leaves the field alone.
+ */
+const EXTRA_STRING = ['sku', 'brand', 'productType', 'productCategory', 'productSubCategory', 'packSize', 'hsn', 'rxReason'];
+const EXTRA_NUMBER = ['mrp', 'lowStockThreshold'];
+const EXTRA_BOOL = ['isRetail', 'trackStock'];
+function applyProductExtras(product, body) {
+  for (const key of EXTRA_STRING) {
+    if (body[key] !== undefined) product[key] = body[key] === '' || body[key] === null ? null : String(body[key]).trim();
+  }
+  for (const key of EXTRA_NUMBER) {
+    if (body[key] !== undefined) {
+      const n = Number(body[key]);
+      product[key] = body[key] === '' || body[key] === null || !Number.isFinite(n) ? null : n;
+    }
+  }
+  for (const key of EXTRA_BOOL) {
+    if (body[key] !== undefined && body[key] !== null && body[key] !== '') product[key] = body[key] === true || body[key] === 'true';
+  }
+  if (body.isRx !== undefined) {
+    // A decision made in the panel is final until changed in the panel.
+    if (body.isRx === null || body.isRx === '') { product.isRx = null; product.rxSource = null; }
+    else { product.isRx = body.isRx === true || body.isRx === 'true'; product.rxSource = 'manual'; }
+  }
+  if (body.vendorId !== undefined) product.vendorId = body.vendorId || null;
+}
+
 // @desc    Get all products (Admin)
 // @route   GET /api/admin/products
 // @access  Private/Admin
@@ -152,7 +182,7 @@ exports.createProduct = async (req, res) => {
     if (fErr) return res.status(400).json({ success: false, message: fErr });
 
     // Create product
-    const product = await Product.create({
+    const product = new Product({
       name,
       description,
       formulation,
@@ -165,6 +195,8 @@ exports.createProduct = async (req, res) => {
       isActive: isActive !== undefined ? isActive : true,
       isPopular: isPopular || false
     });
+    applyProductExtras(product, req.body);
+    await product.save();
 
     // Create notification for new product
     try {
@@ -245,6 +277,7 @@ exports.updateProduct = async (req, res) => {
     if (stock !== undefined) product.stock = stock;
     if (isActive !== undefined) product.isActive = isActive;
     if (isPopular !== undefined) product.isPopular = isPopular;
+    applyProductExtras(product, req.body);
 
     // Additional safety check: ensure code is null if empty string before saving
     if (product.code === '') {

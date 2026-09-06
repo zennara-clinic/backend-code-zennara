@@ -130,6 +130,24 @@ const productSchema = new mongoose.Schema({
   /** Zenoti's split: retail (sold to guests) vs consumable (used in treatment). */
   isRetail: { type: Boolean, default: null },
   /**
+   * Prescription-only (Rx) vs over-the-counter (OTC).
+   *
+   * Schedule H medicines (minoxidil, isotretinoin, topical steroids,
+   * antibiotics, hydroquinone…) may only be dispensed against a signed
+   * prescription. The app shows an Rx product with its description but does
+   * not sell it unless the guest holds a matching prescription; the desk sees
+   * the flag on the product card. `null` = not yet classified.
+   *
+   * `rxSource` records who decided: the panel ('manual'), the bulk import
+   * ('import'), or the classifier in utils/rxClassifier.js ('heuristic').
+   * A manual decision is never overwritten by the heuristic.
+   */
+  isRx: { type: Boolean, default: null, index: true },
+  rxSource: { type: String, enum: ['manual', 'import', 'heuristic', null], default: null },
+  rxReason: { type: String, default: null, trim: true },
+  /** Preferred supplier. Optional; purchase orders may name any vendor. */
+  vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor', default: null, index: true },
+  /**
    * Whether `stock` means anything for this product.
    *
    * Zenoti's API exposes no stock figure (verified 2026-09-04), so a product

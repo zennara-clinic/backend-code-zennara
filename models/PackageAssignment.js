@@ -22,7 +22,10 @@ const packageAssignmentSchema = new mongoose.Schema({
     originalPrice: Number,
     services: [{
       serviceId: String,
-      serviceName: String
+      serviceName: String,
+      /** Sessions entitled for this service at the time of sale (Package.services[].sessions). */
+      sessions: { type: Number, default: null },
+      servicePrice: { type: Number, default: null }
     }]
   },
   userDetails: {
@@ -316,12 +319,49 @@ packageAssignmentSchema.post('save', function(doc) {
   });
 });
 
+/**
+ * Sessions entitled per service (from the package definition) and sessions
+ * completed per service (from the session list, falling back to the older
+ * completedServices log). A package with "Exosome × 3, GFC × 2" is 5 units,
+ * not 2 — comparing service counts marked such packages Completed after the
+ * first session of each service (bug fixed 2026-09-06).
+ */
+packageAssignmentSchema.methods.serviceBalances = function() {
+  // Entitlement: the snapshot's session count when recorded; otherwise the
+  // number of session rows generated for that service at assignment (older
+  // rows have one row per session but no count on the snapshot).
+  const rowsPerService = new Map();
+  (this.sessions || []).forEach((s) => { const id = String(s.serviceId || ''); if (id) rowsPerService.set(id, (rowsPerService.get(id) || 0) + 1); });
+  const entitled = new Map();
+  (this.packageDetails?.services || []).forEach((s) => {
+    const id = String(s.serviceId || '');
+    if (!id) return;
+    const declared = Number(s.sessions) > 0 ? Number(s.sessions) : 0;
+    entitled.set(id, (entitled.get(id) || 0) + Math.max(1, declared, declared ? 0 : (rowsPerService.get(id) || 0)));
+  });
+  const used = new Map();
+  const sessionRows = (this.sessions || []).filter((s) => s.status === 'Completed');
+  if (sessionRows.length) {
+    sessionRows.forEach((s) => { const id = String(s.serviceId || ''); used.set(id, (used.get(id) || 0) + 1); });
+  } else {
+    (this.completedServices || []).forEach((s) => { const id = String(s.serviceId || ''); used.set(id, (used.get(id) || 0) + 1); });
+  }
+  const rows = [];
+  for (const [serviceId, total] of entitled) {
+    const done = Math.min(total, used.get(serviceId) || 0);
+    const name = (this.packageDetails?.services || []).find((s) => String(s.serviceId) === serviceId)?.serviceName || null;
+    rows.push({ serviceId, serviceName: name, entitled: total, used: done, balance: total - done });
+  }
+  return rows;
+};
+
 // Method to check if all services are completed
 packageAssignmentSchema.methods.checkCompletion = function() {
-  const totalServices = this.packageDetails.services.length;
-  const completedServices = this.completedServices.length;
-  
-  if (totalServices > 0 && completedServices === totalServices && this.status !== 'Cancelled') {
+  const rows = this.serviceBalances();
+  const total = rows.reduce((n, r) => n + r.entitled, 0);
+  const used = rows.reduce((n, r) => n + r.used, 0);
+
+  if (total > 0 && used >= total && this.status !== 'Cancelled') {
     this.status = 'Completed';
     return true;
   }
@@ -330,10 +370,11 @@ packageAssignmentSchema.methods.checkCompletion = function() {
 
 // Method to calculate completion percentage
 packageAssignmentSchema.methods.getCompletionPercentage = function() {
-  const totalServices = this.packageDetails.services.length;
-  if (totalServices === 0) return 0;
-  const completedServices = this.completedServices.length;
-  return Math.round((completedServices / totalServices) * 100);
+  const rows = this.serviceBalances();
+  const total = rows.reduce((n, r) => n + r.entitled, 0);
+  if (total === 0) return 0;
+  const used = rows.reduce((n, r) => n + r.used, 0);
+  return Math.round((used / total) * 100);
 };
 
 const PackageAssignment = mongoose.model('PackageAssignment', packageAssignmentSchema);

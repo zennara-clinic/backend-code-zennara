@@ -810,6 +810,7 @@ exports.checkOutBooking = async (req, res) => {
 
     booking.status = 'Completed';
     booking.checkOutTime = new Date();
+    require('../utils/guestStats').touchLastVisit(booking.userId, booking.checkOutTime);
 
     // Calculate session duration
     if (booking.checkInTime) {
@@ -1470,6 +1471,7 @@ exports.checkOutBookingAdmin = async (req, res) => {
     booking.checkOutTime = new Date();
     booking.checkOutCode = null;
     booking.manualCheckOut = { reason, by: req.admin && req.admin._id, byName: req.admin && req.admin.name, at: new Date() };
+    require('../utils/guestStats').touchLastVisit(booking.userId, booking.checkOutTime);
     if (booking.checkInTime) {
       booking.sessionDuration = Math.max(0, Math.round((booking.checkOutTime - booking.checkInTime) / 60000));
     }
@@ -1872,6 +1874,7 @@ exports.verifyCheckOutCode = async (req, res) => {
 
     booking.status = 'Completed';
     booking.checkOutTime = new Date();
+    require('../utils/guestStats').touchLastVisit(booking.userId, booking.checkOutTime);
     if (booking.checkInTime) {
       booking.sessionDuration = Math.max(0, Math.round((booking.checkOutTime - booking.checkInTime) / 60000));
     }

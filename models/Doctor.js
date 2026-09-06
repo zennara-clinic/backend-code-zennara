@@ -114,6 +114,17 @@ const doctorSchema = new mongoose.Schema(
       default: true,
       index: true,
     },
+    /**
+     * May guests book this dermatologist themselves in the app? Mirrors
+     * Zenoti's per-employee "Online booking" switch. Off = still listed and
+     * bookable by the desk, but the app's doctor picker and "any available"
+     * search skip them. Independent of `isActive` (listed at all).
+     */
+    onlineBookingEnabled: {
+      type: Boolean,
+      default: true,
+      index: true,
+    },
   },
   { timestamps: true },
 );

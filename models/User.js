@@ -58,6 +58,17 @@ const UserSchema = new mongoose.Schema({
     enum: ['app', 'zenoti', 'reception'],
     default: 'app'
   },
+  /**
+   * True for a Zenoti diary placeholder ("Meeting", "Reserved", "CRM") that
+   * was mirrored as a patient before the import learned to skip them. Such
+   * rows are hidden from every patient list and count; the quarantine script
+   * (scripts/quarantinePseudoGuests.js) sets this and deactivates the row.
+   */
+  pseudoGuest: {
+    type: Boolean,
+    default: false,
+    index: true
+  },
   // The Zenoti guest id this account is linked to (if any). Sparse + unique so
   // two local accounts can never claim the same Zenoti guest.
   zenotiGuestId: {
@@ -309,6 +320,30 @@ const UserSchema = new mongoose.Schema({
     default: null
   },
   
+  /**
+   * How the guest found the clinic — asked once when a new guest is created
+   * at the desk (Zenoti makes it mandatory). Free text from a curated list:
+   * Word of mouth, Instagram, Google, Client referral, Doctor referral,
+   * Advertisement, Walk-in, Corporate, Events, Employee, Internet, Other.
+   */
+  referralSource: {
+    type: String,
+    default: null,
+    trim: true
+  },
+  /** The existing guest who referred them, when the source is a referral. */
+  referredByUserId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    default: null
+  },
+  /** Start of the last completed visit (booking or mirrored Zenoti visit). */
+  lastVisitAt: {
+    type: Date,
+    default: null,
+    index: true
+  },
+
   // Statistics for admin panel
   totalVisits: {
     type: Number,

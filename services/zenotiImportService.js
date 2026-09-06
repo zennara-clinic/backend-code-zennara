@@ -118,7 +118,7 @@ async function importRoster({ trigger = 'schedule', adminId = null, mode = 'incr
               },
             });
           } catch (err) {
-            if (err.code === 'NO_PHONE') tally.skipped += 1;
+            if (err.code === 'NO_PHONE' || err.code === 'PSEUDO_GUEST') tally.skipped += 1;
             else {
               tally.failed += 1;
               logger.warn('Zenoti roster: guest import failed', { guestId: guest.zenotiGuestId, error: err.message });

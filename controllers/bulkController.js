@@ -155,8 +155,9 @@ const ENTITIES = {
     model: () => Product,
     label: 'products',
     columns: [
-      'zenotiProductId', 'sku', 'name', 'brand', 'formulation', 'category',
-      'quantity', 'price', 'gstPercentage', 'isActive', 'appVisible', 'image',
+      'zenotiProductId', 'sku', 'name', 'brand', 'formulation', 'category', 'subCategory',
+      'productType', 'packSize', 'hsn', 'mrp', 'quantity', 'price', 'gstPercentage',
+      'isRx', 'isActive', 'appVisible', 'image',
     ],
     keyOf: (row) => String(row.sku || row.name || '').trim().toLowerCase(),
     async find(key, row) {
@@ -175,6 +176,8 @@ const ENTITIES = {
       if (!String(row.name || '').trim()) errors.push('name is required');
       if (row.price !== '' && num(row.price) === null) errors.push(`price "${row.price}" is not a number`);
       if (row.quantity !== '' && num(row.quantity) === null) errors.push(`quantity "${row.quantity}" is not a number`);
+      if (row.mrp !== undefined && row.mrp !== '' && num(row.mrp) === null) errors.push(`mrp "${row.mrp}" is not a number`);
+      if (row.isRx !== undefined && row.isRx !== '' && bool(row.isRx) === null) errors.push(`isRx "${row.isRx}" must be yes or no`);
       const gst = num(row.gstPercentage);
       if (row.gstPercentage !== '' && (gst === null || gst < 0 || gst > 100)) errors.push(`gstPercentage "${row.gstPercentage}" must be 0-100`);
       return errors;
@@ -195,6 +198,13 @@ const ENTITIES = {
       if (row.brand !== '') doc.brand = row.brand;
       if (row.formulation !== '') doc.formulation = row.formulation;
       if (row.category !== '') doc.productCategory = row.category;
+      if (row.subCategory !== undefined && row.subCategory !== '') doc.productSubCategory = row.subCategory;
+      if (row.productType !== undefined && row.productType !== '') { doc.productType = row.productType; doc.isRetail = !/consum/i.test(row.productType); }
+      if (row.packSize !== undefined && row.packSize !== '') doc.packSize = row.packSize;
+      if (row.hsn !== undefined && row.hsn !== '') doc.hsn = String(row.hsn).trim();
+      if (row.mrp !== undefined && row.mrp !== '') doc.mrp = num(row.mrp, doc.mrp);
+      // Rx/OTC from a sheet is a deliberate decision (the clinic's own list).
+      const rx = bool(row.isRx); if (rx !== null) { doc.isRx = rx; doc.rxSource = 'import'; doc.rxReason = 'Bulk import'; }
       if (row.image !== '') doc.image = row.image;
       if (row.zenotiProductId !== '') doc.zenotiProductId = String(row.zenotiProductId);
       if (row.price !== '') doc.price = num(row.price, doc.price);
@@ -211,9 +221,15 @@ const ENTITIES = {
       brand: d.brand || d.OrgName || '',
       formulation: d.formulation || '',
       category: d.productCategory || '',
+      subCategory: d.productSubCategory || '',
+      productType: d.productType || (d.isRetail === false ? 'Consumable' : d.isRetail === true ? 'Retail' : ''),
+      packSize: d.packSize || '',
+      hsn: d.hsn || '',
+      mrp: d.mrp ?? '',
       quantity: d.stock ?? 0,
       price: d.price ?? '',
       gstPercentage: d.gstPercentage ?? '',
+      isRx: d.isRx === true ? 'yes' : d.isRx === false ? 'no' : '',
       isActive: d.isActive === false ? 'no' : 'yes',
       appVisible: d.isActive === false ? 'no' : 'yes',
       image: d.image || '',

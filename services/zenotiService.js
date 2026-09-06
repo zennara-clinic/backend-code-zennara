@@ -379,6 +379,46 @@ function normalizeCenterAppointment(raw, centerId) {
   };
 }
 
+/**
+ * A block-out row from the centre diary — time held on a provider's book
+ * that is not a guest visit ("Meeting", "CRM Booking", a vendor demo).
+ *
+ * Zenoti files it under a pseudo-guest whose id is the therapist's own id,
+ * with `blockout` carrying the block type. It is normalised to a provider
+ * block, never to an appointment, so the slot engine can honour it without
+ * a patient record ever being created for it.
+ */
+function normalizeCenterBlockout(raw, centerId) {
+  if (!raw || !raw.blockout || !raw.appointment_id) return null;
+  const block = raw.blockout || {};
+  const therapist = raw.therapist || {};
+  const name = String(pick(block, 'name') || pick(block, 'code') || pick(raw.guest || {}, 'first_name') || 'Blocked').replace(/\s+/g, ' ').trim();
+  return {
+    id: String(pick(raw, 'appointment_id') || '').toLowerCase(),
+    blockoutId: block.id !== undefined && block.id !== null ? String(block.id) : null,
+    title: name || 'Blocked',
+    description: pick(block, 'description'),
+    durationMinutes: block.duration ?? null,
+    color: pick(block, 'indicator_color'),
+    countInUtilization: block.count_in_utilization ?? null,
+    startTime: pick(raw, 'start_time'),
+    startTimeUtc: pick(raw, 'start_time_utc'),
+    endTime: pick(raw, 'end_time'),
+    endTimeUtc: pick(raw, 'end_time_utc'),
+    status: raw.status ?? null,
+    therapistId: String(pick(therapist, 'id') || '').toLowerCase() || null,
+    therapistName: pick(therapist, 'display_name', 'nick_name', 'name')
+      || `${pick(therapist, 'first_name') || ''} ${pick(therapist, 'last_name') || ''}`.trim() || null,
+    notes: pick(raw, 'notes') || pick(raw, 'group_notes'),
+    createdAt: pick(raw, 'creation_date'),
+    createdAtUtc: pick(raw, 'creation_date_utc'),
+    createdByName: pick(raw, 'created_by_name'),
+    centerId,
+    centerName: centerById(centerId)?.name || null,
+    branchName: branchNameForCenter(centerId),
+  };
+}
+
 /** A single product purchase line from /guests/{id}/products. */
 function normalizeProductPurchase(item) {
   if (!item) return null;
@@ -856,6 +896,41 @@ async function getCenterAppointments(centerId, { from, to, includeCancelled = tr
 }
 
 /**
+ * The whole centre diary for a window: guest appointments AND block-outs,
+ * from one call. `getCenterAppointments` above keeps its appointments-only
+ * contract for existing callers; the reconciler uses this so a block-out on
+ * a doctor's book is mirrored (and holds the slot) instead of being dropped.
+ */
+async function getCenterDiary(centerId, { from, to, includeCancelled = true } = {}) {
+  if (!centerId) return { appointments: [], blockouts: [] };
+  const start = from || isoDaysFromNow(-1);
+  const end = to || isoDaysFromNow(6);
+  const endExclusive = new Date(`${end}T12:00:00Z`);
+  endExclusive.setUTCDate(endExclusive.getUTCDate() + 1);
+  const json = await request('/v1/appointments', {
+    query: {
+      center_id: centerId,
+      start_date: start,
+      end_date: endExclusive.toISOString().slice(0, 10),
+      include_no_show_cancel: includeCancelled,
+    },
+  });
+  const rows = Array.isArray(json) ? json : json?.appointments || json?.Appointments || [];
+  const appointments = [];
+  const blockouts = [];
+  for (const row of rows) {
+    if (row && row.blockout) {
+      const block = normalizeCenterBlockout(row, centerId);
+      if (block) blockouts.push(block);
+      continue;
+    }
+    const appointment = normalizeCenterAppointment(row, centerId);
+    if (appointment) appointments.push(appointment);
+  }
+  return { appointments, blockouts };
+}
+
+/**
  * One appointment by id (GET /v1/appointments/{id}) — the same operational
  * shape as the centre book, so a single visit can be re-read on demand or
  * double-checked before a terminal state from the feed is applied.
@@ -989,6 +1064,7 @@ module.exports = {
   getGuest,
   getGuestAppointments,
   getCenterAppointments,
+  getCenterDiary,
   getAppointment,
   getCenterEmployees,
   getGuestProducts,
@@ -1000,6 +1076,7 @@ module.exports = {
   normalizeGuest,
   normalizeAppointmentGroup,
   normalizeCenterAppointment,
+  normalizeCenterBlockout,
   normalizeProductPurchase,
   normalizePackage,
   normalizeMembership,

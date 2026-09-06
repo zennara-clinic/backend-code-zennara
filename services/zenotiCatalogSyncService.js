@@ -50,8 +50,10 @@ async function collect(fetcher) {
       centres += 1;
       for (const row of rows) {
         if (!row?.id || !row?.name) continue;
-        const cur = byId.get(row.id) || { ...row, centres: [] };
+        const cur = byId.get(row.id) || { ...row, centres: [], perCentre: [] };
         cur.centres.push(centre.name);
+        // Zenoti prices per centre; keep each centre's figure for centrePrices.
+        cur.perCentre.push({ centerId, centreName: centre.name, branchName: centre.branchName, price: row.price ?? null, finalPrice: row.finalPrice ?? null, tax: row.tax ?? null, canBook: row.canBook ?? null });
         // Keep the first non-null value of each field across centres.
         for (const k of Object.keys(row)) if (cur[k] === null || cur[k] === undefined) cur[k] = row[k];
         byId.set(row.id, cur);
@@ -63,8 +65,49 @@ async function collect(fetcher) {
   return { rows: [...byId.values()], centres };
 }
 
+/** GST rate implied by Zenoti's price_info (tax over the pre-tax price), rounded to the usual slabs. */
+function impliedTaxPercent(svc) {
+  const final = Number(svc.finalPrice); const tax = Number(svc.tax);
+  if (!(final > 0) || !(tax >= 0)) return null;
+  const pct = (tax / (final - tax)) * 100;
+  if (!Number.isFinite(pct)) return null;
+  const slabs = [0, 5, 12, 18, 28];
+  return slabs.reduce((best, s) => (Math.abs(s - pct) < Math.abs(best - pct) ? s : best), slabs[0]);
+}
+
+/**
+ * Per-centre attributes from the Zenoti row onto our service document.
+ * Identity/pricing structure only — price itself follows ZENOTI_SYNC_SERVICE_PRICES.
+ */
+function applyServiceMaster(doc, svc, branchByName) {
+  let changed = false;
+  const set = (k, v) => { if (v !== null && v !== undefined && doc[k] !== v) { doc[k] = v; changed = true; } };
+  set('code', svc.code || null);
+  set('recovery_minutes', Number(svc.recoveryMinutes) >= 0 ? Number(svc.recoveryMinutes) : null);
+  set('zenotiCanBook', typeof svc.canBook === 'boolean' ? svc.canBook : null);
+  const tax = impliedTaxPercent(svc);
+  if (tax !== null && doc.taxPercent !== tax) { doc.taxPercent = tax; doc.priceIncludesTax = true; changed = true; }
+  // Per-centre price rows. Only the centres Zenoti lists; a centre the clinic
+  // removes from the service in Zenoti drops out here too.
+  const rows = [];
+  for (const c of svc.perCentre || []) {
+    const branch = branchByName.get(norm(c.branchName));
+    if (!branch) continue;
+    const price = Number(c.finalPrice) >= 0 ? Number(c.finalPrice) : Number(c.price) >= 0 ? Number(c.price) : null;
+    if (price === null) continue;
+    if (rows.some((r) => String(r.branchId) === String(branch._id))) continue; // pharmacy centres fold onto the clinic
+    rows.push({ branchId: branch._id, price, taxPercent: impliedTaxPercent(c) ?? tax ?? null, available: true });
+  }
+  const before = JSON.stringify((doc.centrePrices || []).map((r) => [String(r.branchId), r.price, r.taxPercent, r.available]));
+  const after = JSON.stringify(rows.map((r) => [String(r.branchId), r.price, r.taxPercent, r.available]));
+  if (rows.length && before !== after) { doc.centrePrices = rows; changed = true; }
+  return changed;
+}
+
 async function syncServices(stats) {
   const { rows } = await collect((c) => zenoti.getCenterServices(c));
+  const Branch = require('../models/Branch');
+  const branchByName = new Map((await Branch.find({}).select('_id name').lean()).map((b) => [norm(b.name), b]));
   const seenIds = new Set();
   for (const svc of rows) {
     seenIds.add(svc.id);
@@ -99,6 +142,7 @@ async function syncServices(stats) {
           zenotiServiceId: svc.id,
           isActive: false,
         });
+        applyServiceMaster(doc, svc, branchByName);
         stats.services.created += 1;
       } else {
         const before = JSON.stringify([doc.zenotiServiceId, doc.duration_minutes, doc.price]);
@@ -108,7 +152,8 @@ async function syncServices(stats) {
           const zp = Number(svc.finalPrice) >= 0 ? Number(svc.finalPrice) : Number(svc.price);
           if (zp >= 0) doc.price = zp;
         }
-        if (before === JSON.stringify([doc.zenotiServiceId, doc.duration_minutes, doc.price])) { stats.services.unchanged += 1; continue; }
+        const masterChanged = applyServiceMaster(doc, svc, branchByName);
+        if (!masterChanged && before === JSON.stringify([doc.zenotiServiceId, doc.duration_minutes, doc.price])) { stats.services.unchanged += 1; continue; }
         stats.services.updated += 1;
       }
       await doc.save({ validateModifiedOnly: true });

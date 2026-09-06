@@ -185,7 +185,11 @@ exports.createAssignment = async (req, res) => {
         originalPrice: packageData.originalPrice,
         services: packageData.services.map(s => ({
           serviceId: s.serviceId,
-          serviceName: s.serviceName
+          serviceName: s.serviceName,
+          // Snapshot the entitlement so per-service balances survive later
+          // edits to the package definition.
+          sessions: Math.max(1, Number(s.sessions) || 1),
+          servicePrice: s.customPrice ?? s.servicePrice ?? null
         }))
       },
       userDetails: {

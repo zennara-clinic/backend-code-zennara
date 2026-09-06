@@ -216,6 +216,10 @@ async function buildUserFilter(q) {
   const filter = {};
   const and = [];
 
+  // Diary placeholders mirrored as patients ("Meeting", "Reserved") are not
+  // guests; hide them everywhere unless a reviewer asks for them explicitly.
+  if (q.includePseudo !== 'true') filter.pseudoGuest = { $ne: true };
+
   if (q.memberType && q.memberType !== 'All Members') filter.memberType = q.memberType;
   if (q.location && q.location !== 'All Locations') { const l = list(q.location); filter.location = l.length > 1 ? { $in: l } : l[0]; }
   if (q.source === 'app' || q.source === 'zenoti' || q.source === 'reception') filter.source = q.source;

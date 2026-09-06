@@ -260,3 +260,89 @@ test('a new mirrored booking keeps the Zenoti booked-on instant as createdAt', (
   const booking = new Booking({ createdAt: bookedAt, source: 'zenoti' });
   assert.equal(booking.createdAt.getTime(), bookedAt.getTime());
 });
+
+test('diary placeholders are recognised as pseudo-guests, real names are not', () => {
+  const { isPseudoGuestName, isPseudoGuest } = require('../utils/zenotiPseudoGuest');
+  assert.equal(isPseudoGuestName('Meeting  '), true);
+  assert.equal(isPseudoGuestName('Reserved'), true);
+  assert.equal(isPseudoGuestName('CRM Booking'), true);
+  assert.equal(isPseudoGuestName('Test Guest 2'), true);
+  assert.equal(isPseudoGuestName('Meet', 'Patel'), false);
+  assert.equal(isPseudoGuestName('Shaminn Santigo'), false);
+  assert.equal(isPseudoGuestName('Reserved Reddy'), false);
+  // Block-out rows file the block under the therapist's own id as the guest.
+  assert.equal(isPseudoGuest({ zenotiGuestId: 'abc', fullName: 'Asha Rao' }, { therapistId: 'ABC' }), true);
+  assert.equal(isPseudoGuest({ zenotiGuestId: 'abc', fullName: 'Asha Rao' }, { therapistId: 'xyz' }), false);
+});
+
+test('block-out rows normalise to provider blocks, never appointments', () => {
+  const raw = {
+    appointment_id: '2AF0B2E5-0DBE-434E-BE84-0F0F5BCBB5DC',
+    blockout: { id: 3679, name: 'Meeting  ', code: 'Meeting  ', duration: 60, indicator_color: '#8D8DCF' },
+    start_time: '2026-09-05T17:00:00', end_time: '2026-09-05T18:45:00', status: 10,
+    therapist: { id: '40a360dd-91f2-47f9-bfb7-8d8f55c74012', name: 'Dr.Madhurya' },
+    guest: { id: '40a360dd-91f2-47f9-bfb7-8d8f55c74012', first_name: 'Meeting  ', last_name: '' },
+    notes: 'Erbium glass demo',
+  };
+  assert.equal(zenoti.normalizeCenterAppointment(raw, 'c1'), null);
+  const block = zenoti.normalizeCenterBlockout(raw, 'c1');
+  assert.equal(block.id, '2af0b2e5-0dbe-434e-be84-0f0f5bcbb5dc');
+  assert.equal(block.title, 'Meeting');
+  assert.equal(block.therapistName, 'Dr.Madhurya');
+  assert.equal(block.durationMinutes, 60);
+  assert.equal(block.notes, 'Erbium glass demo');
+});
+
+test('rx classifier follows the clinic Rx/OTC sheet', () => {
+  const { classifyRx } = require('../utils/rxClassifier');
+  assert.equal(classifyRx({ name: 'Brintop Diva 5%', category: 'Haircare', subCategory: 'Hair Fall & Growth', hsn: '30049099' }).isRx, true);
+  assert.equal(classifyRx({ name: 'Azithral 500mg Tab', category: 'Medicines', subCategory: 'Antibiotic', hsn: '30049099' }).isRx, true);
+  assert.equal(classifyRx({ name: 'Tab Depiglow Ultra', category: 'Supplements', subCategory: 'Skin Supplement', hsn: '21069099' }).isRx, true);
+  assert.equal(classifyRx({ name: 'Epiduo Gel Forte', category: 'Medicines', subCategory: 'Acne', hsn: '30049099' }).isRx, true);
+  assert.equal(classifyRx({ name: 'Isdin Fotofusion Water Magic', category: 'Sun Care', subCategory: 'Sun Protection', hsn: '33049990' }).isRx, false);
+  assert.equal(classifyRx({ name: 'Cerave Moisturising Lotion', category: 'Test Category', subCategory: 'None.', hsn: '123' }).isRx, false);
+  assert.equal(classifyRx({ name: 'Colave Collagen Drink', category: 'Supplements', subCategory: 'Collagen', hsn: '21069099' }).isRx, false);
+  assert.equal(classifyRx({ name: 'Unknown Thing' }).isRx, null);
+});
+
+test('combined Zenoti doctor labels resolve to the first named doctor and to all of them', () => {
+  const { buildDoctorMatcher, splitCombinedName } = require('../utils/dermatologistMatch');
+  assert.deepEqual(splitCombinedName('Dr Varsha-Dr Bandhavi M Sane'), ['Dr Varsha', 'Dr Bandhavi M Sane']);
+  assert.deepEqual(splitCombinedName('Dr Shilpa Reddy-Gill'), ['Dr Shilpa Reddy-Gill']);
+  const match = buildDoctorMatcher([
+    { doctorId: 'varsha-reddy', name: 'Dr Varsha Reddy' },
+    { doctorId: 'bandhavi-m-sane', name: 'Dr Bandhavi M Sane' },
+    { doctorId: 'shilpa-gill', name: 'Dr Shilpa Gill' },
+  ]);
+  assert.equal(match('Dr Varsha-Dr Bandhavi M Sane').doctorId, 'varsha-reddy');
+  assert.deepEqual(match.matchAll('Dr Varsha-Dr Bandhavi M Sane').map((d) => d.doctorId), ['varsha-reddy', 'bandhavi-m-sane']);
+  assert.equal(match('Dr Shilpa Gill').doctorId, 'shilpa-gill');
+});
+
+test('package completion counts sessions per service, not services', () => {
+  const PackageAssignment = require('../models/PackageAssignment');
+  const a = new PackageAssignment({
+    packageDetails: { services: [{ serviceId: 'exo', serviceName: 'Exosome', sessions: 3 }, { serviceId: 'gfc', serviceName: 'GFC', sessions: 2 }] },
+    sessions: [
+      { serviceId: 'exo', status: 'Completed' }, { serviceId: 'gfc', status: 'Completed' },
+      { serviceId: 'exo', status: 'Scheduled' }, { serviceId: 'exo', status: 'Scheduled' }, { serviceId: 'gfc', status: 'Scheduled' },
+    ],
+    status: 'Active',
+  });
+  assert.equal(a.checkCompletion(), false);
+  assert.equal(a.status, 'Active');
+  assert.equal(a.getCompletionPercentage(), 40);
+  const balances = a.serviceBalances();
+  assert.deepEqual(balances.map((b) => [b.serviceId, b.entitled, b.used, b.balance]), [['exo', 3, 1, 2], ['gfc', 2, 1, 1]]);
+});
+
+test('service priceAt uses the per-centre row and splits tax', () => {
+  const Consultation = require('../models/Consultation');
+  const mongoose = require('mongoose');
+  const jh = new mongoose.Types.ObjectId();
+  const c = new Consultation({ id: 'x', slug: 'x', name: 'X', category: 'Y', summary: 's', about: 'a', price: 28000, taxPercent: 5, priceIncludesTax: true, centrePrices: [{ branchId: jh, price: 35000 }] });
+  assert.equal(c.priceAt(jh).total, 35000);
+  assert.equal(c.priceAt(jh).base, 33333.33);
+  assert.equal(c.priceAt(jh).tax, 1666.67);
+  assert.equal(c.priceAt(null).total, 28000);
+});

@@ -80,10 +80,12 @@ vendorSchema.index({ name: 1, email: 1 });
 vendorSchema.index({ status: 1 });
 
 // Virtual for products supplied (will be calculated from inventory)
+// `Product.vendorId` is the link (there was never a `Product.vendor` field, so
+// this count read 0 for every vendor until 2026-09-06).
 vendorSchema.virtual('productsSupplied', {
   ref: 'Product',
   localField: '_id',
-  foreignField: 'vendor',
+  foreignField: 'vendorId',
   count: true
 });
 

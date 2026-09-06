@@ -19,6 +19,8 @@ const { CENTERS, branchNameForCenter, publicEmail, isPlaceholderEmail, clinicIns
 const Doctor = require('../models/Doctor');
 const ZenotiPractitioner = require('../models/ZenotiPractitioner');
 const { buildDoctorMatcher, canonicalName, tierTitle } = require('../utils/dermatologistMatch');
+const { isPseudoGuest } = require('../utils/zenotiPseudoGuest');
+const ProviderBlock = require('../models/ProviderBlock');
 const logger = require('../utils/logger');
 
 let appointmentSyncRunning = false;
@@ -220,10 +222,99 @@ function appointmentAttended(appointment) {
     || status === '1' || status === '2';
 }
 
+/**
+ * Mirror one Zenoti block-out as a ProviderBlock (idempotent on the Zenoti
+ * appointment id). Read-only towards Zenoti. Blocks never touch Users or
+ * Bookings; the slot engine reads them so a held hour is not offered in-app.
+ */
+async function upsertProviderBlock(block, context = null) {
+  if (!block?.id) return { outcome: 'skipped', reason: 'missing block id' };
+  const ctx = context || await lookupContext();
+  const parts = appointmentLocalParts(block.startTime, block.startTimeUtc);
+  const endParts = appointmentLocalParts(block.endTime, block.endTimeUtc);
+  if (!parts.day || !parts.time || Number.isNaN(parts.date.getTime())) {
+    return { outcome: 'skipped', reason: 'invalid block time' };
+  }
+  const branchName = block.branchName || branchNameForCenter(block.centerId);
+  const branch = ctx.branchByName.get(norm(branchName));
+  const external = (block.therapistId && ctx.practitionerById?.get(block.therapistId))
+    || (block.therapistName && ctx.practitionerByName?.get(canonicalName(block.therapistName)))
+    || null;
+  const derm = external?.onboardedDoctorId
+    ? ctx.doctorById?.get(String(external.onboardedDoctorId))
+    : (block.therapistName && /^\s*dr\.?\s*/i.test(block.therapistName) && ctx.matchDoctor ? ctx.matchDoctor(block.therapistName) : null);
+
+  // A block-out that Zenoti has cancelled/voided still comes through the feed
+  // with a negative status; it releases the time.
+  const status = String(block.status ?? '');
+  const active = !(status === '-1' || status === '-2' || status === '21');
+
+  let doc = await ProviderBlock.findOne({ zenotiAppointmentId: block.id });
+  const isNew = !doc;
+  if (!doc) doc = new ProviderBlock({ zenotiAppointmentId: block.id, source: 'zenoti' });
+  doc.zenotiBlockoutId = block.blockoutId || doc.zenotiBlockoutId || null;
+  doc.zenotiCenterId = block.centerId || doc.zenotiCenterId || null;
+  doc.zenotiEmployeeId = external?.zenotiEmployeeId || block.therapistId || doc.zenotiEmployeeId || null;
+  doc.doctorId = derm?.doctorId || null;
+  doc.adminId = external?.onboardedAdminId || null;
+  doc.providerName = external?.name || block.therapistName || doc.providerName || '';
+  doc.branchId = branch?._id || null;
+  doc.branchName = branch?.name || branchName || '';
+  doc.date = parts.date;
+  doc.startTime = parts.time;
+  // A block that runs past midnight is clamped to the day it starts on.
+  doc.endTime = endParts.day === parts.day && endParts.time ? endParts.time : '23:59';
+  doc.startAt = clinicDate(block.startTime) || null;
+  doc.endAt = clinicDate(block.endTime) || null;
+  doc.title = block.title || doc.title || 'Blocked';
+  doc.notes = block.notes || block.description || doc.notes || '';
+  doc.color = block.color || doc.color || null;
+  doc.createdByName = block.createdByName || doc.createdByName || null;
+  doc.active = active;
+  doc.zenotiSyncedAt = new Date();
+  doc.zenotiSource = {
+    status: block.status, blockoutId: block.blockoutId, durationMinutes: block.durationMinutes,
+    startTime: block.startTime || null, endTime: block.endTime || null,
+    createdAt: block.createdAtUtc || block.createdAt || null, centerId: block.centerId || null,
+  };
+  await doc.save();
+  return { outcome: isNew ? 'created' : 'updated', blockId: doc._id };
+}
+
+/** Blocks that left Zenoti's diary for this window release their time. */
+async function retireVanishedBlocks({ centerId, from, to, seenIds, runStartedAt, feedCount }) {
+  if (!feedCount) return 0;
+  const dayStart = new Date(`${from}T00:00:00+05:30`);
+  const dayEnd = new Date(`${to}T23:59:59.999+05:30`);
+  const result = await ProviderBlock.updateMany({
+    source: 'zenoti',
+    zenotiCenterId: centerId,
+    active: true,
+    date: { $gte: dayStart, $lte: dayEnd },
+    zenotiAppointmentId: { $nin: [...seenIds] },
+    zenotiSyncedAt: { $lt: runStartedAt },
+  }, { $set: { active: false, 'zenotiSource.vanishedAt': new Date() } });
+  return result.modifiedCount || 0;
+}
+
 async function upsertAppointment(appointment, { user = null, context = null, verified = false } = {}) {
   if (!appointment?.id) return { outcome: 'skipped', reason: 'missing appointment id' };
   const guest = appointment.guest;
-  let owner = user || (guest ? await provisionUserFromGuest(guest, { quiet: true }) : null);
+  // A visit booked under a diary placeholder ("Meeting", "Reserved") is held
+  // time, not a patient visit. It is mirrored as a ProviderBlock by the
+  // reconciler; here it must never become a Booking or a User.
+  if (!user && isPseudoGuest(guest, { therapistId: appointment.therapistId })) {
+    return { outcome: 'skipped', reason: 'pseudo-guest' };
+  }
+  let owner = user;
+  if (!owner && guest) {
+    try {
+      owner = await provisionUserFromGuest(guest, { quiet: true });
+    } catch (error) {
+      if (error && error.code === 'PSEUDO_GUEST') return { outcome: 'skipped', reason: 'pseudo-guest' };
+      throw error;
+    }
+  }
   if (!owner) return { outcome: 'skipped', reason: 'missing guest' };
   // The guest-history crawl used to hand over a projection without name/phone/
   // email, so every mirrored visit was saved as "Zennara Guest" with a blank
@@ -457,6 +548,10 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
   if (!isNew && bookedAt && Math.abs((booking.createdAt?.getTime() || 0) - bookedAt.getTime()) > 60_000) {
     await Booking.collection.updateOne({ _id: booking._id }, { $set: { createdAt: bookedAt } });
   }
+  // A completed clinic visit is the guest's last visit for the desk strip.
+  if (status === 'Completed') {
+    await require('../utils/guestStats').touchLastVisit(owner._id, booking.checkOutTime || booking.checkInTime || parts.date);
+  }
   return { outcome: isNew ? 'created' : 'updated', bookingId: booking._id };
 }
 
@@ -508,15 +603,22 @@ async function reconcileWindow(from, to, { trigger = 'schedule', mode = 'increme
     const context = await lookupContext();
     const clinics = Object.entries(CENTERS).filter(([, value]) => value.isClinic);
     const centerResults = await Promise.allSettled(clinics.map(([centerId]) =>
-      zenoti.getCenterAppointments(centerId, { from, to, includeCancelled: true })
+      zenoti.getCenterDiary(centerId, { from, to, includeCancelled: true })
     ));
     const rows = [];
+    const blocks = [];
     const runStartedAt = new Date();
     const fulfilledCenters = [];
     centerResults.forEach((result, index) => {
       if (result.status === 'fulfilled') {
-        rows.push(...result.value);
-        fulfilledCenters.push({ centerId: clinics[index][0], feedCount: result.value.length });
+        rows.push(...result.value.appointments);
+        blocks.push(...result.value.blockouts);
+        // feedCount counts the whole diary: a day with only block-outs is
+        // still a real (non-empty) read, so vanished rows may be retired.
+        fulfilledCenters.push({
+          centerId: clinics[index][0],
+          feedCount: result.value.appointments.length + result.value.blockouts.length,
+        });
       } else {
         tally.failed += 1;
         logger.warn('Zenoti appointment center reconciliation failed', { center: clinics[index][1].name, error: result.reason?.message });
@@ -537,6 +639,13 @@ async function reconcileWindow(from, to, { trigger = 'schedule', mode = 'increme
       try {
         const guestId = String(appointment.guest?.zenotiGuestId || '').toLowerCase();
         let owner = userByGuest.get(guestId) || null;
+        // A placeholder guest ("Meeting", "Reserved") is held time, not a
+        // person — never provision it, even when a stale User row exists.
+        if (isPseudoGuest(appointment.guest, { therapistId: appointment.therapistId })) {
+          tally.processed += 1;
+          tally.skipped += 1;
+          continue;
+        }
         if (!owner && appointment.guest) {
           owner = await provisionUserFromGuest(appointment.guest, { quiet: true });
           if (owner?.zenotiGuestId) userByGuest.set(String(owner.zenotiGuestId).toLowerCase(), owner);
@@ -552,6 +661,19 @@ async function reconcileWindow(from, to, { trigger = 'schedule', mode = 'increme
       if (tally.processed % 50 === 0) await run.updateOne(tally);
     }
 
+    // Block-outs: held time on a provider's diary. Mirrored so the slot
+    // engine and the desk calendar honour them; never a User or Booking.
+    const blockTally = { created: 0, updated: 0, skipped: 0, failed: 0, retired: 0 };
+    for (const block of blocks) {
+      try {
+        const result = await upsertProviderBlock(block, context);
+        blockTally[result.outcome] = (blockTally[result.outcome] || 0) + 1;
+      } catch (error) {
+        blockTally.failed += 1;
+        logger.warn('Zenoti block-out mirror row failed', { blockId: block.id, error: error.message });
+      }
+    }
+
     // Rows that left the diary (deleted / moved in Zenoti).
     let retired = 0;
     for (const { centerId, feedCount } of fulfilledCenters) {
@@ -561,10 +683,23 @@ async function reconcileWindow(from, to, { trigger = 'schedule', mode = 'increme
       } catch (error) {
         logger.warn('Zenoti vanished-appointment pass failed', { centerId, error: error.message });
       }
+      const seenBlockIds = new Set(blocks.filter((b) => b.centerId === centerId).map((b) => String(b.id)));
+      try {
+        blockTally.retired += await retireVanishedBlocks({ centerId, from, to, seenIds: seenBlockIds, runStartedAt, feedCount });
+      } catch (error) {
+        logger.warn('Zenoti vanished-block pass failed', { centerId, error: error.message });
+      }
     }
     if (retired) logger.info('Zenoti: retired appointments no longer in the clinic diary', { from, to, retired });
     tally.retired = retired;
-    await run.updateOne({ ...tally, status: 'completed', finishedAt: new Date() });
+    tally.blocks = blockTally;
+    await run.updateOne({
+      ...tally,
+      status: 'completed',
+      finishedAt: new Date(),
+      // `retired`/`blocks` are not top-level run fields; keep them visible.
+      datasets: { retired, blocks: blockTally },
+    });
     return tally;
   } catch (error) {
     if (run) await run.updateOne({ ...tally, status: 'failed', error: error.message, finishedAt: new Date() });
@@ -630,6 +765,7 @@ module.exports = {
   // rebuilding them (four collection reads) for every appointment row.
   lookupContext,
   upsertAppointment,
+  upsertProviderBlock,
   refreshAppointment,
   appointmentAttended,
   syncUserAppointments,

@@ -21,6 +21,7 @@ const PRODUCT_FIELDS = [
   'name', 'sku', 'code', 'formulation', 'productType', 'productCategory',
   'brand', 'OrgName', 'image', 'stock', 'branchStock', 'lowStockThreshold',
   'isActive', 'zenotiProductId', 'zenotiSyncedAt', 'trackStock',
+  'isRx', 'rxReason', 'packSize', 'productSubCategory',
 ].join(' ');
 
 const INVENTORY_FIELDS = [
@@ -84,10 +85,15 @@ exports.getAvailability = async (req, res) => {
           name: p.name,
           sku: p.sku || p.code || null,
           category: p.productCategory || null,
+          subCategory: p.productSubCategory || null,
           productType: p.productType || null,
           formulation: p.formulation || null,
+          packSize: p.packSize || null,
           brand: p.brand || p.OrgName || null,
           image: p.image || '',
+          /** Prescription-only: the doctor's prescription line must be Schedule H. */
+          isRx: p.isRx === true,
+          rxReason: p.rxReason || null,
           /** Total across the business. */
           totalQuantity: Number(p.stock) || 0,
           /** At the selected branch; null when no branch was requested. */

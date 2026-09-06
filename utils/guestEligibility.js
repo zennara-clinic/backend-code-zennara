@@ -56,13 +56,51 @@ async function serviceBookingBlock(userId, consultation) {
   if (!consultation) return null;
   const { consult } = await consultationIdsByKind();
   const isConsultation = consult.map(String).includes(String(consultation._id)) || CONSULT_RX.test(consultation.name || '');
+  const prereq = consultation.prerequisites || {};
+
+  // Per-service prerequisites (Zenoti's "must have finished X within N days").
+  const required = (prereq.serviceIds || []).map(String).filter(Boolean);
+  if (required.length) {
+    const Consultation = require('../models/Consultation');
+    const targets = await Consultation.find({ $or: [{ id: { $in: required } }, { slug: { $in: required } }] }).select('_id name').lean();
+    if (targets.length) {
+      const since = Number(prereq.withinDays) > 0 ? new Date(Date.now() - Number(prereq.withinDays) * 864e5) : null;
+      const done = await Booking.exists({
+        userId,
+        status: 'Completed',
+        consultationId: { $in: targets.map((t) => t._id) },
+        ...(since ? { $or: [{ checkOutTime: { $gte: since } }, { checkOutTime: null, preferredDate: { $gte: since } }] } : {}),
+      });
+      if (!done) {
+        const names = targets.map((t) => t.name).join(' or ');
+        return {
+          status: 403,
+          code: 'PREREQUISITE_REQUIRED',
+          message: prereq.note || `${consultation.name} needs a completed ${names}${since ? ` in the last ${prereq.withinDays} days` : ''} first.`,
+        };
+      }
+    }
+  }
+
   if (isConsultation) return null;
+  // A service may opt out of (or into) the consultation-first rule.
+  if (prereq.requiresConsultation === false) return null;
   const eligibility = await getGuestEligibility(userId);
+  if (prereq.requiresConsultation === true) {
+    // Strict: a completed consultation specifically, not just any past visit.
+    if (eligibility.hasCompletedConsultation) return null;
+    return {
+      status: 403,
+      code: 'CONSULTATION_FIRST',
+      message: prereq.note || `${consultation.name} is booked after a dermatologist consultation. Book a consultation first.`,
+    };
+  }
+  // Clinic default: an existing guest (any completed visit, package or prescription) may book.
   if (eligibility.canBookTreatment) return null;
   return {
     status: 403,
     code: 'CONSULTATION_FIRST',
-    message: eligibility.message,
+    message: eligibility.message || 'Please book a dermatologist consultation before this treatment.',
   };
 }
 

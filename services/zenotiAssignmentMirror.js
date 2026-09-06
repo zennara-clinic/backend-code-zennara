@@ -146,7 +146,11 @@ async function mirrorGuestPackages(user, packages) {
         packageName: pkg.name,
         packagePrice: Number(zp.price) > 0 ? Number(zp.price) : pkg.price,
         originalPrice: pkg.originalPrice || pkg.price,
-        services: (pkg.services || []).map((s) => ({ serviceId: s.serviceId, serviceName: s.serviceName })),
+        services: (pkg.services || []).map((s) => {
+          // Zenoti's own per-service total for this sale beats the catalogue default.
+          const sold = (zp.services || []).find((x) => String(x?.name || '').trim().toLowerCase() === String(s.serviceName || '').trim().toLowerCase());
+          return { serviceId: s.serviceId, serviceName: s.serviceName, sessions: Math.max(1, Number(sold?.total) || Number(s.sessions) || 1), servicePrice: s.customPrice ?? s.servicePrice ?? null };
+        }),
       };
       a.userDetails = { fullName: user.fullName, email: user.email, phone: user.phone, patientId: user.patientId, memberType: user.memberType };
       a.pricing = { ...(a.pricing?.toObject?.() || a.pricing || {}), originalAmount: Number(zp.price) > 0 ? Number(zp.price) : pkg.price, discountPercentage: 0, isZenMemberDiscount: false };

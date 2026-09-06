@@ -29,6 +29,10 @@ const zenoti = require('./zenotiService');
 const { CENTERS } = require('../config/zenoti');
 const logger = require('../utils/logger');
 const { findByName } = require('../utils/nameMatch');
+const { classifyRx } = require('../utils/rxClassifier');
+
+/** The description a synced product is created with until the panel writes one. */
+const SYNC_DESCRIPTION_RX = /^Synced from Zenoti on \d{4}-\d{2}-\d{2}\.$/;
 
 /** Branch documents keyed by the branch name our centre map points at. */
 async function branchIndex() {
@@ -95,6 +99,7 @@ async function syncProducts({ trigger = 'manual' } = {}) {
         productSubCategory: row.subCategory || null,
         productType: row.productType || null,
         formulation: row.packSize || null,
+        description: row.description || null,
         mrp: row.mrp ?? null,
         packSize: row.packSize || null,
         hsn: row.hsn || null,
@@ -206,6 +211,17 @@ async function syncProducts({ trigger = 'manual' } = {}) {
       if (entry.packSize) product.packSize = entry.packSize;
       if (entry.hsn) product.hsn = entry.hsn;
       if (entry.isRetail !== null) product.isRetail = entry.isRetail;
+      // Zenoti's description is only adopted while ours is the sync
+      // placeholder — copy written in the panel is never overwritten.
+      if (entry.description && (!product.description || SYNC_DESCRIPTION_RX.test(product.description))) {
+        product.description = entry.description;
+      }
+      // Rx/OTC suggestion for rows nobody has classified yet. A panel decision
+      // (rxSource 'manual' or 'import') always stands.
+      if (product.isRx === null || product.isRx === undefined || product.rxSource === 'heuristic') {
+        const verdict = classifyRx({ name: entry.name, category: entry.productCategory, subCategory: entry.productSubCategory, hsn: entry.hsn });
+        if (verdict.isRx !== null) { product.isRx = verdict.isRx; product.rxSource = 'heuristic'; product.rxReason = verdict.reason; }
+      }
       if (entry.hasQuantity) {
         product.branchStock = entry.branchStock;
         product.stock = entry.total;

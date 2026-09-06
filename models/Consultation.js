@@ -145,6 +145,65 @@ const consultationSchema = new mongoose.Schema({
   },
   /** The Zenoti service this treatment/consultation is booked as (chosen in the panel). */
   zenotiServiceId: { type: String, default: null, trim: true, lowercase: true },
+
+  /* ---- Service master attributes (mirroring Zenoti's service record) ---- */
+  /** Clinic-facing service code ("4DCLF"), from Zenoti or the panel. Not unique: Zenoti's codes repeat. */
+  code: { type: String, default: null, trim: true, index: true },
+  /** Buffer after the service before the room/doctor is free again. */
+  recovery_minutes: { type: Number, default: 0, min: 0 },
+  /** GST rate applied to this service; `price` is tax-inclusive when priceIncludesTax. */
+  taxPercent: { type: Number, default: 5, min: 0, max: 100 },
+  priceIncludesTax: { type: Boolean, default: true },
+  /**
+   * Per-centre price, as Zenoti holds it. Empty = `price` everywhere.
+   * `available:false` removes the service from that centre's menu.
+   */
+  centrePrices: [{
+    _id: false,
+    branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
+    price: { type: Number, default: null, min: 0 },
+    taxPercent: { type: Number, default: null, min: 0, max: 100 },
+    available: { type: Boolean, default: true },
+  }],
+  /** Dermatologist slugs who may perform it. Empty = any dermatologist at an allowed centre. */
+  eligibleDoctorIds: [{ type: String, trim: true, lowercase: true }],
+  /**
+   * Prerequisites — Zenoti's "guest must have finished X within N days".
+   *
+   * `requiresConsultation`: null inherits the clinic default (a new guest's
+   * first visit is a consultation, see utils/guestEligibility.js); true or
+   * false overrides it for this service. `serviceIds` are Consultation ids
+   * the guest must have completed within `withinDays` (0 = ever).
+   */
+  prerequisites: {
+    requiresConsultation: { type: Boolean, default: null },
+    serviceIds: [{ type: String, trim: true }],
+    withinDays: { type: Number, default: 0, min: 0 },
+    note: { type: String, default: '' },
+  },
+  /** Consumables expected per session, for stock planning (BOM). */
+  consumables: [{
+    _id: false,
+    inventoryId: { type: mongoose.Schema.Types.ObjectId, ref: 'Inventory', default: null },
+    productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null },
+    name: { type: String, default: '' },
+    quantity: { type: Number, default: 1, min: 0 },
+    unit: { type: String, default: '' },
+    autoConsume: { type: Boolean, default: false },
+  }],
+  /** Consultation ids that can be added on to this service at booking. */
+  addOnIds: [{ type: String, trim: true }],
+  /** Sold only inside a package or membership; not bookable on its own. */
+  packageOnly: { type: Boolean, default: false },
+  /** Per-service policy; null = clinic default (24 h window, no fee). */
+  policy: {
+    cancellationWindowHours: { type: Number, default: null, min: 0 },
+    cancellationFee: { type: Number, default: null, min: 0 },
+    noShowFee: { type: Number, default: null, min: 0 },
+    depositAmount: { type: Number, default: null, min: 0 },
+  },
+  /** Zenoti's own "bookable online" flag, kept for the readiness report. */
+  zenotiCanBook: { type: Boolean, default: null },
   showPriceInApp: {
     type: Boolean,
     default: false,
@@ -183,6 +242,17 @@ consultationSchema.index({
 consultationSchema.virtual('formattedPrice').get(function() {
   return `₹${this.price.toLocaleString('en-IN')}`;
 });
+
+/** Price and tax at one centre: the per-centre row when set, else the base price. */
+consultationSchema.methods.priceAt = function(branchId) {
+  const row = branchId ? (this.centrePrices || []).find((c) => String(c.branchId) === String(branchId)) : null;
+  const price = row && row.price !== null && row.price !== undefined ? row.price : this.price;
+  const taxPercent = row && row.taxPercent !== null && row.taxPercent !== undefined ? row.taxPercent : (this.taxPercent ?? 0);
+  const inclusive = this.priceIncludesTax !== false;
+  const base = inclusive ? +(price / (1 + taxPercent / 100)).toFixed(2) : price;
+  const tax = +(base * taxPercent / 100).toFixed(2);
+  return { price, taxPercent, priceIncludesTax: inclusive, base, tax, total: inclusive ? price : +(price + tax).toFixed(2), available: row ? row.available !== false : true };
+};
 
 // Virtual for formatted duration
 consultationSchema.virtual('formattedDuration').get(function() {

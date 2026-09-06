@@ -25,6 +25,7 @@ const {
   isPlaceholderEmail,
 } = require('../config/zenoti');
 const logger = require('../utils/logger');
+const { isPseudoGuest } = require('../utils/zenotiPseudoGuest');
 
 /**
  * Resolve the mapped branch name to an actual active Branch document's name,
@@ -116,6 +117,15 @@ async function provisionUserFromGuest(guest, opts = {}) {
 
   // A partial guest payload must not become a "Zennara Guest" record.
   guest = await hydrateGuestIdentity(guest);
+
+  // "Meeting", "Reserved", "CRM Booking"… are diary placeholders the clinic
+  // books time under, not patients. They must never become User rows
+  // (see utils/zenotiPseudoGuest.js). Callers treat this code like NO_PHONE.
+  if (isPseudoGuest(guest)) {
+    const err = new Error(`Zenoti guest "${guest.fullName}" is a diary placeholder, not a patient`);
+    err.code = 'PSEUDO_GUEST';
+    throw err;
+  }
 
   const phone = normalizeIndianMobile(opts.phone) || guest.phone || null;
   const email = (guest.email || placeholderEmail(guest.zenotiGuestId)).toLowerCase().trim();

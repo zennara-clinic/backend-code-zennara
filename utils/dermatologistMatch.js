@@ -22,10 +22,24 @@ const canonicalName = (s) => String(s || '')
   .filter(Boolean)
   .join(' ');
 
+/**
+ * Zenoti sometimes rosters two doctors as ONE employee so they can share a
+ * column ("Dr Varsha-Dr Bandhavi M Sane", "Dr Varsha & Dr Bandhavi"). Split
+ * such a label into its people; a plain name comes back as itself.
+ */
+function splitCombinedName(name) {
+  const raw = String(name || '').trim();
+  if (!raw) return [];
+  // Split only where a separator is followed by another "Dr" — a hyphenated
+  // surname ("Reddy-Gill") must stay whole.
+  const parts = raw.split(/\s*(?:[-–—/&,+]|\band\b)\s*(?=dr\.?\s)/i).map((p) => p.trim()).filter(Boolean);
+  return parts.length ? parts : [raw];
+}
+
 /** Build a matcher once per sync from the roster. */
 function buildDoctorMatcher(doctors) {
   const rows = doctors.map((d) => ({ doc: d, toks: tokens(d.name) }));
-  return (name) => {
+  const matchOne = (name) => {
     const t = tokens(name);
     if (!t.length) return null;
     const exact = rows.find((r) => r.toks.join(' ') === t.join(' '));
@@ -51,8 +65,24 @@ function buildDoctorMatcher(doctors) {
       ? scored[0].row.doc
       : null;
   };
+  // A combined label resolves to its FIRST named doctor (the column owner in
+  // Zenoti); `matchAll` gives every person for callers that can hold several.
+  const matcher = (name) => {
+    const direct = matchOne(name);
+    if (direct) return direct;
+    const parts = splitCombinedName(name);
+    if (parts.length < 2) return null;
+    for (const part of parts) { const hit = matchOne(part); if (hit) return hit; }
+    return null;
+  };
+  matcher.matchAll = (name) => {
+    const parts = splitCombinedName(name);
+    const hits = parts.map(matchOne).filter(Boolean);
+    return [...new Map(hits.map((d) => [String(d.doctorId || d._id), d])).values()];
+  };
+  return matcher;
 }
 
 const tierTitle = (doc) => (doc && doc.tier === 'senior-consultant' ? 'Senior Dermatologist' : 'Dermatologist');
 
-module.exports = { buildDoctorMatcher, tierTitle, tokens, canonicalName };
+module.exports = { buildDoctorMatcher, tierTitle, tokens, canonicalName, splitCombinedName };

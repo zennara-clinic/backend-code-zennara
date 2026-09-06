@@ -113,6 +113,25 @@ const branchSchema = new mongoose.Schema({
   /** Last time address/contact were refreshed from Zenoti. */
   zenotiSyncedAt: { type: Date, default: null },
 
+  /**
+   * Organisation tree, as Zenoti models it: organisation › zone › centre,
+   * with pharmacies grouped apart from clinics. `zone` groups the switcher
+   * ("Hyderabad"); `isPharmacy` marks a retail-only centre.
+   */
+  zone: { type: String, default: 'Hyderabad', trim: true },
+  isPharmacy: { type: Boolean, default: false, index: true },
+  /** The pharmacy centre attached to this clinic (Zenoti keeps them separate). */
+  pharmacyZenotiCenterId: { type: String, default: null, trim: true, lowercase: true },
+
+  /**
+   * Billing identity printed on this centre's invoices. Zenoti numbers
+   * invoices per centre (ZNJH…, ZJHP…) and prints the legal entity's GSTIN.
+   */
+  invoicePrefix: { type: String, default: null, trim: true, uppercase: true },
+  gstin: { type: String, default: null, trim: true, uppercase: true },
+  legalName: { type: String, default: null, trim: true },
+  stateCode: { type: String, default: '36', trim: true },
+
   // Slot Configuration
   slotDuration: {
     type: Number,

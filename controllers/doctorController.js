@@ -79,7 +79,7 @@ async function ensureDefaultSchedule(doctor, adminId = null) {
 const ALLOWED = [
   'name', 'photo', 'tier', 'level', 'designation', 'branch', 'availableCentres',
   'qualifications', 'experienceYears', 'experienceNote', 'expertise', 'achievements',
-  'fee', 'email', 'phone', 'displayOrder', 'isActive',
+  'fee', 'email', 'phone', 'displayOrder', 'isActive', 'onlineBookingEnabled',
 ];
 
 function pickBody(body) {
@@ -103,6 +103,9 @@ exports.getAllDoctors = async (req, res) => {
     // Public callers only ever see the active team; the panel opts in.
     if (isActive !== undefined) filter.isActive = isActive === 'true';
     else if (includeInactive !== 'true') filter.isActive = true;
+    // The app may only offer dermatologists whose "online booking" switch is
+    // on (Zenoti's per-employee flag). Staff see everyone.
+    if (!req.admin) filter.onlineBookingEnabled = { $ne: false };
 
     if (tier) filter.tier = tier;
     if (branch) filter.availableCentres = branch;

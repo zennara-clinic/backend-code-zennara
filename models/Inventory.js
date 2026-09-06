@@ -4,6 +4,14 @@ const inventorySchema = new mongoose.Schema({
   /** Zenoti product id when this consumable mirrors a Zenoti product. */
   zenotiProductId: { type: String, default: null, trim: true, index: true },
   zenotiSyncedAt: { type: Date, default: null },
+  /**
+   * The centre this stock row belongs to. Zenoti keeps a separate shelf per
+   * centre (each pharmacy is its own centre); before 2026-09-06 our rows were
+   * organisation-wide, which made transfers, per-centre valuation and a
+   * physical count impossible. `null` = legacy row not yet attributed.
+   */
+  branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', default: null, index: true },
+  vendorId: { type: mongoose.Schema.Types.ObjectId, ref: 'Vendor', default: null, index: true },
 
   // Basic Information
   inventoryName: {

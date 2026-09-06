@@ -219,6 +219,44 @@ function overlapsHeldSession(taken, start, duration = SESSION_SLOT_MINUTES) {
 }
 
 /**
+ * Time held on the doctor's diary by a block-out (Zenoti "Meeting", "CRM
+ * Booking", a panel block) — arbitrary ranges, not one-hour sessions. Returned
+ * as [{start, end}] in minutes from midnight, keyed by date for a span.
+ */
+async function blockedRangesByDate(doctorId, fromKeyStr, toKeyStr) {
+  const byDate = new Map();
+  const ProviderBlock = require('../models/ProviderBlock');
+  // Blocks are an overlay on the diary. If the read fails (or there is no live
+  // connection, as in unit tests that stub Booking), the day is computed from
+  // bookings alone rather than failing the whole slot request.
+  let rows = [];
+  try {
+    if (require('mongoose').connection.readyState !== 1) return byDate;
+    rows = await ProviderBlock.find({
+      doctorId,
+      active: true,
+      date: { $gte: fromKey(fromKeyStr), $lt: fromKey(addDaysToKey(toKeyStr, 1)) },
+    }).select('date startTime endTime').lean();
+  } catch (_) {
+    return byDate;
+  }
+  rows.forEach((b) => {
+    const s = parseClockMinutes(b.startTime);
+    const e = parseClockMinutes(b.endTime);
+    if (s === null || e === null || e <= s) return;
+    const key = dateKey(new Date(b.date));
+    if (!byDate.has(key)) byDate.set(key, []);
+    byDate.get(key).push({ start: s, end: e });
+  });
+  return byDate;
+}
+
+/** Does a session starting at `start` collide with any held block range? */
+function overlapsBlock(blocked, start, duration = SESSION_SLOT_MINUTES) {
+  return (blocked || []).some((b) => start < b.end && b.start < start + duration);
+}
+
+/**
  * Every slot on one date, each flagged bookable or not and why.
  *
  * `branchId` narrows to the ranges sat at that centre; passing nothing returns
@@ -275,7 +313,11 @@ async function slotsForDate(doctorId, key, { branchId = null, now = new Date(), 
   // platform policy is authoritative, so reads become hourly immediately.
   const slotMinutes = SESSION_SLOT_MINUTES;
   const earliest = new Date(now.getTime() + (schedule.leadTimeHours ?? 0) * 3600 * 1000);
-  const taken = await bookedTimes(doctorId, key, { excludeBookingId });
+  const [taken, blockedMap] = await Promise.all([
+    bookedTimes(doctorId, key, { excludeBookingId }),
+    blockedRangesByDate(doctorId, key, key),
+  ]);
+  const blocked = blockedMap.get(key) || [];
 
   // A Set, because two weekly rows at different centres can overlap and would
   // otherwise offer the same time twice.
@@ -285,7 +327,10 @@ async function slotsForDate(doctorId, key, { branchId = null, now = new Date(), 
     const at = clinicDateTime(key, toHHMM(minutes));
 
     const time = toHHMM(minutes);
-    const booked = overlapsHeldSession(taken, minutes, slotMinutes);
+    const isBlocked = overlapsBlock(blocked, minutes, slotMinutes);
+    // A block-out holds the time exactly like a booking does; `blocked` lets
+    // the desk calendar paint it differently from a guest visit.
+    const booked = isBlocked || overlapsHeldSession(taken, minutes, slotMinutes);
     const tooSoon = at < earliest;
 
     return {
@@ -293,6 +338,7 @@ async function slotsForDate(doctorId, key, { branchId = null, now = new Date(), 
       label: label(time),
       minutes,
       booked,
+      blocked: isBlocked,
       tooSoon,
       available: !booked && !tooSoon,
     };
@@ -342,6 +388,7 @@ async function availabilityRange(doctorId, fromKeyStr, toKeyStr, { branchId = nu
     .select('slotTime confirmedTime preferredTimeSlots preferredDate')
     .lean();
 
+  const blockedByDate = await blockedRangesByDate(doctorId, fromKeyStr, toKeyStr);
   const takenByDate = new Map();
   rows.forEach((b) => {
     const key = dateKey(new Date(b.preferredDate));
@@ -392,11 +439,12 @@ async function availabilityRange(doctorId, fromKeyStr, toKeyStr, { branchId = nu
 
     const starts = [...new Set(ranges.flatMap((r) => expand(r, slotMinutes)))];
     const taken = takenByDate.get(key) || new Set();
+    const blocked = blockedByDate.get(key) || [];
 
     let free = 0;
     starts.forEach((minutes) => {
       const at = clinicDateTime(key, toHHMM(minutes));
-      if (!overlapsHeldSession(taken, minutes, slotMinutes) && at >= earliest) free += 1;
+      if (!overlapsHeldSession(taken, minutes, slotMinutes) && !overlapsBlock(blocked, minutes, slotMinutes) && at >= earliest) free += 1;
     });
 
     days.push({ date: key, open: free > 0, total: starts.length, free, note: resolved.note });
@@ -433,7 +481,9 @@ async function isSlotBookable(doctorId, key, time, { branchId = null, now = new 
 /** Active dermatologists, optionally narrowed to one centre. */
 async function team(branchName = null) {
   const Doctor = require('../models/Doctor');
-  const query = { isActive: true };
+  // "Any available" is a guest-facing search: only dermatologists open to
+  // online booking take part. The desk books a specific doctor directly.
+  const query = { isActive: true, onlineBookingEnabled: { $ne: false } };
   const rows = await Doctor.find(query).select('doctorId name tier availableCentres').lean();
   if (!branchName) return rows;
 
