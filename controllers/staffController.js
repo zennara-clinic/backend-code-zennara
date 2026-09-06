@@ -45,9 +45,33 @@ const { sanitizePermissions } = require('../config/permissions');
  * from the Dermatologists / Therapists pages. `PASSWORD_ROLES` is the same list
  * the login endpoints enforce (see controllers/adminAuthController.js).
  */
-const PASSWORD_ROLES = ['doctor', 'therapist'];
-const usesPassword = (role) => PASSWORD_ROLES.includes(role);
 const PANEL_OF = (role) => (role === 'doctor' ? 'Dermatologist' : role === 'therapist' ? 'Therapist' : 'Admin');
+const { sendStaffCredentials } = require('../utils/staffCredentials');
+const Token = require('../models/Token');
+
+/** Per-centre role rows from the panel: [{ branchId, roleId, kind, from, to, note }]. */
+function validateAssignments(rows) {
+  if (rows === undefined || rows === null) return null;
+  if (!Array.isArray(rows)) return 'assignments must be a list';
+  for (const r of rows) {
+    if (!r || !r.branchId) return 'Every centre assignment needs a centre';
+    if (r.kind && !['primary', 'deputation'].includes(r.kind)) return 'Assignment kind must be primary or deputation';
+    if (r.kind === 'deputation' && !(r.from && r.to)) return 'A deputation needs a start and an end date';
+    if (r.from && r.to && new Date(r.to) < new Date(r.from)) return 'An assignment cannot end before it starts';
+  }
+  return null;
+}
+function cleanAssignments(rows) {
+  if (!Array.isArray(rows)) return [];
+  return rows.filter((r) => r && r.branchId).map((r) => ({
+    branchId: r.branchId,
+    roleId: r.roleId || null,
+    kind: r.kind === 'deputation' ? 'deputation' : 'primary',
+    from: r.from ? new Date(r.from) : null,
+    to: r.to ? new Date(r.to) : null,
+    note: String(r.note || '').slice(0, 300),
+  }));
+}
 
 const authorizedEmails = () =>
   (process.env.ADMIN_EMAILS || '')
@@ -133,8 +157,17 @@ const shape = (admin, allowList) => ({
    * someone click "Show" to discover it.
    */
   passwordSetAt: admin.passwordSetAt || null,
+  hasPassword: Boolean(admin.passwordSetAt),
+  mustChangePassword: Boolean(admin.mustChangePassword),
   /** How this account gets in — the panel labels the row with it. */
-  loginMethod: 'otp',
+  loginMethod: admin.passwordSetAt ? 'password' : 'otp',
+  loginMethods: admin.passwordSetAt ? ['password', 'otp'] : ['otp'],
+  jobTitle: admin.jobTitle || null,
+  assignments: (admin.assignments || []).map((a) => ({
+    branchId: a.branchId, roleId: a.roleId || null, kind: a.kind || 'primary', from: a.from || null, to: a.to || null, note: a.note || '',
+  })),
+  terminatedAt: admin.terminatedAt || null,
+  terminationReason: admin.terminationReason || null,
   /*
    * Whether sign-in will actually work today. Admin-panel accounts sign in with
    * an emailed code and `Admin.resolveLogin` accepts any active staff row, so
@@ -208,7 +241,10 @@ exports.getStaff = async (req, res) => {
 // @access  super_admin
 exports.createStaff = async (req, res) => {
   try {
-    const { email, name, role, doctorId, phone, branchId, branchIds, password, customRoleId, permissions } = req.body;
+    const {
+      email, name, role, doctorId, phone, branchId, branchIds, password, customRoleId, permissions,
+      jobTitle, assignments, generatePassword, notify,
+    } = req.body;
 
     if (!email || !/^\S+@\S+\.\S+$/.test(email)) {
       return res.status(400).json({ success: false, message: 'A valid email is required' });
@@ -223,16 +259,8 @@ exports.createStaff = async (req, res) => {
       });
     }
     if (refuseOutOfScope(req, res, role, 'manage')) return;
-    // Admin-panel accounts have no password — they sign in with an emailed code.
-    // Accepting one here would create a second, unusable way in.
-    if (password && !usesPassword(role)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Admin panel accounts sign in with a one-time code emailed to them — they do not get a password.',
-      });
-    }
-    if (password && String(password).length < 8) {
-      return res.status(400).json({ success: false, message: 'The password must be at least 8 characters' });
+    if (password && String(password).length < Admin.PASSWORD_MIN) {
+      return res.status(400).json({ success: false, message: `The password must be at least ${Admin.PASSWORD_MIN} characters` });
     }
 
     const existing = await Admin.findOne({ email: email.toLowerCase() });
@@ -242,26 +270,44 @@ exports.createStaff = async (req, res) => {
 
     // RBAC assignment only applies to admin-panel 'staff' accounts.
     const isPanelStaff = role === 'staff';
+    const assignmentsErr = validateAssignments(assignments);
+    if (assignmentsErr) return res.status(400).json({ success: false, message: assignmentsErr });
 
-    const admin = await Admin.create({
+    const admin = new Admin({
       email: email.toLowerCase(),
       name: name || email.split('@')[0],
       role,
+      jobTitle: jobTitle ? String(jobTitle).trim() : null,
       doctorId: role === 'doctor' && doctorId ? doctorId : null,
       phone: phone ? String(phone).trim() : null,
       branchId: branchId || (Array.isArray(branchIds) && branchIds[0]) || null,
       branchIds: Array.isArray(branchIds) ? branchIds.filter(Boolean) : (branchId ? [branchId] : []),
       customRoleId: isPanelStaff && customRoleId ? customRoleId : null,
       permissions: isPanelStaff ? sanitizePermissions(permissions) : [],
+      assignments: cleanAssignments(assignments),
       isActive: true,
     });
+    // Optional password at creation: the given one, or a generated temporary
+    // one the person must change. Without either they sign in with the code.
+    let issued = null;
+    if (password || generatePassword) {
+      issued = password || Admin.generateTemporaryPassword();
+      await admin.setPassword(issued, { setBy: req.admin._id, mustChange: Boolean(generatePassword) || Boolean(req.body.mustChangePassword) });
+    }
+    await admin.save();
 
     const allowList = authorizedEmails();
+    const delivery = issued ? await sendStaffCredentials(admin, { password: issued, mode: 'created', channel: notify || 'email' }) : null;
 
     return res.status(201).json({
       success: true,
-      message: `Account created — they sign in to the ${PANEL_OF(role)} panel with ${admin.email} and the code emailed at sign-in.`,
+      message: issued
+        ? `Account created — they sign in to the ${PANEL_OF(role)} panel with ${admin.email} and the password${delivery?.email === 'sent' ? ' emailed to them' : ''}.`
+        : `Account created — they sign in to the ${PANEL_OF(role)} panel with ${admin.email} and the code emailed at sign-in.`,
       data: shape(admin, allowList),
+      // Shown once to the administrator who created it; never stored in clear.
+      temporaryPassword: generatePassword ? issued : undefined,
+      delivery,
     });
   } catch (error) {
     console.error('Create staff error:', error);
@@ -336,6 +382,12 @@ exports.updateStaff = async (req, res) => {
     if (role !== undefined) admin.role = role;
     if (doctorId !== undefined) admin.doctorId = doctorId || null;
     if (phone !== undefined) admin.phone = String(phone).trim() || null;
+    if (req.body.jobTitle !== undefined) admin.jobTitle = req.body.jobTitle ? String(req.body.jobTitle).trim() : null;
+    if (req.body.assignments !== undefined) {
+      const bad = validateAssignments(req.body.assignments);
+      if (bad) return res.status(400).json({ success: false, message: bad });
+      admin.assignments = cleanAssignments(req.body.assignments);
+    }
     if (branchId !== undefined) admin.branchId = branchId || null;
     if (branchIds !== undefined) {
       admin.branchIds = Array.isArray(branchIds) ? branchIds.filter(Boolean) : [];
@@ -493,4 +545,175 @@ exports.getRoles = async (req, res) => {
       { id: 'therapist', label: 'Therapist', description: 'Floor panel — today’s guests, sessions, consumption. Signs in with a password. Created on the Therapists page.' },
     ],
   });
+};
+
+/* ------------------------------------------------------------------------- *
+ * Password, credentials, clone, terminate — Zenoti's Edit Employee actions.
+ * ------------------------------------------------------------------------- */
+
+/**
+ * @desc  Set or reset a staff member's password (Zenoti "Update Password").
+ * @route PUT /api/admin/staff/:id/password
+ * body: { password?, generate?, mustChange?, notify: 'email'|'whatsapp'|'both'|'none' }
+ * Only the hash is stored. A generated temporary password is returned ONCE to
+ * the administrator and optionally sent to the person.
+ */
+exports.setStaffPassword = async (req, res) => {
+  try {
+    const admin = await Admin.findById(req.params.id).select('+passwordHash');
+    if (!admin) return res.status(404).json({ success: false, message: 'Staff account not found' });
+    if (refuseOutOfScope(req, res, admin.role, 'manage')) return;
+    const { password, generate, mustChange, notify } = req.body || {};
+    const issued = generate || !password ? Admin.generateTemporaryPassword() : String(password);
+    try {
+      await admin.setPassword(issued, { setBy: req.admin._id, mustChange: generate || !password ? true : Boolean(mustChange) });
+    } catch (err) {
+      return res.status(err.status || 400).json({ success: false, message: err.message });
+    }
+    admin.failedLoginAttempts = 0;
+    admin.accountLockedUntil = null;
+    await admin.save({ validateModifiedOnly: true });
+    await Token.updateMany({ userId: admin._id, userType: 'Admin', isActive: true }, { $set: { isActive: false } }).catch(() => {});
+    const mode = admin.passwordSetAt ? 'reset' : 'created';
+    const delivery = await sendStaffCredentials(admin, { password: issued, mode, channel: notify || 'none' });
+    await AdminAuditLog.logAction({
+      adminId: req.admin._id, adminEmail: req.admin.email, action: 'SETTINGS_UPDATED', resource: 'ADMIN',
+      resourceId: String(admin._id), details: { field: 'password', target: admin.email, generated: Boolean(generate || !password), notify: notify || 'none', delivery },
+      ipAddress: req.adminIp || req.ip, userAgent: req.adminUserAgent,
+    }).catch(() => {});
+    return res.json({
+      success: true,
+      message: 'Password set. Every previous session for this account has been signed out.',
+      data: shape(admin, authorizedEmails()),
+      temporaryPassword: generate || !password ? issued : undefined,
+      delivery,
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to set the password', error: error.message });
+  }
+};
+
+/**
+ * @desc  Send sign-in details (Zenoti "Reset Password: send username and password").
+ * @route POST /api/admin/staff/:id/send-credentials   body: { channel: 'email'|'whatsapp'|'both' }
+ * Always issues a fresh temporary password (a stored one cannot be read back).
+ */
+exports.sendStaffCredentials = async (req, res) => {
+  try {
+    const admin = await Admin.findById(req.params.id).select('+passwordHash');
+    if (!admin) return res.status(404).json({ success: false, message: 'Staff account not found' });
+    if (refuseOutOfScope(req, res, admin.role, 'manage')) return;
+    const channel = ['email', 'whatsapp', 'both'].includes(req.body?.channel) ? req.body.channel : 'email';
+    if (channel !== 'email' && !admin.phone) {
+      return res.status(400).json({ success: false, message: 'This account has no phone number — add one first, or send by email.' });
+    }
+    const issued = Admin.generateTemporaryPassword();
+    await admin.setPassword(issued, { setBy: req.admin._id, mustChange: true });
+    admin.failedLoginAttempts = 0;
+    admin.accountLockedUntil = null;
+    await admin.save({ validateModifiedOnly: true });
+    await Token.updateMany({ userId: admin._id, userType: 'Admin', isActive: true }, { $set: { isActive: false } }).catch(() => {});
+    const delivery = await sendStaffCredentials(admin, { password: issued, mode: 'reset', channel });
+    await AdminAuditLog.logAction({
+      adminId: req.admin._id, adminEmail: req.admin.email, action: 'SETTINGS_UPDATED', resource: 'ADMIN',
+      resourceId: String(admin._id), details: { field: 'credentials-sent', target: admin.email, channel, delivery },
+      ipAddress: req.adminIp || req.ip, userAgent: req.adminUserAgent,
+    }).catch(() => {});
+    const sentSomewhere = delivery.email === 'sent' || delivery.whatsapp === 'sent';
+    return res.json({
+      success: true,
+      message: sentSomewhere ? 'Sign-in details sent. They will be asked to choose their own password.' : 'Could not deliver the details; the temporary password is shown here once.',
+      data: shape(admin, authorizedEmails()),
+      temporaryPassword: sentSomewhere ? undefined : issued,
+      delivery,
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to send sign-in details', error: error.message });
+  }
+};
+
+/**
+ * @desc  Clone an account's access onto a new person (Zenoti "Clone").
+ * @route POST /api/admin/staff/:id/clone   body: { email, name?, phone? }
+ * Copies role, job title, custom role, direct grants, centres and assignments.
+ * Never copies the password or the doctor link.
+ */
+exports.cloneStaff = async (req, res) => {
+  try {
+    const source = await Admin.findById(req.params.id).lean();
+    if (!source) return res.status(404).json({ success: false, message: 'Staff account not found' });
+    if (!CREATABLE_ROLES.includes(source.role)) {
+      return res.status(400).json({ success: false, message: `${PANEL_OF(source.role)} accounts of this type are created on their own page; only staff and therapist accounts can be cloned here.` });
+    }
+    if (refuseOutOfScope(req, res, source.role, 'manage')) return;
+    const { email, name, phone } = req.body || {};
+    if (!email || !/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ success: false, message: 'A valid email for the new account is required' });
+    if (await Admin.exists({ email: String(email).toLowerCase() })) return res.status(400).json({ success: false, message: 'A staff account with this email already exists' });
+    const admin = await Admin.create({
+      email: String(email).toLowerCase(),
+      name: name || String(email).split('@')[0],
+      phone: phone ? String(phone).trim() : null,
+      role: source.role,
+      jobTitle: source.jobTitle || null,
+      branchId: source.branchId || null,
+      branchIds: source.branchIds || [],
+      customRoleId: source.customRoleId || null,
+      permissions: sanitizePermissions(source.permissions || []),
+      assignments: (source.assignments || []).filter((a) => a.kind !== 'deputation'),
+      isActive: true,
+    });
+    await AdminAuditLog.logAction({
+      adminId: req.admin._id, adminEmail: req.admin.email, action: 'ADMIN_CREATED', resource: 'ADMIN',
+      resourceId: String(admin._id), details: { clonedFrom: source.email, target: admin.email },
+      ipAddress: req.adminIp || req.ip, userAgent: req.adminUserAgent,
+    }).catch(() => {});
+    return res.status(201).json({ success: true, message: `Cloned ${source.email}'s access onto ${admin.email}`, data: shape(admin, authorizedEmails()) });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to clone the account', error: error.message });
+  }
+};
+
+/**
+ * @desc  End employment (Zenoti "Terminate"): dated, with a reason, sessions ended.
+ * @route POST /api/admin/staff/:id/terminate   body: { reason, effectiveAt? }
+ * Deactivate is reversible and undated; terminate records when and why.
+ */
+exports.terminateStaff = async (req, res) => {
+  try {
+    const admin = await Admin.findById(req.params.id);
+    if (!admin) return res.status(404).json({ success: false, message: 'Staff account not found' });
+    if (refuseOutOfScope(req, res, admin.role, 'manage')) return;
+    if (String(admin._id) === String(req.admin._id)) return res.status(400).json({ success: false, message: 'You cannot terminate your own account' });
+    if (admin.role === 'super_admin') {
+      const supers = await Admin.countDocuments({ role: 'super_admin', isActive: true });
+      if (supers <= 1) return res.status(400).json({ success: false, message: 'This is the only active super admin — promote someone else first.' });
+    }
+    const reason = String(req.body?.reason || '').trim();
+    if (reason.length < 3) return res.status(400).json({ success: false, message: 'A reason is required' });
+    const effectiveAt = req.body?.effectiveAt ? new Date(req.body.effectiveAt) : new Date();
+    if (Number.isNaN(effectiveAt.getTime())) return res.status(400).json({ success: false, message: 'effectiveAt is not a valid date' });
+
+    admin.terminatedAt = effectiveAt;
+    admin.terminationReason = reason;
+    admin.terminatedBy = req.admin._id;
+    // A future date keeps the login until then; today or earlier ends it now.
+    if (effectiveAt <= new Date()) {
+      admin.isActive = false;
+      admin.sessionVersion = (admin.sessionVersion || 1) + 1;
+      await Token.updateMany({ userId: admin._id, isActive: true }, { $set: { isActive: false } }).catch(() => {});
+      // A dermatologist who has left should stop being offered in the app.
+      if (admin.role === 'doctor' && admin.doctorId) {
+        await require('../models/Doctor').updateOne({ _id: admin.doctorId }, { $set: { isActive: false, onlineBookingEnabled: false } }).catch(() => {});
+      }
+    }
+    await admin.save({ validateModifiedOnly: true });
+    await AdminAuditLog.logAction({
+      adminId: req.admin._id, adminEmail: req.admin.email, action: 'ADMIN_DEACTIVATED', resource: 'ADMIN',
+      resourceId: String(admin._id), details: { target: admin.email, terminated: true, effectiveAt, reason },
+      ipAddress: req.adminIp || req.ip, userAgent: req.adminUserAgent,
+    }).catch(() => {});
+    return res.json({ success: true, message: effectiveAt <= new Date() ? 'Employment ended; sign-in is blocked.' : `Employment ends on ${effectiveAt.toISOString().slice(0, 10)}.`, data: shape(admin, authorizedEmails()) });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Failed to terminate the account', error: error.message });
+  }
 };

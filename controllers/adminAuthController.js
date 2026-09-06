@@ -44,6 +44,13 @@ async function buildAdminPayload(admin) {
     roleKey: eff.roleKey,
     roleName: eff.roleName,
     permissions: Array.from(eff.permissions),
+    permissionsByBranch: eff.permissionsByBranch || {},
+    assignments: eff.assignments || [],
+    jobTitle: admin.jobTitle || null,
+    // Sign-in state. The hash itself is never here (select:false on the model).
+    hasPassword: Boolean(admin.passwordSetAt),
+    mustChangePassword: Boolean(admin.mustChangePassword),
+    terminatedAt: admin.terminatedAt || null,
     toursSeen: Array.isArray(admin.toursSeen) ? admin.toursSeen : [],
   };
 }
@@ -530,14 +537,25 @@ exports.checkAuthorizedEmail = async (req, res) => {
       });
     }
 
-    const isAuthorized = !!(await Admin.resolveLogin(email));
+    const resolved = await Admin.resolveLogin(email);
+    const isAuthorized = !!resolved;
+    // Which ways in this account has. The login screen shows a password box
+    // when one is set and otherwise goes straight to the emailed code.
+    let hasPassword = false;
+    if (resolved) {
+      const withHash = await Admin.findById(resolved._id).select('+passwordHash role').lean();
+      hasPassword = Boolean(withHash && withHash.passwordHash);
+    }
 
     res.status(200).json({
       success: true,
       data: {
         isAuthorized,
-        message: isAuthorized 
-          ? 'Email is authorized for admin access' 
+        hasPassword,
+        methods: isAuthorized ? (hasPassword ? ['password', 'otp'] : ['otp']) : [],
+        role: resolved ? resolved.role : null,
+        message: isAuthorized
+          ? 'Email is authorized for admin access'
           : 'Email is not authorized'
       }
     });
@@ -552,19 +570,22 @@ exports.checkAuthorizedEmail = async (req, res) => {
 
 
 /** Issue a panel session for an authenticated admin (shared by OTP and password logins). */
-async function issueAdminSession(req, admin) {
+async function issueAdminSession(req, admin, { method = 'otp' } = {}) {
     const deviceInfo = {
       userAgent: req.headers['user-agent'],
       deviceName: req.headers['device-name'] || null,
       appVersion: req.headers['app-version'] || null
     };
-    // Generate JWT token (24 hours for admin)
+    // Generate JWT token (24 hours for admin). `sv` pins the session to the
+    // account's current session version so "sign out everywhere" and a
+    // password change end it.
     const token = jwt.sign(
-      { 
-        adminId: admin._id, 
+      {
+        adminId: admin._id,
         email: admin.email,
         role: admin.role,
-        type: 'admin'
+        type: 'admin',
+        sv: admin.sessionVersion || 1,
       },
       process.env.JWT_SECRET,
       { expiresIn: '24h' }
@@ -573,11 +594,11 @@ async function issueAdminSession(req, admin) {
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 1); // 24 hours
 
-    // Save token to database
+    // Save token to database — only the hash, like the OTP path.
     const tokenDoc = new Token({
       userId: admin._id,
       userType: 'Admin',
-      token,
+      tokenHash: hashToken(token),
       type: 'admin_access',
       deviceInfo,
       ipAddress: req.ip || req.connection.remoteAddress,
@@ -593,8 +614,9 @@ async function issueAdminSession(req, admin) {
       adminEmail: admin.email,
       action: 'LOGIN',
       resource: 'AUTH',
-      details: { 
+      details: {
         role: admin.role,
+        method,
         deviceInfo
       },
       ipAddress: req.ip || req.connection.remoteAddress,
@@ -619,13 +641,100 @@ async function issueAdminSession(req, admin) {
     return { token, expiresAt };
 }
 
-// @desc    Password login for the clinical panels (dermatologists, therapists)
+// @desc    Password sign-in for any panel account that has a password set
 // @route   POST /api/admin/auth/login-password
 //
-// Passwords belong to the dermatologist and floor panels only. Admin-panel
-// accounts — super admins and granular `staff` — sign in with an emailed
-// one-time code and have no password at all, so this refuses them by role
-// rather than leaving two ways into the same panel.
+// Re-introduced 2026-09-06 at the clinic's request (the dermatologists'
+// synthetic addresses cannot receive a code). Only the bcrypt hash is stored;
+// an admin can set or reset a password but never read one. The emailed code
+// keeps working for every account, so this is an additional way in.
+exports.adminLoginPassword = async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) {
+      return res.status(400).json({ success: false, message: 'Please provide email and password' });
+    }
+    const resolved = await Admin.resolveLogin(email);
+    // One message for "no such account" and "wrong password" — do not confirm addresses.
+    const invalid = () => res.status(401).json({ success: false, code: 'INVALID_CREDENTIALS', message: 'That email and password do not match.' });
+    if (!resolved) return invalid();
+    const admin = await Admin.findById(resolved._id).select('+passwordHash');
+    if (!admin || admin.isActive === false) return invalid();
+
+    if (admin.accountLockedUntil && Date.now() < new Date(admin.accountLockedUntil).getTime()) {
+      const minutesLeft = Math.ceil((new Date(admin.accountLockedUntil).getTime() - Date.now()) / 60000);
+      return res.status(429).json({ success: false, message: `Account temporarily locked. Try again in ${minutesLeft} minutes.` });
+    }
+    if (!admin.passwordHash) {
+      return res.status(400).json({
+        success: false,
+        code: 'NO_PASSWORD',
+        message: 'This account signs in with an emailed code. Ask an administrator to set a password, or use the code.',
+      });
+    }
+
+    const ok = await admin.verifyPassword(password);
+    if (!ok) {
+      admin.failedLoginAttempts = (admin.failedLoginAttempts || 0) + 1;
+      if (admin.failedLoginAttempts >= 10) admin.accountLockedUntil = Date.now() + 60 * 60 * 1000;
+      await admin.save({ validateModifiedOnly: true });
+      await AdminAuditLog.logAction({
+        adminId: admin._id, adminEmail: admin.email, action: 'FAILED_LOGIN', resource: 'AUTH',
+        details: { method: 'password', failedLoginAttempts: admin.failedLoginAttempts },
+        ipAddress: req.ip || req.connection.remoteAddress, userAgent: req.get('user-agent'),
+        status: 'FAILED', errorMessage: 'Wrong password',
+      }).catch(() => {});
+      return invalid();
+    }
+
+    admin.failedLoginAttempts = 0;
+    admin.accountLockedUntil = null;
+    admin.lastLogin = new Date();
+    admin.clearOTP();
+    await admin.save({ validateModifiedOnly: true });
+
+    const { token, expiresAt } = await issueAdminSession(req, admin, { method: 'password' });
+    return res.status(200).json({
+      success: true,
+      message: 'Login successful',
+      data: { token, expiresAt, admin: await buildAdminPayload(admin) },
+    });
+  } catch (error) {
+    console.error('❌ Admin password login failed:', error);
+    return res.status(500).json({ success: false, message: 'Login failed. Please try again.' });
+  }
+};
+
+// @desc    Change my own password (current password required once one exists)
+// @route   PUT /api/admin/auth/me/password
+exports.changeMyPassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    const admin = await Admin.findById(req.admin._id).select('+passwordHash');
+    if (!admin) return res.status(404).json({ success: false, message: 'Account not found' });
+    if (admin.passwordHash && !admin.mustChangePassword) {
+      if (!currentPassword || !(await admin.verifyPassword(currentPassword))) {
+        return res.status(400).json({ success: false, message: 'Your current password is not right.' });
+      }
+    }
+    try {
+      await admin.setPassword(newPassword, { setBy: admin._id, mustChange: false });
+    } catch (err) {
+      return res.status(err.status || 400).json({ success: false, message: err.message });
+    }
+    await admin.save({ validateModifiedOnly: true });
+    await AdminAuditLog.logAction({
+      adminId: admin._id, adminEmail: admin.email, action: 'SETTINGS_UPDATED', resource: 'ADMIN',
+      resourceId: String(admin._id), details: { field: 'password', self: true },
+      ipAddress: req.ip || req.connection.remoteAddress, userAgent: req.get('user-agent'), status: 'SUCCESS',
+    }).catch(() => {});
+    // The session version moved on; hand back a fresh session so this device stays signed in.
+    const { token, expiresAt } = await issueAdminSession(req, admin, { method: 'password-change' });
+    return res.json({ success: true, message: 'Password updated', data: { token, expiresAt, admin: await buildAdminPayload(admin) } });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: 'Could not update the password.' });
+  }
+};
 
 // @desc    Change my login email / phone
 // @route   PUT /api/admin/auth/me/contact

@@ -44,7 +44,32 @@ async function computeEffectivePermissions(admin) {
       for (const p of sanitizePermissions(role.permissions)) perms.add(p);
     }
   }
-  return { isSuperAdmin: false, permissions: perms, roleKey, roleName };
+  /*
+   * Per-centre assignments ("receptionist at JH, manager at Kondapur").
+   * Route gates stay organisation-wide (the union), because a request rarely
+   * names its centre; `permissionsByBranch` lets the panel and any
+   * centre-aware handler narrow to the centre in hand. Only assignments whose
+   * window covers today count — a deputation that has ended grants nothing.
+   */
+  const now = new Date();
+  const current = (admin.assignments || []).filter((a) => a && a.branchId
+    && !(a.from && new Date(a.from) > now) && !(a.to && new Date(a.to) < now));
+  const permissionsByBranch = {};
+  const assignments = [];
+  if (current.length) {
+    const roleIds = [...new Set(current.map((a) => String(a.roleId || '')).filter(Boolean))];
+    const roles = roleIds.length ? await Role.find({ _id: { $in: roleIds }, isActive: { $ne: false } }).lean() : [];
+    const byId = new Map(roles.map((r) => [String(r._id), r]));
+    for (const a of current) {
+      const role = a.roleId ? byId.get(String(a.roleId)) : null;
+      const keys = role ? sanitizePermissions(role.permissions) : [];
+      const b = String(a.branchId);
+      permissionsByBranch[b] = [...new Set([...(permissionsByBranch[b] || []), ...keys])];
+      for (const p of keys) perms.add(p);
+      assignments.push({ branchId: b, roleId: a.roleId ? String(a.roleId) : null, roleName: role ? role.name : null, roleKey: role ? role.key : null, kind: a.kind || 'primary', from: a.from || null, to: a.to || null });
+    }
+  }
+  return { isSuperAdmin: false, permissions: perms, roleKey, roleName, permissionsByBranch, assignments };
 }
 exports.computeEffectivePermissions = computeEffectivePermissions;
 

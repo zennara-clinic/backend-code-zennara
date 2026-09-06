@@ -58,7 +58,50 @@ const AdminSchema = new mongoose.Schema({
     type: [String],
     default: [],
   },
-  
+
+  /* ---- Staff record (mirrors Zenoti's employee: job, roles per centre) ---- */
+  /**
+   * Job title for display and reports ("Clinic Manager", "Accountant",
+   * "Dermatologist", "Front desk"). Deliberately separate from `role` /
+   * `customRoleId`, which decide what the account may DO — Zenoti keeps the
+   * same split between an employee's Job and their Roles.
+   */
+  jobTitle: { type: String, default: null, trim: true },
+  /**
+   * Per-centre role assignments — "receptionist at Jubilee Hills, manager at
+   * Kondapur". `kind: 'deputation'` is a temporary posting between `from` and
+   * `to`. Effective permissions are the union of every current assignment's
+   * role plus `customRoleId` and direct grants; `permissionsByBranch` on the
+   * session payload tells the panel which centres each permission applies to.
+   */
+  assignments: [{
+    _id: false,
+    branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
+    roleId: { type: mongoose.Schema.Types.ObjectId, ref: 'Role', default: null },
+    kind: { type: String, enum: ['primary', 'deputation'], default: 'primary' },
+    from: { type: Date, default: null },
+    to: { type: Date, default: null },
+    note: { type: String, default: '' },
+  }],
+
+  /* ---- Password sign-in (re-introduced 2026-09-06, hash only) ---- */
+  /**
+   * bcrypt hash of the sign-in password. Never selected by default and never
+   * sent to a client; there is no "reveal" — an admin can only SET or RESET it
+   * (Zenoti's Update Password / Reset Password). Accounts without a hash keep
+   * signing in with the emailed code; both methods stay available.
+   */
+  passwordHash: { type: String, default: null, select: false },
+  passwordSetAt: { type: Date, default: null },
+  passwordSetBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', default: null },
+  /** True after an admin-issued temporary password until the person picks their own. */
+  mustChangePassword: { type: Boolean, default: false },
+
+  /* ---- Employment end (Zenoti "Terminate") ---- */
+  terminatedAt: { type: Date, default: null },
+  terminationReason: { type: String, default: null },
+  terminatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', default: null },
+
   // OTP for verification (hashed for security)
   otp: {
     type: String,
@@ -224,6 +267,46 @@ AdminSchema.methods.clearOTP = function() {
   this.otp = null;
   this.otpExpiry = null;
   this.otpAttempts = 0;
+};
+
+/** Minimum the clinic accepts for a sign-in password. */
+AdminSchema.statics.PASSWORD_MIN = 8;
+
+/** Set (or replace) the password. Only the bcrypt hash is stored. */
+AdminSchema.methods.setPassword = async function(plain, { setBy = null, mustChange = false } = {}) {
+  const value = String(plain || '');
+  if (value.length < AdminSchema.statics.PASSWORD_MIN) {
+    throw Object.assign(new Error(`The password must be at least ${AdminSchema.statics.PASSWORD_MIN} characters`), { status: 400 });
+  }
+  this.passwordHash = await bcrypt.hash(value, 12);
+  this.passwordSetAt = new Date();
+  this.passwordSetBy = setBy || null;
+  this.mustChangePassword = Boolean(mustChange);
+  // A new password ends every other session for the account.
+  this.sessionVersion = (this.sessionVersion || 1) + 1;
+};
+
+/** Compare a candidate password. The document must have been loaded with `+passwordHash`. */
+AdminSchema.methods.verifyPassword = async function(plain) {
+  if (!this.passwordHash) return false;
+  return bcrypt.compare(String(plain || ''), this.passwordHash);
+};
+
+/** A readable temporary password: 3 word-ish blocks and 2 digits, e.g. "Zen-Kite-Moon-42". */
+AdminSchema.statics.generateTemporaryPassword = function() {
+  const words = ['Zen', 'Glow', 'Calm', 'Kite', 'Moon', 'Lotus', 'Sage', 'Dawn', 'Pearl', 'Fern', 'Rose', 'Jade', 'Opal', 'Iris', 'Mint', 'Coral'];
+  const pick = () => words[Math.floor(Math.random() * words.length)];
+  const n = 10 + Math.floor(Math.random() * 90);
+  return `${pick()}-${pick()}-${pick()}-${n}`;
+};
+
+/** Current assignments only (a deputation outside its window does not count). */
+AdminSchema.methods.currentAssignments = function(now = new Date()) {
+  return (this.assignments || []).filter((a) => {
+    if (a.from && new Date(a.from) > now) return false;
+    if (a.to && new Date(a.to) < now) return false;
+    return true;
+  });
 };
 
 // Static method to check if email is authorized

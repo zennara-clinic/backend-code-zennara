@@ -16,6 +16,8 @@ router.post('/login', adminLoginLimiter, adminLogin);
 router.post('/verify-otp', adminOTPLimiter, adminVerifyOTP);
 router.post('/resend-otp', adminLoginLimiter, adminResendOTP);
 router.post('/check-email', adminLoginLimiter, checkAuthorizedEmail);
+// Email + password, for accounts an administrator has given a password.
+router.post('/login-password', adminLoginLimiter, require('../controllers/adminAuthController').adminLoginPassword);
 
 // Protected routes (require admin authentication)
 router.post('/logout', protectAdmin, adminLogout);
@@ -26,6 +28,8 @@ const { updateMyContact } = require('../controllers/adminAuthController');
 // Name, phone and photo — the account's own row only.
 router.put('/me', protectAdmin, require('../controllers/adminAuthController').updateMyProfile);
 router.put('/me/contact', protectAdmin, updateMyContact);
+// Pick / change my own password (current password required once one exists).
+router.put('/me/password', protectAdmin, require('../controllers/adminAuthController').changeMyPassword);
 // Sign out everywhere: bumps the session version and revokes every stored session.
 router.post('/me/logout-all', protectAdmin, require('../controllers/adminAuthController').logoutAll);
 // First-login walkthrough state (per account, not per browser).

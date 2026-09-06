@@ -570,8 +570,15 @@ exports.getDoctorAccount = async (req, res) => {
     const doctor = await Doctor.findById(req.params.id);
     if (!doctor) return res.status(404).json({ success: false, message: 'Doctor not found' });
     const account = await ensureDoctorLogin(doctor);
-    // Sign-in is a one-time code emailed to `email`; there is no password state.
-    res.json({ success: true, data: account ? { _id: account._id, email: account.email, phone: account.phone, role: account.role, isActive: account.isActive, lastLogin: account.lastLogin, loginMethod: 'otp', placeholderEmail: /@dermatologist\.zennara\.in$/i.test(account.email) } : null });
+    // Sign-in is the emailed code, plus a password once an admin sets one
+    // (the synthetic @dermatologist addresses cannot receive a code).
+    res.json({ success: true, data: account ? {
+      _id: account._id, email: account.email, phone: account.phone, role: account.role, isActive: account.isActive, lastLogin: account.lastLogin,
+      hasPassword: Boolean(account.passwordSetAt), passwordSetAt: account.passwordSetAt || null, mustChangePassword: Boolean(account.mustChangePassword),
+      loginMethod: account.passwordSetAt ? 'password' : 'otp', loginMethods: account.passwordSetAt ? ['password', 'otp'] : ['otp'],
+      placeholderEmail: /@dermatologist\.zennara\.in$/i.test(account.email),
+      jobTitle: account.jobTitle || null, terminatedAt: account.terminatedAt || null,
+    } : null });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
