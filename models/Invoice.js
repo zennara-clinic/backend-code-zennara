@@ -32,7 +32,7 @@ const lineSchema = new mongoose.Schema({
   kind: { type: String, enum: LINE_KINDS, required: true },
   /** What was sold: Consultation / Product / Inventory / Package id. */
   refId: { type: mongoose.Schema.Types.ObjectId, default: null },
-  refModel: { type: String, enum: ['Consultation', 'Product', 'Inventory', 'Package', null], default: null },
+  refModel: { type: String, enum: ['Consultation', 'Product', 'Inventory', 'Package', 'Membership', null], default: null },
   /** The visit row this service line settles (service lines only). */
   bookingId: { type: mongoose.Schema.Types.ObjectId, ref: 'Booking', default: null },
   name: { type: String, required: true, trim: true },
@@ -50,9 +50,15 @@ const lineSchema = new mongoose.Schema({
   redeemed: {
     kind: { type: String, enum: ['package', 'membership', null], default: null },
     packageAssignmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'PackageAssignment', default: null },
+    membershipAssignmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'MembershipAssignment', default: null },
     sessionId: { type: mongoose.Schema.Types.ObjectId, default: null },
     label: { type: String, default: null },
   },
+  /** Where the line discount came from: a member tier applied on its own, or the desk. */
+  discountSource: { type: String, enum: ['membership', 'manual', null], default: null },
+  discountLabel: { type: String, default: null },
+  /** Membership lines: the MembershipAssignment created when the bill closed. */
+  membershipAssignmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'MembershipAssignment', default: null },
   /** "Sale by" — who gets the attribution (a Doctor or an Admin/staff login). */
   soldById: { type: String, default: null },
   soldByName: { type: String, default: null, trim: true },
@@ -172,6 +178,8 @@ const invoiceSchema = new mongoose.Schema({
   /** Zenoti's invoice id/number when this bill mirrors one (read-only). */
   zenotiInvoiceId: { type: String, default: null, index: true },
   zenotiInvoiceNumber: { type: String, default: null },
+  /** The member tier that discounted this bill (for the receipt line "Zen member 15% off"). */
+  membership: { kind: { type: String, default: null }, name: { type: String, default: null }, memberNumber: { type: String, default: null }, assignmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'MembershipAssignment', default: null } },
   /** What the bill settles (denormalised for search). */
   bookingIds: { type: [mongoose.Schema.Types.ObjectId], default: [] },
 }, { timestamps: true });

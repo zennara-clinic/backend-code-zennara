@@ -2253,7 +2253,7 @@ exports.createBookingAdmin = async (req, res) => {
       if (line.packageAssignmentId && line.packageSessionId) {
         assignment = await PackageAssignment.findOne({ _id: line.packageAssignmentId, userId: user._id });
         if (!assignment) return res.status(404).json({ success: false, message: 'That package does not belong to this guest' });
-        if (assignment.status !== 'Active') return res.status(409).json({ success: false, message: `This package is ${assignment.status.toLowerCase()}` });
+        { const rd = assignment.redeemable({ branchId: branch._id }); if (!rd.ok) return res.status(409).json({ success: false, code: rd.code, message: rd.message }); }
         session = assignment.sessions.id(line.packageSessionId);
         if (!session) return res.status(404).json({ success: false, message: 'Package session not found' });
         if (session.bookingId || ['Booked', 'Completed', 'Cancelled'].includes(session.status)) return res.status(409).json({ success: false, message: 'That package session already has an appointment' });

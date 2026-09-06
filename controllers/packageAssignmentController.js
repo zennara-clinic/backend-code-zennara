@@ -175,69 +175,14 @@ exports.createAssignment = async (req, res) => {
       });
     }
 
-    // Create assignment data
-    const assignmentData = {
-      userId,
-      packageId,
-      packageDetails: {
-        packageName: packageData.name,
-        packagePrice: packageData.price,
-        originalPrice: packageData.originalPrice,
-        services: packageData.services.map(s => ({
-          serviceId: s.serviceId,
-          serviceName: s.serviceName,
-          // Snapshot the entitlement so per-service balances survive later
-          // edits to the package definition.
-          sessions: Math.max(1, Number(s.sessions) || 1),
-          servicePrice: s.customPrice ?? s.servicePrice ?? null
-        }))
-      },
-      userDetails: {
-        fullName: user.fullName || user.name,
-        name: user.fullName || user.name,
-        email: user.email,
-        phone: user.phone,
-        patientId: user.patientId,
-        memberType: user.memberType
-      },
-      pricing: {
-        originalAmount: packageData.price,
-        discountPercentage: discountPercentage || 0,
-        isZenMemberDiscount: isZenMemberDiscount || false
-      },
-      payment: {
-        isReceived: paymentReceived || false,
-        receivedDate: paymentReceived ? (paymentReceivedDate || new Date()) : null,
-        paymentMethod: paymentMethod || (req.body.payment && req.body.payment.method) || null,
-        transactionId: txn || null
-      },
-      notes: notes || '',
-      // The desk may set an explicit expiry; otherwise it follows the package's
-      // validity (12 months unless the package says otherwise).
-      validUntil: validUntil
-        ? new Date(validUntil)
-        : (() => { const d = new Date(); d.setMonth(d.getMonth() + (Number(packageData.validityMonths) > 0 ? Number(packageData.validityMonths) : 12)); return d; })(),
-      preferredLocation: preferredLocation || '',
-      branchId: branchId || null,
-      // Build the dated session schedule; a service may appear more than once.
-      sessions: datedSessions.map(s => ({
-        serviceId: s.serviceId,
-        serviceName:
-          (packageData.services.find(ps => ps.serviceId === s.serviceId) || {}).serviceName ||
-          s.serviceName ||
-          '',
-        scheduledDate: new Date(s.scheduledDate),
-        scheduledTime: s.scheduledTime || '',
-        specialistId: s.specialistId || null,
-        specialistName: s.specialistName || null,
-        specialistTier: s.specialistTier || null,
-        status: 'Scheduled'
-      })),
-      assignedBy: req.admin?._id || null,
-      assignedByName: req.admin?.name || 'Admin'
-    };
-
-    const assignment = new PackageAssignment(assignmentData);
+    // Build from the package's current terms (validity, grace, redeem-at, version) — see utils/packageRules.
+    const { buildAssignment } = require('../utils/packageRules');
+    const assignment = buildAssignment(packageData, user, {
+      branchId: branchId || null, preferredLocation: preferredLocation || '', sessions: datedSessions, notes: notes || '',
+      discountPercentage: discountPercentage || 0, isZenMemberDiscount: isZenMemberDiscount || false,
+      payment: { isReceived: paymentReceived || false, receivedDate: paymentReceivedDate, paymentMethod: method || null, transactionId: txn || null },
+      validUntil: validUntil || null, assignedBy: req.admin?._id || null, assignedByName: req.admin?.name || 'Admin',
+    });
     await assignment.save();
 
     // Populate before sending response
@@ -1351,11 +1296,9 @@ exports.bookSessionAsUser = async (req, res) => {
 
     const assignment = await PackageAssignment.findOne({ _id: req.params.id, userId: req.user._id });
     if (!assignment) return res.status(404).json({ success: false, message: 'Package not found' });
-    if (assignment.status !== 'Active') {
-      return res.status(409).json({ success: false, message: `This package is ${assignment.status.toLowerCase()} and cannot be booked.` });
-    }
-    if (assignment.validUntil && new Date(assignment.validUntil) < new Date()) {
-      return res.status(409).json({ success: false, code: 'PACKAGE_EXPIRED', message: 'This package has expired. Please speak to the clinic.' });
+    const redeem = assignment.redeemable({ branchId: assignment.branchId || null });
+    if (!redeem.ok) {
+      return res.status(409).json({ success: false, code: redeem.code, message: redeem.code === 'PACKAGE_EXPIRED' ? 'This package has expired. Please speak to the clinic.' : redeem.message });
     }
 
     const session = assignment.sessions.id(req.params.sessionId);
@@ -1427,4 +1370,79 @@ exports.bookSessionAsUser = async (req, res) => {
     console.error('bookSessionAsUser failed:', error);
     return res.status(500).json({ success: false, message: 'Could not book the session' });
   }
+};
+
+
+/* ------------------------------------------------------------------------ */
+/* Zenoti package actions: freeze / unfreeze / transfer / refund / log        */
+/* ------------------------------------------------------------------------ */
+const packageRules = require('../utils/packageRules');
+const who = (req) => req.admin?.name || req.admin?.email || 'Admin';
+const respond = (res, pa, message) => res.json({ success: true, message, data: pa });
+const oops = (res, e) => res.status(e.status || 500).json({ success: false, message: e.message, code: e.code || undefined });
+
+exports.freezeAssignment = async (req, res) => {
+  try {
+    const pa = await PackageAssignment.findById(req.params.id);
+    if (!pa) return res.status(404).json({ success: false, message: 'Assignment not found' });
+    packageRules.freeze(pa, { by: who(req), reason: req.body?.reason || '', resumeOn: req.body?.resumeOn || null });
+    await pa.save();
+    return respond(res, pa, 'Package frozen — its sessions cannot be booked or redeemed until it is unfrozen; the frozen days are added back to its validity.');
+  } catch (e) { return oops(res, e); }
+};
+
+exports.unfreezeAssignment = async (req, res) => {
+  try {
+    const pa = await PackageAssignment.findById(req.params.id);
+    if (!pa) return res.status(404).json({ success: false, message: 'Assignment not found' });
+    packageRules.unfreeze(pa, { by: who(req) });
+    await pa.save();
+    const last = pa.freezeHistory[pa.freezeHistory.length - 1];
+    return respond(res, pa, `Package unfrozen — ${last?.days || 0} day${last?.days === 1 ? '' : 's'} added to its validity${pa.validUntil ? ` (now ${new Date(pa.validUntil).toLocaleDateString('en-GB')})` : ''}.`);
+  } catch (e) { return oops(res, e); }
+};
+
+// POST /:id/transfer { toUserId, services: [{ serviceId, qty }], reason }
+exports.transferAssignment = async (req, res) => {
+  try {
+    const pa = await PackageAssignment.findById(req.params.id);
+    if (!pa) return res.status(404).json({ success: false, message: 'Assignment not found' });
+    const target = await User.findById(req.body?.toUserId);
+    if (!target) return res.status(404).json({ success: false, message: 'Guest to transfer to not found' });
+    const created = packageRules.transfer(pa, target, req.body?.services || [], { by: who(req), reason: req.body?.reason || '' });
+    await created.save();
+    await pa.save();
+    return res.json({ success: true, message: `Transferred to ${target.fullName} (${created.assignmentId}).`, data: pa, transferred: created });
+  } catch (e) { return oops(res, e); }
+};
+
+exports.refundPreview = async (req, res) => {
+  const pa = await PackageAssignment.findById(req.params.id);
+  if (!pa) return res.status(404).json({ success: false, message: 'Assignment not found' });
+  return res.json({ success: true, data: { ...packageRules.refundSuggestion(pa), balances: pa.serviceBalances() } });
+};
+
+// POST /:id/refund { amount, method, reference, reason }
+exports.refundAssignment = async (req, res) => {
+  try {
+    const pa = await PackageAssignment.findById(req.params.id);
+    if (!pa) return res.status(404).json({ success: false, message: 'Assignment not found' });
+    packageRules.refund(pa, { amount: req.body?.amount, method: req.body?.method || 'Cash', reference: req.body?.reference || null, reason: req.body?.reason || '', by: who(req) });
+    // Scheduled-but-unbooked appointments made from this package are released.
+    const Booking = require('../models/Booking');
+    await Booking.updateMany({ packageAssignmentId: pa._id, status: { $in: ['Awaiting Confirmation', 'Confirmed', 'Rescheduled'] } }, { $set: { status: 'Cancelled', cancellationReason: `Package refunded: ${req.body?.reason || ''}`.trim() } }).catch(() => {});
+    await pa.save();
+    return respond(res, pa, `Refund of ₹${Number(req.body?.amount || 0).toLocaleString('en-IN')} recorded — package cancelled.`);
+  } catch (e) { return oops(res, e); }
+};
+
+/** Balances + redemptions + freeze/transfer history — the guest-profile package detail. */
+exports.assignmentLedger = async (req, res) => {
+  const pa = await PackageAssignment.findById(req.params.id).populate('invoiceId', 'invoiceNumber receiptNumber totals status').lean({ virtuals: false });
+  if (!pa) return res.status(404).json({ success: false, message: 'Assignment not found' });
+  const doc = await PackageAssignment.findById(req.params.id);
+  return res.json({ success: true, data: {
+    balances: doc.serviceBalances(), redeemable: doc.redeemable({}), redemptions: pa.redemptions || [], freeze: pa.freeze, freezeHistory: pa.freezeHistory || [],
+    transfers: pa.transfers || [], transferredFrom: pa.transferredFrom || null, refund: pa.refund || null, terms: pa.terms, graceUntil: pa.graceUntil, invoice: pa.invoiceId || null, payment: pa.payment,
+  } });
 };

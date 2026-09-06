@@ -203,10 +203,27 @@ const expirePackages = async () => {
   try {
     const PackageAssignment = require('../models/PackageAssignment');
     const now = new Date();
+    // Grace period (Zenoti "Expiration with grace"): a package with graceUntil
+    // set stays redeemable until that date; a frozen package never expires
+    // while frozen (the frozen days come back on unfreeze).
     const expired = await PackageAssignment.updateMany(
-      { status: 'Active', validUntil: { $ne: null, $lt: now } },
+      { status: 'Active', 'freeze.isFrozen': { $ne: true }, $or: [
+        { graceUntil: { $ne: null, $lt: now } },
+        { graceUntil: null, validUntil: { $ne: null, $lt: now } },
+      ] },
       { $set: { status: 'Expired' } },
     );
+    // Memberships lapse the same night, and the guest's summary follows.
+    try {
+      const MembershipAssignment = require('../models/MembershipAssignment');
+      const lapsed = await MembershipAssignment.find({ status: 'Active', validUntil: { $ne: null, $lt: now } }).select('_id userId').lean();
+      if (lapsed.length) {
+        await MembershipAssignment.updateMany({ _id: { $in: lapsed.map((l) => l._id) } }, { $set: { status: 'Expired' } });
+        const { syncUserMembership } = require('./membershipRules');
+        for (const uid of new Set(lapsed.map((l) => String(l.userId)))) await syncUserMembership(uid).catch(() => {});
+        console.log(`👑 Memberships: ${lapsed.length} expired`);
+      }
+    } catch (e) { console.error('❌ Error expiring memberships:', e.message); }
     // No automatic re-activation here: the desk may have marked a package
     // Expired on purpose. Extending validUntil from the panel is what brings a
     // package back (see packageAssignmentController.updateAssignment).

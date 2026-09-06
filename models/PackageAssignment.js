@@ -25,7 +25,9 @@ const packageAssignmentSchema = new mongoose.Schema({
       serviceName: String,
       /** Sessions entitled for this service at the time of sale (Package.services[].sessions). */
       sessions: { type: Number, default: null },
-      servicePrice: { type: Number, default: null }
+      servicePrice: { type: Number, default: null },
+      /** Zenoti "Order" — which benefit a redemption draws from first. */
+      redemptionOrder: { type: Number, default: 1 }
     }]
   },
   userDetails: {
@@ -84,10 +86,73 @@ const packageAssignmentSchema = new mongoose.Schema({
     transactionId: {
       type: String,
       default: null
-    }
+    },
+    /** Instalments: what has been collected so far and what is still owed. */
+    amountPaid: { type: Number, default: null },
+    balanceDue: { type: Number, default: null }
   },
   /** The desk bill this package was sold on (null for app / legacy sales). */
   invoiceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice', default: null, index: true },
+  /* ---- terms copied from the package at sale (Zenoti: the version sold) ---- */
+  terms: {
+    version: { type: Number, default: 1 },
+    code: { type: String, default: null },
+    validityDays: { type: Number, default: null },
+    neverExpires: { type: Boolean, default: false },
+    validityStartsAt: { type: String, enum: ['sale', 'firstRedemption'], default: 'sale' },
+    graceDays: { type: Number, default: 0 },
+    closeWhenConsumed: { type: Boolean, default: true },
+    redeemableScope: { type: String, enum: ['organization', 'centres'], default: 'organization' },
+    redeemableBranchIds: { type: [String], default: [] },
+    maxFreezes: { type: Number, default: 0 },
+    maxFreezeDays: { type: Number, default: 0 },
+    minPartialPaymentPercent: { type: Number, default: 0 },
+  },
+  /** validUntil + graceDays; sessions may still be redeemed until this date. */
+  graceUntil: { type: Date, default: null },
+  /** Set when validity starts at the first redemption. */
+  firstRedeemedAt: { type: Date, default: null },
+  freeze: {
+    isFrozen: { type: Boolean, default: false, index: true },
+    frozenAt: { type: Date, default: null },
+    frozenBy: { type: String, default: null },
+    reason: { type: String, default: null },
+    resumeOn: { type: Date, default: null },
+  },
+  freezeHistory: [{
+    _id: false,
+    frozenAt: Date, resumedAt: Date, days: Number, by: String, resumedBy: String, reason: String,
+  }],
+  /** Balance handed to another guest (Zenoti "Transferred" column). */
+  transfers: [{
+    _id: false,
+    at: Date, by: String, toUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, toUserName: String,
+    toAssignmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'PackageAssignment' },
+    services: [{ _id: false, serviceId: String, serviceName: String, qty: Number }],
+    reason: String,
+  }],
+  transferredFrom: {
+    assignmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'PackageAssignment', default: null },
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    userName: { type: String, default: null },
+    at: { type: Date, default: null },
+  },
+  /** Every redemption, for the guest-profile "Redemptions" tab. */
+  redemptions: [{
+    _id: false,
+    at: Date, serviceId: String, serviceName: String, sessionId: mongoose.Schema.Types.ObjectId,
+    bookingId: { type: mongoose.Schema.Types.ObjectId, ref: 'Booking' },
+    invoiceId: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' }, invoiceNumber: String,
+    branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch' }, byName: String, reversed: { type: Boolean, default: false },
+  }],
+  refund: {
+    refundedAt: { type: Date, default: null },
+    amount: { type: Number, default: null },
+    method: { type: String, default: null },
+    reference: { type: String, default: null },
+    reason: { type: String, default: null },
+    byName: { type: String, default: null },
+  },
   status: {
     type: String,
     enum: ['Active', 'Expired', 'Cancelled', 'Completed'],
@@ -298,6 +363,18 @@ packageAssignmentSchema.pre('save', async function(next) {
     this.assignmentId = assignmentId;
   }
   
+  // Validity from the first redemption (Zenoti "Validity starts: At First Redemption").
+  if (this.terms?.validityStartsAt === 'firstRedemption' && !this.validUntil && !this.terms.neverExpires) {
+    const first = (this.sessions || []).filter((s) => s.status === 'Completed' && s.completedAt).map((s) => new Date(s.completedAt)).sort((a, b) => a - b)[0];
+    if (first) {
+      this.firstRedeemedAt = this.firstRedeemedAt || first;
+      const d = new Date(this.firstRedeemedAt); d.setDate(d.getDate() + (Number(this.terms.validityDays) || 365)); this.validUntil = d;
+    }
+  }
+  // Grace window follows validUntil.
+  if (this.validUntil && Number(this.terms?.graceDays) > 0) { const g = new Date(this.validUntil); g.setDate(g.getDate() + Number(this.terms.graceDays)); this.graceUntil = g; }
+  else this.graceUntil = null;
+
   // Calculate discount amount and final amount
   if (this.pricing.discountPercentage > 0) {
     this.pricing.discountAmount = Math.round(
@@ -348,13 +425,32 @@ packageAssignmentSchema.methods.serviceBalances = function() {
   } else {
     (this.completedServices || []).forEach((s) => { const id = String(s.serviceId || ''); used.set(id, (used.get(id) || 0) + 1); });
   }
+  const transferred = new Map();
+  (this.transfers || []).forEach((t) => (t.services || []).forEach((s) => { const id = String(s.serviceId || ''); transferred.set(id, (transferred.get(id) || 0) + (Number(s.qty) || 0)); }));
   const rows = [];
   for (const [serviceId, total] of entitled) {
-    const done = Math.min(total, used.get(serviceId) || 0);
-    const name = (this.packageDetails?.services || []).find((s) => String(s.serviceId) === serviceId)?.serviceName || null;
-    rows.push({ serviceId, serviceName: name, entitled: total, used: done, balance: total - done });
+    const out = transferred.get(serviceId) || 0;
+    const done = Math.min(total - out, used.get(serviceId) || 0);
+    const def = (this.packageDetails?.services || []).find((s) => String(s.serviceId) === serviceId);
+    rows.push({ serviceId, serviceName: def?.serviceName || null, order: Number(def?.redemptionOrder) || 1, entitled: total, transferred: out, used: done, balance: Math.max(0, total - out - done) });
   }
-  return rows;
+  return rows.sort((a, b) => a.order - b.order);
+};
+
+/**
+ * May this package be redeemed now, here? Mirrors Zenoti's checks: status,
+ * freeze, expiry (with grace), and the centres it is redeemable at.
+ */
+packageAssignmentSchema.methods.redeemable = function({ branchId = null, at = new Date() } = {}) {
+  if (this.status !== 'Active') return { ok: false, code: 'PACKAGE_' + String(this.status).toUpperCase(), message: `This package is ${String(this.status).toLowerCase()}.` };
+  if (this.freeze?.isFrozen) return { ok: false, code: 'PACKAGE_FROZEN', message: `This package is frozen${this.freeze.resumeOn ? ` until ${new Date(this.freeze.resumeOn).toLocaleDateString('en-GB')}` : ''}. Unfreeze it first.` };
+  const until = this.graceUntil || this.validUntil;
+  if (until && new Date(until) < at) return { ok: false, code: 'PACKAGE_EXPIRED', message: 'This package has expired.' };
+  if (this.validUntil && new Date(this.validUntil) < at && this.graceUntil) return { ok: true, grace: true, message: 'In the grace period after expiry.' };
+  if (this.terms?.redeemableScope === 'centres' && (this.terms.redeemableBranchIds || []).length && branchId && !this.terms.redeemableBranchIds.map(String).includes(String(branchId))) {
+    return { ok: false, code: 'PACKAGE_WRONG_CENTRE', message: 'This package can only be redeemed at the centre(s) it was sold for.' };
+  }
+  return { ok: true };
 };
 
 // Method to check if all services are completed
@@ -363,7 +459,7 @@ packageAssignmentSchema.methods.checkCompletion = function() {
   const total = rows.reduce((n, r) => n + r.entitled, 0);
   const used = rows.reduce((n, r) => n + r.used, 0);
 
-  if (total > 0 && used >= total && this.status !== 'Cancelled') {
+  if (total > 0 && used >= total && this.status !== 'Cancelled' && this.terms?.closeWhenConsumed !== false) {
     this.status = 'Completed';
     return true;
   }

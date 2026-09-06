@@ -255,17 +255,53 @@ async function syncPackages(stats) {
   stats.packages.missingFromZenoti = gone.map((g) => g.name);
 }
 
+/**
+ * Membership plans from Zenoti's centre lists → Membership rows (source
+ * 'zenoti'). The API gives name, price, type and images; discount rules and
+ * credits are NOT exposed, so they stay editable here and are never
+ * overwritten. Nothing is written back to Zenoti.
+ */
+async function syncMemberships(stats) {
+  const Membership = require('../models/Membership');
+  const { rows } = await collect((c) => zenoti.getCenterMemberships(c));
+  const seen = new Set();
+  for (const m of rows) {
+    if (!m.id || seen.has(m.id)) continue;
+    seen.add(m.id);
+    try {
+      let doc = await Membership.findOne({ zenotiMembershipId: m.id });
+      if (!doc) {
+        const code = String(m.name || m.id).toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || m.id.slice(0, 8).toUpperCase();
+        const clash = await Membership.findOne({ code }).select('_id').lean();
+        doc = new Membership({ name: m.name || 'Membership', code: clash ? `${code}-${m.id.slice(0, 4).toUpperCase()}` : code, prefix: code.replace(/-/g, '').slice(0, 8), source: 'zenoti', zenotiMembershipId: m.id, isActive: m.canBook !== false, description: m.description || '' });
+        stats.memberships.created += 1;
+      } else stats.memberships.updated += 1;
+      doc.zenotiVersionId = m.versionId || doc.zenotiVersionId;
+      if (Number(m.price) > 0) doc.price = Number(m.discountedPrice) > 0 ? Number(m.discountedPrice) : Number(m.price);
+      if (m.isRecurring === true) doc.membershipType = 'recurring';
+      doc.zenotiRaw = { name: m.name, displayName: m.displayName, price: m.price, discountedPrice: m.discountedPrice, membershipType: m.membershipType, isRecurring: m.isRecurring, showPrice: m.showPrice, imagePaths: m.imagePaths };
+      doc.zenotiSyncedAt = new Date();
+      await doc.save();
+    } catch (error) {
+      stats.memberships.failed += 1;
+      logger.warn('Membership mirror failed', { zenotiMembershipId: m.id, name: m.name, error: error.message });
+    }
+  }
+}
+
 async function syncCatalog({ trigger = 'schedule', adminId = null } = {}) {
   if (!zenoti.isConfigured()) return { skipped: true, reason: 'not configured' };
   const run = await ZenotiSyncRun.create({ type: 'catalog', trigger: trigger === 'schedule' ? 'schedule' : 'manual', startedBy: adminId }).catch(() => null);
   const stats = {
     services: { created: 0, updated: 0, unchanged: 0, failed: 0, missingFromZenoti: [] },
     packages: { created: 0, updated: 0, unchanged: 0, failed: 0, missingFromZenoti: [] },
+    memberships: { created: 0, updated: 0, failed: 0 },
     pricesSynced: syncPrices(),
   };
   try {
     await syncServices(stats);
     await syncPackages(stats);
+    await syncMemberships(stats).catch((e) => logger.warn('Membership mirror skipped', { error: e.message }));
     if (run) {
       await ZenotiSyncRun.updateOne({ _id: run._id }, { $set: {
         status: 'completed', finishedAt: new Date(),

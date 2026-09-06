@@ -30,6 +30,7 @@ async function resolveServices(input, customPrices) {
       serviceName: service.name,
       servicePrice: service.price,
       sessions: typeof item === 'object' && Number(item.sessions) >= 1 ? Math.round(Number(item.sessions)) : 1,
+      redemptionOrder: typeof item === 'object' && Number(item.redemptionOrder) >= 1 ? Math.round(Number(item.redemptionOrder)) : 1,
     };
     const custom = typeof item === 'object' && item.customPrice !== undefined && item.customPrice !== null
       ? item.customPrice
@@ -42,6 +43,38 @@ async function resolveServices(input, customPrices) {
 // @desc    Create new package
 // @route   POST /api/packages
 // @access  Private (Admin only)
+
+/**
+ * Zenoti "Create package" fields beyond the app's basics. Applied on create and
+ * update; every field is optional and validated to a sane range.
+ */
+function applyPackageExtras(doc, body, by) {
+  const b = body || {};
+  if (b.code !== undefined) doc.code = String(b.code || '').trim().toUpperCase() || null;
+  if (b.category !== undefined) doc.category = String(b.category || 'Default').trim() || 'Default';
+  if (b.packageType !== undefined && ['series', 'custom'].includes(b.packageType)) doc.packageType = b.packageType;
+  if (b.neverExpires !== undefined) doc.neverExpires = b.neverExpires === true || b.neverExpires === 'true';
+  if (b.validityDays !== undefined) doc.validityDays = Number(b.validityDays) > 0 ? Math.round(Number(b.validityDays)) : null;
+  if (b.validityStartsAt !== undefined && ['sale', 'firstRedemption'].includes(b.validityStartsAt)) doc.validityStartsAt = b.validityStartsAt;
+  if (b.graceDays !== undefined) doc.graceDays = Math.max(0, Math.round(Number(b.graceDays) || 0));
+  if (b.closeWhenConsumed !== undefined) doc.closeWhenConsumed = b.closeWhenConsumed === true || b.closeWhenConsumed === 'true';
+  if (b.redemption) doc.redemption = { scope: b.redemption.scope === 'centres' ? 'centres' : 'organization', branchIds: Array.isArray(b.redemption.branchIds) ? b.redemption.branchIds.filter((x) => mongoose.Types.ObjectId.isValid(String(x))) : [] };
+  if (Array.isArray(b.centrePrices)) doc.centrePrices = b.centrePrices.filter((c) => c && mongoose.Types.ObjectId.isValid(String(c.branchId))).map((c) => ({ branchId: c.branchId, price: c.price === '' || c.price === null || c.price === undefined ? null : Number(c.price), taxPercent: c.taxPercent === '' || c.taxPercent === null || c.taxPercent === undefined ? null : Number(c.taxPercent), available: c.available !== false }));
+  if (b.maxFreezes !== undefined) doc.maxFreezes = Math.max(0, Math.round(Number(b.maxFreezes) || 0));
+  if (b.maxFreezeDays !== undefined) doc.maxFreezeDays = Math.max(0, Math.round(Number(b.maxFreezeDays) || 0));
+  if (b.minPartialPaymentPercent !== undefined) doc.minPartialPaymentPercent = Math.min(100, Math.max(0, Number(b.minPartialPaymentPercent) || 0));
+  if (b.agreementText !== undefined) doc.agreementText = String(b.agreementText || '');
+  if (b.taxPercent !== undefined) doc.taxPercent = Math.max(0, Number(b.taxPercent) || 0);
+  if (b.priceIncludesTax !== undefined) doc.priceIncludesTax = b.priceIncludesTax !== false && b.priceIncludesTax !== 'false';
+  if (Array.isArray(b.productBenefits)) doc.productBenefits = b.productBenefits.filter((x) => x && (x.productId || x.name)).map((x) => ({ productId: mongoose.Types.ObjectId.isValid(String(x.productId)) ? x.productId : null, name: x.name || '', qty: Math.max(1, Number(x.qty) || 1) }));
+  if (Array.isArray(b.bundledProducts)) doc.bundledProducts = b.bundledProducts.filter((x) => x && (x.productId || x.name)).map((x) => ({ productId: mongoose.Types.ObjectId.isValid(String(x.productId)) ? x.productId : null, name: x.name || '', qty: Math.max(1, Number(x.qty) || 1) }));
+  if (Array.isArray(b.redemptionOrders) && Array.isArray(doc.services)) {
+    for (const ro of b.redemptionOrders) { const row = doc.services.find((sv) => String(sv.serviceId) === String(ro.serviceId)); if (row) row.redemptionOrder = Math.max(1, Math.round(Number(ro.order) || 1)); }
+  }
+  doc.$locals.changedBy = by || null;
+  return doc;
+}
+
 exports.createPackage = async (req, res) => {
   try {
     const {
@@ -94,6 +127,8 @@ exports.createPackage = async (req, res) => {
       zenotiPackageId: zenotiPackageId || null,
       validityMonths: Number(validityMonths) > 0 ? Number(validityMonths) : 12,
     });
+    applyPackageExtras(packageData, req.body, req.admin?.name);
+    if (packageData.isModified()) await packageData.save();
 
     res.status(201).json({
       success: true,
@@ -159,6 +194,8 @@ exports.getPackage = async (req, res) => {
         message: 'Package not found'
       });
     }
+    // What the package looked like before this edit — kept in `versions` when benefits or price change.
+    packageData.$locals.previousVersionSnapshot = { price: packageData.price, services: packageData.toObject().services, validityMonths: packageData.validityMonths, validityDays: packageData.validityDays, neverExpires: packageData.neverExpires, graceDays: packageData.graceDays };
 
     res.status(200).json({
       success: true,
@@ -221,6 +258,8 @@ exports.updatePackage = async (req, res) => {
     if (isActive !== undefined) packageData.isActive = isActive;
     if (isPopular !== undefined) packageData.isPopular = isPopular;
     if (zenotiPackageId !== undefined) packageData.zenotiPackageId = zenotiPackageId || null;
+
+    applyPackageExtras(packageData, req.body, req.admin?.name);
 
     await packageData.save();
 

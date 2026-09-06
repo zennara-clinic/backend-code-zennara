@@ -23,6 +23,7 @@ router.put('/:id/lines/:lineId', MANAGE, auditLog('INVOICE_UPDATED', 'INVOICE'),
 router.delete('/:id/lines/:lineId', MANAGE, auditLog('INVOICE_UPDATED', 'INVOICE'), ctrl.removeLine);
 router.post('/:id/redeem', MANAGE, auditLog('INVOICE_UPDATED', 'INVOICE'), ctrl.applyPackage);
 router.delete('/:id/redeem/:lineId', MANAGE, auditLog('INVOICE_UPDATED', 'INVOICE'), ctrl.removeRedemption);
+router.post('/:id/redeem-membership', MANAGE, auditLog('INVOICE_UPDATED', 'INVOICE'), ctrl.applyMembershipCredits);
 router.post('/:id/payments', MANAGE, auditLog('PAYMENT_RECORDED', 'INVOICE'), ctrl.addPayment);
 router.delete('/:id/payments/:paymentId', VOID, auditLog('PAYMENT_VOIDED', 'INVOICE'), ctrl.voidPayment);
 router.post('/:id/close', MANAGE, auditLog('INVOICE_CLOSED', 'INVOICE'), ctrl.close);

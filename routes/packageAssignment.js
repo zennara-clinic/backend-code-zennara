@@ -74,4 +74,13 @@ router.post('/:id/zenoti-push', protectAdmin, MANAGE, packageAssignmentControlle
 // Delete assignment
 router.delete('/:id', protectAdmin, MANAGE, packageAssignmentController.deleteAssignment);
 
+// Zenoti package actions (2026-09-06): freeze / unfreeze / transfer / refund / ledger.
+const REFUND = requirePermission('packages.refund');
+router.get('/:id/ledger', protectAdmin, packageAssignmentController.assignmentLedger);
+router.post('/:id/freeze', protectAdmin, MANAGE, packageAssignmentController.freezeAssignment);
+router.post('/:id/unfreeze', protectAdmin, MANAGE, packageAssignmentController.unfreezeAssignment);
+router.post('/:id/transfer', protectAdmin, REFUND, packageAssignmentController.transferAssignment);
+router.get('/:id/refund-preview', protectAdmin, MANAGE, packageAssignmentController.refundPreview);
+router.post('/:id/refund', protectAdmin, REFUND, packageAssignmentController.refundAssignment);
+
 module.exports = router;

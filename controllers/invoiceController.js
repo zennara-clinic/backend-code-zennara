@@ -28,6 +28,10 @@ const Doctor = require('../models/Doctor');
 const { issueInvoiceNumber, issueReceiptNumber } = require('../utils/invoiceNumbers');
 const { renderReceiptHtml, receiptText } = require('../utils/invoiceReceipt');
 const { clinicDayStart, clinicDayEnd } = require('../utils/bookingTime');
+const Membership = require('../models/Membership');
+const MembershipAssignment = require('../models/MembershipAssignment');
+const packageRules = require('../utils/packageRules');
+const { currentMembership, discountPercentFor, syncUserMembership } = require('../utils/membershipRules');
 
 /** GST on a service when the master carries none — Zennara bills services at 5%. */
 const DEFAULT_SERVICE_TAX = 5;
@@ -111,11 +115,37 @@ async function buildLine(body, branch) {
     return { kind: 'package', refId: pk._id, refModel: 'Package', name: pk.name, code: pk.id || null, qty: 1,
       unitPrice: body.unitPrice !== undefined && body.unitPrice !== '' ? Number(body.unitPrice) : pk.price, priceIncludesTax: body.priceIncludesTax ?? pk.priceIncludesTax !== false, taxPercent: body.taxPercent ?? (pk.taxPercent ?? 5), ...disc, ...soldBy, notes: body.notes || '' };
   }
+  if (body.membershipId) {
+    const mp = await Membership.findById(body.membershipId);
+    if (!mp || !mp.isActive) throw Object.assign(new Error('Membership plan not found or inactive'), { status: 404 });
+    const p = mp.priceAt();
+    return { kind: 'membership', refId: mp._id, refModel: 'Membership', name: mp.name, code: mp.code || null, qty: 1,
+      unitPrice: body.unitPrice !== undefined && body.unitPrice !== '' ? Number(body.unitPrice) : p.price, priceIncludesTax: body.priceIncludesTax ?? p.priceIncludesTax, taxPercent: body.taxPercent ?? p.taxPercent, ...disc, ...soldBy, notes: body.notes || '' };
+  }
   if (body.kind === 'custom' || body.name) {
     if (!String(body.name || '').trim()) throw Object.assign(new Error('A name is required for a custom line'), { status: 400 });
     return { kind: 'custom', name: String(body.name).trim(), qty: qty || 1, unitPrice: Math.max(0, Number(body.unitPrice) || 0), priceIncludesTax: body.priceIncludesTax ?? true, taxPercent: Math.max(0, Number(body.taxPercent) || 0), hsn: body.hsn || null, ...disc, ...soldBy, notes: body.notes || '' };
   }
   throw Object.assign(new Error('Pick a service, product, package or enter a custom line'), { status: 400 });
+}
+
+/**
+ * Member tiers: a guest with a live membership gets its % off every service /
+ * product / package line the moment the line lands on the bill (Zenoti applies
+ * the membership discount on its own). The desk can still override a line.
+ */
+async function applyMembershipDiscounts(inv) {
+  if (!inv.userId) return;
+  const m = await currentMembership(inv.userId);
+  if (!m) { inv.membership = { kind: null, name: null, memberNumber: null, assignmentId: null }; for (const l of inv.lines) if (l.discountSource === 'membership') { l.discountPercent = 0; l.discount = 0; l.discountSource = null; l.discountLabel = null; } return; }
+  inv.membership = { kind: m.kind, name: m.name, memberNumber: m.memberNumber || null, assignmentId: m.assignment?._id || null };
+  for (const l of inv.lines) {
+    if (l.redeemed?.kind || l.kind === 'membership' || l.kind === 'custom') continue;
+    if (l.discountSource === 'manual') continue;
+    const pct = discountPercentFor(m, l.kind);
+    if (pct > 0) { l.discountPercent = pct; l.discountSource = 'membership'; l.discountLabel = `${m.name}${m.memberNumber ? ` ${m.memberNumber}` : ''} · ${pct}% off`; }
+    else if (l.discountSource === 'membership') { l.discountPercent = 0; l.discount = 0; l.discountSource = null; l.discountLabel = null; }
+  }
 }
 
 const populateInvoice = (q) => q.populate('userId', 'fullName phone email patientId gender memberType zenMembershipExpiryDate').populate('branchId', 'name invoicePrefix');
@@ -165,6 +195,7 @@ exports.create = async (req, res) => {
     });
     for (const b of bookings) inv.lines.push(await lineFromBooking(b, branch));
     for (const raw of lines) inv.lines.push(await buildLine(raw, branch));
+    await applyMembershipDiscounts(inv);
     await inv.save();
     if (bookings.length) await Booking.updateMany({ _id: { $in: bookings.map((b) => b._id) } }, { $set: { invoiceId: inv._id } });
     return send(res, await loadInvoice(inv._id), 201);
@@ -241,6 +272,7 @@ exports.addLine = async (req, res) => {
       if (inv.lines.some((l) => String(l.bookingId) === String(line.bookingId))) return fail(res, 409, 'That visit is already on this invoice.');
     }
     inv.lines.push(line);
+    await applyMembershipDiscounts(inv);
     await inv.save();
     if (line.bookingId) { await Booking.updateOne({ _id: line.bookingId }, { $set: { invoiceId: inv._id } }); if (!inv.bookingIds.some((x) => String(x) === String(line.bookingId))) { inv.bookingIds.push(line.bookingId); await inv.save(); } }
     return send(res, await loadInvoice(inv._id));
@@ -261,8 +293,9 @@ exports.updateLine = async (req, res) => {
     if (b.unitPrice !== undefined) line.unitPrice = Math.max(0, Number(b.unitPrice) || 0);
     if (b.taxPercent !== undefined) line.taxPercent = Math.max(0, Number(b.taxPercent) || 0);
     if (b.priceIncludesTax !== undefined) line.priceIncludesTax = !!b.priceIncludesTax;
-    if (b.discountPercent !== undefined) { line.discountPercent = Math.min(100, Math.max(0, Number(b.discountPercent) || 0)); if (line.discountPercent === 0 && b.discount === undefined) line.discount = 0; }
-    if (b.discount !== undefined) { line.discount = Math.max(0, Number(b.discount) || 0); if (b.discountPercent === undefined) line.discountPercent = 0; }
+    if (b.discountPercent !== undefined) { line.discountPercent = Math.min(100, Math.max(0, Number(b.discountPercent) || 0)); if (line.discountPercent === 0 && b.discount === undefined) line.discount = 0; line.discountSource = 'manual'; line.discountLabel = null; }
+    if (b.discount !== undefined) { line.discount = Math.max(0, Number(b.discount) || 0); if (b.discountPercent === undefined) line.discountPercent = 0; line.discountSource = 'manual'; line.discountLabel = null; }
+    if (b.restoreMembershipDiscount) { line.discountSource = null; line.discount = 0; line.discountPercent = 0; await applyMembershipDiscounts(inv); }
     if (b.soldById !== undefined || b.soldByName !== undefined) { line.soldById = b.soldById || null; line.soldByName = b.soldByName || null; line.soldByModel = b.soldByModel || (b.soldById ? 'Doctor' : null); }
     if (b.notes !== undefined) line.notes = String(b.notes || '');
     if (b.hsn !== undefined) line.hsn = b.hsn || null;
@@ -328,8 +361,7 @@ exports.applyPackage = async (req, res) => {
     if (!mustBeOpen(inv, res)) return;
     const pa = await PackageAssignment.findOne({ _id: req.body.packageAssignmentId, ...(inv.userId ? { userId: inv.userId } : {}) });
     if (!pa) return fail(res, 404, 'That package does not belong to this guest.');
-    if (pa.status !== 'Active') return fail(res, 409, `That package is ${pa.status.toLowerCase()}.`);
-    if (pa.validUntil && new Date(pa.validUntil) < new Date()) return fail(res, 409, 'That package has expired.');
+    { const rd = pa.redeemable({ branchId: inv.branchId }); if (!rd.ok) return fail(res, 409, rd.message, { code: rd.code }); }
     const balances = pa.serviceBalances();
     const left = new Map(balances.map((r) => [String(r.serviceId), r.balance]));
     // Sessions already promised to this invoice's lines count against the balance too.
@@ -352,6 +384,36 @@ exports.applyPackage = async (req, res) => {
     return fail(res, 500, e.message || 'Could not apply package benefits');
   }
 };
+
+// POST /api/invoices/:id/redeem-membership { lineIds? } — service credits on the guest's membership (MVP plans).
+exports.applyMembershipCredits = async (req, res) => {
+  try {
+    const inv = await Invoice.findById(req.params.id);
+    if (!inv) return fail(res, 404, 'Invoice not found');
+    if (!mustBeOpen(inv, res)) return;
+    const m = inv.userId ? await currentMembership(inv.userId) : null;
+    if (!m || !m.assignment) return fail(res, 409, 'This guest has no membership with service credits.');
+    const left = new Map(m.credits.map((c) => [String(c.serviceId), c.balance]));
+    for (const l of inv.lines) if (l.redeemed?.kind === 'membership' && String(l.redeemed.membershipAssignmentId) === String(m.assignment._id)) { const k = creditKey(l, left); if (k) left.set(k, (left.get(k) || 0) - 1); }
+    const only = Array.isArray(req.body?.lineIds) && req.body.lineIds.length ? new Set(req.body.lineIds.map(String)) : null;
+    const cons = await Consultation.find({ _id: { $in: inv.lines.filter((l) => l.kind === 'service' && l.refId).map((l) => l.refId) } }).select('id').lean();
+    const slugOf = new Map(cons.map((c) => [String(c._id), c.id]));
+    let applied = 0;
+    for (const l of inv.lines) {
+      if (only && !only.has(String(l._id))) continue;
+      if (l.kind !== 'service' || l.redeemed?.kind || !l.refId) continue;
+      const key = [String(l.refId), slugOf.get(String(l.refId))].find((k) => k && (left.get(k) || 0) > 0);
+      if (!key) continue;
+      l.redeemed = { kind: 'membership', membershipAssignmentId: m.assignment._id, packageAssignmentId: null, sessionId: null, label: `${m.name} Service Credit Used` };
+      l.discountPercent = 0; l.discount = 0; l.discountSource = null; l.discountLabel = null;
+      left.set(key, left.get(key) - 1); applied += 1;
+    }
+    if (!applied) return fail(res, 409, 'No service on this invoice matches a credit left on the membership.', { code: 'NO_MATCHING_CREDITS', credits: m.credits });
+    await inv.save();
+    return send(res, await loadInvoice(inv._id), 200, { applied, message: 'Membership credits applied' });
+  } catch (e) { return fail(res, 500, e.message || 'Could not apply membership credits'); }
+};
+function creditKey(l, left) { for (const k of left.keys()) if (k === String(l.refId)) return k; return null; }
 
 exports.removeRedemption = async (req, res) => {
   try {
@@ -490,38 +552,81 @@ async function applyClose(inv, me, { allowDue = false } = {}) {
     for (const [paId, ls] of byPa) {
       const pa = await PackageAssignment.findById(paId);
       if (!pa) continue;
-      for (const l of ls) { const s = consumeSession(pa, l.refId, l.redeemed.sessionId, l.bookingId, inv.invoiceNumber); l.redeemed.sessionId = s._id; if (l.bookingId) await Booking.updateOne({ _id: l.bookingId }, { $set: { packageSessionId: s._id } }); }
+      { const rd = pa.redeemable({ branchId: inv.branchId }); if (!rd.ok) throw Object.assign(new Error(rd.message), { status: 409, extra: { code: rd.code } }); }
+      for (const l of ls) {
+        const s = consumeSession(pa, l.refId, l.redeemed.sessionId, l.bookingId, inv.invoiceNumber);
+        l.redeemed.sessionId = s._id;
+        packageRules.recordRedemption(pa, { serviceId: l.refId, serviceName: l.name, sessionId: s._id, bookingId: l.bookingId, invoiceId: inv._id, invoiceNumber: inv.invoiceNumber, branchId: inv.branchId, byName: me.name });
+        if (l.bookingId) await Booking.updateOne({ _id: l.bookingId }, { $set: { packageSessionId: s._id } });
+      }
       pa.checkCompletion();
       await pa.save();
+    }
+    // 3b. Membership service credits used on this bill.
+    const byMa = new Map();
+    for (const l of inv.lines) if (l.redeemed?.kind === 'membership' && l.redeemed.membershipAssignmentId) { const k = String(l.redeemed.membershipAssignmentId); if (!byMa.has(k)) byMa.set(k, []); byMa.get(k).push(l); }
+    for (const [maId, ls] of byMa) {
+      const ma = await MembershipAssignment.findById(maId);
+      if (!ma || !ma.isCurrent()) throw Object.assign(new Error('The membership these credits come from is no longer active.'), { status: 409, extra: { code: 'MEMBERSHIP_INACTIVE' } });
+      const cons = await Consultation.find({ _id: { $in: ls.map((l) => l.refId) } }).select('id').lean();
+      const slugOf = new Map(cons.map((c) => [String(c._id), c.id]));
+      for (const l of ls) {
+        const c = (ma.credits || []).find((x) => [String(l.refId), slugOf.get(String(l.refId))].includes(String(x.serviceId)) && (x.qty - x.used) > 0);
+        if (!c) throw Object.assign(new Error(`No ${l.name} credit left on the membership.`), { status: 409, extra: { code: 'NO_MATCHING_CREDITS' } });
+        c.used += 1;
+        ma.redemptions.push({ at: now, kind: 'credit', serviceId: c.serviceId, serviceName: l.name, amount: l.base, invoiceId: inv._id, invoiceNumber: inv.invoiceNumber, byName: me.name });
+      }
+      await ma.save();
+    }
+    // 3c. Member discounts taken, for the membership's own log.
+    if (inv.membership?.assignmentId) {
+      const disc = inv.lines.filter((l) => l.discountSource === 'membership').reduce((n, l) => n + (l.discount || 0), 0);
+      if (disc > 0) await MembershipAssignment.updateOne({ _id: inv.membership.assignmentId }, { $push: { redemptions: { at: now, kind: 'discount', amount: r2(disc), invoiceId: inv._id, invoiceNumber: inv.invoiceNumber, byName: me.name } } });
     }
     // 4. Packages sold on this bill → live assignments, redeemable at once.
     for (const l of inv.lines) {
       if (l.kind !== 'package' || !l.refId || l.packageAssignmentId) continue;
       const pk = await Package.findById(l.refId);
       const user = inv.userId ? await User.findById(inv.userId) : null;
-      if (!pk || !user) continue;
-      const months = Number(pk.validityMonths) > 0 ? Number(pk.validityMonths) : 12;
-      const until = new Date(now); until.setMonth(until.getMonth() + months);
-      const pa = new PackageAssignment({
-        userId: user._id, packageId: pk._id, invoiceId: inv._id,
-        packageDetails: { packageName: pk.name, packagePrice: pk.price, originalPrice: pk.originalPrice, services: (pk.services || []).map((s) => ({ serviceId: s.serviceId, serviceName: s.serviceName, sessions: Math.max(1, Number(s.sessions) || 1), servicePrice: s.customPrice ?? s.servicePrice ?? null })) },
-        userDetails: { fullName: user.fullName, name: user.fullName, email: user.email, phone: user.phone, patientId: user.patientId, memberType: user.memberType },
-        pricing: { originalAmount: l.listTotal || pk.price, discountPercentage: 0 },
-        payment: { isReceived: paidInFull, receivedDate: paidInFull ? now : null, paymentMethod: paidInFull ? (['Cash', 'Card', 'UPI', 'Razorpay'].includes(method) ? method : 'Other') : null, transactionId: inv.receiptNumber || inv.invoiceNumber },
-        notes: `Sold on invoice ${inv.invoiceNumber}${l.total !== l.listTotal ? ` for ₹${l.total}` : ''}`,
-        validUntil: until, branchId: inv.branchId, sessions: [],
-        assignedBy: me.id, assignedByName: me.name,
+      if (!pk) continue;
+      if (!user) throw Object.assign(new Error('A package can only be sold to a guest on record — pick the guest first.'), { status: 409, extra: { code: 'GUEST_REQUIRED' } });
+      const minPct = Number(pk.minPartialPaymentPercent) || 0;
+      if (!paidInFull && minPct > 0 && inv.totals.paid < r2(l.total * minPct / 100)) throw Object.assign(new Error(`${pk.name} needs at least ${minPct}% (₹${r2(l.total * minPct / 100).toLocaleString('en-IN')}) paid before the bill can close.`), { status: 409, extra: { code: 'MIN_PARTIAL_PAYMENT' } });
+      const share = inv.totals.total > 0 ? r2(inv.totals.paid * l.total / inv.totals.total) : 0;
+      const pa = packageRules.buildAssignment(pk, user, {
+        branchId: inv.branchId, invoiceId: inv._id, listPrice: l.listTotal || pk.price, pricePaid: l.total,
+        payment: { isReceived: paidInFull, receivedDate: now, paymentMethod: ['Cash', 'Card', 'UPI', 'Razorpay'].includes(method) ? method : 'Other', transactionId: inv.receiptNumber || inv.invoiceNumber, amountPaid: paidInFull ? l.total : share, balanceDue: paidInFull ? 0 : r2(l.total - share) },
+        notes: `Sold on invoice ${inv.invoiceNumber}${l.total !== l.listTotal ? ` for ₹${l.total}` : ''}`, assignedBy: me.id, assignedByName: me.name,
       });
-      pa.pricing.finalAmount = l.total;
+      pa.pricing.originalAmount = l.listTotal || pk.price;
       await pa.save();
+      if (pa.pricing.finalAmount !== l.total) await PackageAssignment.updateOne({ _id: pa._id }, { $set: { 'pricing.finalAmount': l.total, 'pricing.discountAmount': r2((l.listTotal || pk.price) - l.total) } });
       l.packageAssignmentId = pa._id;
     }
+    // 5. Memberships sold on this bill → member number issued, guest summary updated.
+    for (const l of inv.lines) {
+      if (l.kind !== 'membership' || !l.refId || l.membershipAssignmentId) continue;
+      const plan = await Membership.findById(l.refId);
+      const user = inv.userId ? await User.findById(inv.userId) : null;
+      if (!plan) continue;
+      if (!user) throw Object.assign(new Error('A membership can only be sold to a guest on record.'), { status: 409, extra: { code: 'GUEST_REQUIRED' } });
+      const { createMemberAssignment } = require('./membershipController');
+      const cur = await currentMembership(user._id);
+      const ma = await createMemberAssignment(plan, user, { branchId: inv.branchId, paymentMethod: ['Cash', 'Card', 'UPI', 'Razorpay'].includes(method) ? method : 'Other', amount: l.total, paymentReceived: paidInFull, transactionId: inv.receiptNumber || inv.invoiceNumber, soldByName: me.name, extendFrom: cur?.validUntil || null, source: 'panel', invoiceId: inv._id, amountPaid: paidInFull ? l.total : null, balanceDue: paidInFull ? 0 : null });
+      l.membershipAssignmentId = ma._id;
+    }
     inv.effectsAppliedAt = now;
+  }
+  // Instalments: what has been collected against each package / membership sold here.
+  for (const l of inv.lines) {
+    if (l.kind === 'package' && l.packageAssignmentId) { const share = inv.totals.total > 0 ? r2(inv.totals.paid * l.total / inv.totals.total) : 0; await PackageAssignment.updateOne({ _id: l.packageAssignmentId }, { $set: { 'payment.isReceived': paidInFull, 'payment.receivedDate': paidInFull ? now : null, 'payment.amountPaid': paidInFull ? l.total : share, 'payment.balanceDue': paidInFull ? 0 : r2(l.total - share) } }); }
+    if (l.kind === 'membership' && l.membershipAssignmentId) { const share = inv.totals.total > 0 ? r2(inv.totals.paid * l.total / inv.totals.total) : 0; await MembershipAssignment.updateOne({ _id: l.membershipAssignmentId }, { $set: { 'payment.isReceived': paidInFull, 'payment.receivedDate': paidInFull ? now : null, 'payment.amountPaid': paidInFull ? l.total : share, 'payment.balanceDue': paidInFull ? 0 : r2(l.total - share) } }); }
   }
   inv.status = 'closed'; inv.closedAt = now; inv.closedById = me.id; inv.closedByName = me.name;
   await inv.save();
   return inv;
 }
+const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
 exports.close = async (req, res) => {
   try {
@@ -576,10 +681,18 @@ exports.void = async (req, res) => {
         if (l.redeemed?.kind === 'package' && l.redeemed.packageAssignmentId && l.redeemed.sessionId) {
           const pa = await PackageAssignment.findById(l.redeemed.packageAssignmentId);
           const s = pa?.sessions.id(l.redeemed.sessionId);
-          if (s) { s.status = 'Scheduled'; s.completedAt = null; if (pa.status === 'Completed') pa.status = 'Active'; await pa.save(); }
+          if (s) { s.status = 'Scheduled'; s.completedAt = null; if (pa.status === 'Completed') pa.status = 'Active'; packageRules.reverseRedemption(pa, { sessionId: s._id }); await pa.save(); }
         }
         if (l.kind === 'package' && l.packageAssignmentId) {
           await PackageAssignment.updateOne({ _id: l.packageAssignmentId }, { $set: { status: 'Cancelled', notes: `Invoice ${inv.invoiceNumber} voided: ${reason}` } });
+        }
+        if (l.redeemed?.kind === 'membership' && l.redeemed.membershipAssignmentId) {
+          const ma = await MembershipAssignment.findById(l.redeemed.membershipAssignmentId);
+          if (ma) { const c = (ma.credits || []).find((x) => x.used > 0 && (String(x.serviceId) === String(l.refId) || (ma.redemptions || []).some((r) => String(r.invoiceId) === String(inv._id) && r.serviceId === x.serviceId && !r.reversed))); if (c) c.used = Math.max(0, c.used - 1); for (const r of ma.redemptions || []) if (String(r.invoiceId) === String(inv._id)) r.reversed = true; await ma.save(); }
+        }
+        if (l.kind === 'membership' && l.membershipAssignmentId) {
+          const ma = await MembershipAssignment.findById(l.membershipAssignmentId);
+          if (ma) { ma.status = 'Cancelled'; ma.cancellation = { cancelledAt: now, byName: me.name, reason: `Invoice ${inv.invoiceNumber} voided: ${reason}` }; await ma.save(); await syncUserMembership(ma.userId); }
         }
       }
     }
@@ -662,8 +775,11 @@ exports.guestPackages = async (req, res) => {
     const inv = await Invoice.findById(req.params.id).select('userId').lean();
     if (!inv) return fail(res, 404, 'Invoice not found');
     if (!inv.userId) return res.json({ success: true, data: [] });
+    const invDoc = await Invoice.findById(req.params.id).select('branchId').lean();
     const rows = await PackageAssignment.find({ userId: inv.userId, status: 'Active' }).sort({ createdAt: -1 });
-    return res.json({ success: true, data: rows.map((pa) => ({ _id: pa._id, assignmentId: pa.assignmentId, name: pa.packageDetails?.packageName, validUntil: pa.validUntil, balances: pa.serviceBalances() })) });
+    const m = await currentMembership(inv.userId);
+    return res.json({ success: true, data: rows.map((pa) => ({ _id: pa._id, assignmentId: pa.assignmentId, name: pa.packageDetails?.packageName, validUntil: pa.validUntil, graceUntil: pa.graceUntil, frozen: !!pa.freeze?.isFrozen, redeemable: pa.redeemable({ branchId: invDoc?.branchId }), balances: pa.serviceBalances() })),
+      membership: m ? { kind: m.kind, name: m.name, memberNumber: m.memberNumber, validUntil: m.validUntil, discounts: m.discounts, credits: m.credits, assignmentId: m.assignment?._id || null } : null });
   } catch (e) {
     return fail(res, 500, e.message || 'Could not load packages');
   }

@@ -70,6 +70,9 @@ const GROUPS = [
       { key: 'therapists.manage', label: 'Edit therapists' },
       { key: 'packages.view', label: 'View packages' },
       { key: 'packages.manage', label: 'Edit & assign packages' },
+      { key: 'packages.refund', label: 'Refund / transfer packages', sensitive: true },
+      { key: 'memberships.view', label: 'View membership plans & members' },
+      { key: 'memberships.manage', label: 'Edit plans, sell / cancel memberships' },
       { key: 'consultationNotes.view', label: 'View consultation notes' },
       { key: 'consultationNotes.manage', label: 'Delete consultation notes', sensitive: true },
       // Prescriptions: drafting and signing are deliberately separate keys so
