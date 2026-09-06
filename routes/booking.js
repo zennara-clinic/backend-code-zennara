@@ -60,6 +60,8 @@ router.put('/admin/:id/no-show', protectAdmin, auditLog('BOOKING_NO_SHOW', 'BOOK
 router.put('/admin/:id/cancel', protectAdmin, auditLog('BOOKING_CANCELLED', 'BOOKING'), cancelBookingAdmin);
 router.put('/admin/:id/payment', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.updateBookingPaymentAdmin);
 router.put('/admin/:id/notes', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.addBookingNoteAdmin);
+// Step the last desk status change back (undo check-in / check-out / no-show / cancel).
+router.post('/admin/:id/undo', protectAdmin, requirePermission('bookings.manage'), auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.undoBookingStatusAdmin);
 // Clinical lifecycle (waiting → started → completed → prescribed → follow-up).
 // Never touches `status`, so it cannot disturb the diary or the Zenoti mirror.
 router.patch('/admin/:id/stage', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.updateConsultationStage);

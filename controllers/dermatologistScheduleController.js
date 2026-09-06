@@ -321,3 +321,89 @@ exports.getFreeDermatologists = async (req, res) => {
     return fail(res, 500, 'Could not load dermatologists');
   }
 };
+
+/**
+ * GET /api/dermatologists/day-shifts?date=YYYY-MM-DD&branchId=
+ *
+ * The desk day book: every dermatologist's working ranges for one date, plus
+ * leave and notes, in one call — so the grid can grey out off-shift time and
+ * paint a leave band per row, the way Zenoti's appointment book does.
+ * Panel-only; the app keeps using per-doctor slots.
+ */
+exports.getDayShifts = async (req, res) => {
+  try {
+    const { date, branchId } = req.query;
+    if (!DATE_KEY.test(date || '')) return fail(res, 400, 'date is required as YYYY-MM-DD');
+    const { rangesFor } = require('../utils/dermatologistSlots');
+    const Branch = require('../models/Branch');
+    const ProviderBlock = require('../models/ProviderBlock');
+
+    const branch = branchId ? await Branch.findById(branchId).select('name operatingHours closures').lean() : null;
+    const doctors = await Doctor.find({ isActive: true })
+      .select('doctorId name tier level designation availableCentres displayOrder onlineBookingEnabled photo').lean();
+    const visible = branch
+      ? doctors.filter((d) => !d.availableCentres?.length || d.availableCentres.includes(branch.name))
+      : doctors;
+    const schedules = await DermatologistSchedule.find({ doctorId: { $in: visible.map((d) => d.doctorId) } }).lean();
+    const byDoctor = new Map(schedules.map((s) => [s.doctorId, s]));
+    const dayStart = new Date(`${date}T00:00:00+05:30`);
+    const dayEnd = new Date(`${date}T23:59:59.999+05:30`);
+    const blocks = await ProviderBlock.find({ active: true, date: { $gte: dayStart, $lte: dayEnd }, ...(branchId ? { $or: [{ branchId }, { branchId: null }] } : {}) }).lean();
+
+    const rows = visible.map((d) => {
+      const schedule = byDoctor.get(d.doctorId);
+      let ranges = []; let onLeave = false; let note = ''; let source = null; let configured = false;
+      if (schedule && schedule.isActive !== false) {
+        configured = true;
+        const resolved = rangesFor(schedule, date);
+        source = resolved.source;
+        note = resolved.note || '';
+        const override = (schedule.overrides || []).find((o) => o.date === date);
+        onLeave = Boolean(override?.unavailable);
+        let list = resolved.perBranch && branchId
+          ? resolved.perBranch.filter((p) => !p.branchId || String(p.branchId) === String(branchId)).flatMap((p) => p.ranges)
+          : resolved.ranges;
+        if (branchId && resolved.source === 'override' && resolved.branchId && String(resolved.branchId) !== String(branchId)) list = [];
+        ranges = (list || []).map((r) => ({ start: r.start, end: r.end }));
+      }
+      return {
+        doctorId: d.doctorId,
+        name: d.name,
+        tier: d.tier,
+        designation: d.designation || (d.tier === 'senior-consultant' ? 'Senior Dermatologist' : 'Dermatologist'),
+        photo: d.photo || null,
+        displayOrder: d.displayOrder || 0,
+        onlineBookingEnabled: d.onlineBookingEnabled !== false,
+        configured,
+        onLeave,
+        note,
+        source,
+        ranges,
+        blocks: blocks.filter((b) => b.doctorId === d.doctorId).map((b) => ({
+          _id: b._id, startTime: b.startTime, endTime: b.endTime, title: b.title, notes: b.notes, source: b.source, color: b.color, providerName: b.providerName,
+        })),
+      };
+    }).sort((a, b) => (a.displayOrder - b.displayOrder) || a.name.localeCompare(b.name));
+
+    // Blocks on employees who are not onboarded dermatologists (therapists,
+    // Zenoti-only staff) still belong on the day book.
+    const orphanBlocks = blocks.filter((b) => !b.doctorId).map((b) => ({
+      _id: b._id, startTime: b.startTime, endTime: b.endTime, title: b.title, notes: b.notes, source: b.source, color: b.color, providerName: b.providerName, zenotiEmployeeId: b.zenotiEmployeeId,
+    }));
+
+    const weekday = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][new Date(`${date}T12:00:00+05:30`).getUTCDay()];
+    const hours = branch?.operatingHours?.[weekday] || null;
+    return res.json({
+      success: true,
+      data: {
+        date,
+        branch: branch ? { _id: branch._id, name: branch.name, open: hours?.isOpen !== false ? (hours?.openTime || '09:00') : null, close: hours?.isOpen !== false ? (hours?.closeTime || '19:00') : null } : null,
+        providers: rows,
+        otherBlocks: orphanBlocks,
+      },
+    });
+  } catch (error) {
+    console.error('getDayShifts error:', error);
+    return fail(res, 500, 'Could not load the day book');
+  }
+};

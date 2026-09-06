@@ -14,6 +14,7 @@ const Doctor = require('../models/Doctor');
 const Consultation = require('../models/Consultation');
 const User = require('../models/User');
 const Branch = require('../models/Branch');
+const PackageAssignment = require('../models/PackageAssignment');
 const emailService = require('../utils/emailService');
 const NotificationHelper = require('../utils/notificationHelper');
 const whatsappService = require('../services/whatsappService');
@@ -2128,23 +2129,40 @@ exports.createBookingAdmin = async (req, res) => {
       notes,
       confirmNow,
       userId,
+      // Desk parity with Zenoti's New Appointment panel:
+      services,          // [{ consultationId, specialistId, specialistName, specialistTier, time, amount, packageAssignmentId, packageSessionId }] — one visit, several rows
+      force,             // true = the desk saw "not working at this time" and chose Yes
+      referralSource,    // asked once for a brand-new guest
+      referredByUserId,
+      packageAssignmentId, // book from the guest's package balance
+      packageSessionId,
     } = req.body;
 
-    if (!consultationId || !fullName || !mobileNumber || !preferredLocation || !preferredDate) {
+    const lines = Array.isArray(services) && services.length
+      ? services
+      : [{ consultationId, specialistId, specialistName, specialistTier, amount, time: (Array.isArray(preferredTimeSlots) && preferredTimeSlots[0]) || req.body.confirmedTime, packageAssignmentId, packageSessionId }];
+
+    if (!lines[0]?.consultationId || !fullName || !mobileNumber || !preferredLocation || !preferredDate) {
       return res.status(400).json({
         success: false,
         message: 'consultationId, fullName, mobileNumber, preferredLocation and preferredDate are required',
       });
     }
 
-    const consultation = await Consultation.findById(consultationId);
-    if (!consultation) {
-      return res.status(404).json({ success: false, message: 'Service not found' });
-    }
-
     const branch = await Branch.findOne({ name: preferredLocation, isActive: true });
     if (!branch) {
       return res.status(404).json({ success: false, message: 'Branch not found or inactive' });
+    }
+
+    // Every service must exist before anything is written.
+    const consultations = new Map();
+    for (const line of lines) {
+      if (!line.consultationId) return res.status(400).json({ success: false, message: 'Every service line needs a consultationId' });
+      if (!consultations.has(String(line.consultationId))) {
+        const c = await Consultation.findById(line.consultationId);
+        if (!c) return res.status(404).json({ success: false, message: 'Service not found' });
+        consultations.set(String(line.consultationId), c);
+      }
     }
 
     // Resolve the guest: explicit id, then phone, then email, else create one.
@@ -2168,70 +2186,133 @@ exports.createBookingAdmin = async (req, res) => {
         location: preferredLocation,
         dateOfBirth: req.body.dateOfBirth || undefined,
         gender: req.body.gender || undefined,
+        referralSource: referralSource ? String(referralSource).trim() : null,
+        referredByUserId: referredByUserId || null,
         source: 'reception',
         isVerified: false,
         isActive: true,
       });
       createdUser = true;
+    } else if (referralSource && !user.referralSource) {
+      // First time the desk records how an existing guest found us.
+      await User.updateOne({ _id: user._id }, { $set: { referralSource: String(referralSource).trim(), ...(referredByUserId ? { referredByUserId } : {}) } }).catch(() => {});
     }
 
-    const slots = Array.isArray(preferredTimeSlots) && preferredTimeSlots.length
-      ? preferredTimeSlots
-      : [req.body.confirmedTime].filter(Boolean);
+    const { isSlotBookable } = require('../utils/dermatologistSlots');
+    const key = clinicDateKey(preferredDate);
+    const visitGroupId = lines.length > 1 ? `VG${Date.now().toString(36).toUpperCase()}${Math.random().toString(36).slice(2, 6).toUpperCase()}` : null;
 
-    if (!slots.length) {
-      return res.status(400).json({
-        success: false,
-        message: 'At least one preferred time slot is required',
-      });
-    }
-
-    // Reception booking a dermatologist onto a held slot is the same clash the
-    // app is protected against. Only a genuine double-booking blocks; other
-    // diary states (lead time, leave) stay overridable at the front desk.
-    if (specialistId && confirmNow && slots[0]) {
-      const { isSlotBookable } = require('../utils/dermatologistSlots');
-      const key = clinicDateKey(preferredDate);
-      const check = key
-        ? await isSlotBookable(specialistId, key, slots[0], { branchId: branch._id })
-        : { ok: true };
-      if (!check.ok && check.reason === 'already-booked') {
-        return res.status(409).json({
-          success: false,
-          code: 'DERMATOLOGIST_SLOT_UNAVAILABLE',
-          message: 'Another guest already holds that time with this dermatologist. Pick a different slot.',
-        });
+    // Validate every line first so a multi-service visit is all-or-nothing.
+    const prepared = [];
+    for (const line of lines) {
+      const consultation = consultations.get(String(line.consultationId));
+      const slots = line.time ? [line.time]
+        : (Array.isArray(preferredTimeSlots) && preferredTimeSlots.length ? preferredTimeSlots : [req.body.confirmedTime].filter(Boolean));
+      if (!slots.length) {
+        return res.status(400).json({ success: false, message: 'At least one preferred time slot is required' });
       }
+      const lineSpecialistId = line.specialistId || null;
+      if (lineSpecialistId && confirmNow && slots[0] && key) {
+        // A genuine double-booking always blocks. Any other diary problem
+        // (not on shift, leave, outside centre hours, too soon) is reported
+        // once so the desk can say Yes/No — Zenoti's "not working at the
+        // mentioned time. Do you want to add the appointment?"
+        const check = await isSlotBookable(lineSpecialistId, key, slots[0], { branchId: branch._id });
+        if (!check.ok && check.reason === 'already-booked') {
+          return res.status(409).json({
+            success: false,
+            code: 'DERMATOLOGIST_SLOT_UNAVAILABLE',
+            message: `Another guest already holds ${slots[0]} with this dermatologist. Pick a different slot.`,
+          });
+        }
+        if (!check.ok && !force) {
+          const why = {
+            'not-working': 'is not working at the mentioned time',
+            'not-configured': 'has no working hours set up',
+            'not-at-this-centre': 'is not rostered at this centre on that day',
+            'centre-closed': 'cannot be booked because the centre is closed that day',
+            'outside-centre-hours': 'is outside the centre\'s hours at that time',
+            'too-soon': 'is inside the booking lead time',
+            'past': 'cannot be booked in the past',
+            'beyond-horizon': 'is beyond the booking horizon',
+            'no-such-slot': 'has no slot at that exact time',
+            'doctor-inactive': 'is not listed',
+            'inactive': 'has online booking switched off',
+          }[check.reason] || `cannot take ${slots[0]} (${check.reason})`;
+          return res.status(409).json({
+            success: false,
+            code: 'PROVIDER_NOT_WORKING',
+            reason: check.reason,
+            message: `${line.specialistName || specialistName || 'This dermatologist'} ${why}. Do you want to add the appointment anyway?`,
+          });
+        }
+      }
+
+      // Book from the guest's package balance: the session is redeemed, nothing is charged.
+      let assignment = null; let session = null;
+      if (line.packageAssignmentId && line.packageSessionId) {
+        assignment = await PackageAssignment.findOne({ _id: line.packageAssignmentId, userId: user._id });
+        if (!assignment) return res.status(404).json({ success: false, message: 'That package does not belong to this guest' });
+        if (assignment.status !== 'Active') return res.status(409).json({ success: false, message: `This package is ${assignment.status.toLowerCase()}` });
+        session = assignment.sessions.id(line.packageSessionId);
+        if (!session) return res.status(404).json({ success: false, message: 'Package session not found' });
+        if (session.bookingId || ['Booked', 'Completed', 'Cancelled'].includes(session.status)) return res.status(409).json({ success: false, message: 'That package session already has an appointment' });
+      }
+
+      const priced = typeof consultation.priceAt === 'function' ? consultation.priceAt(branch._id) : { total: consultation.price };
+      const lineAmount = assignment ? 0
+        : line.amount !== undefined && line.amount !== null ? Number(line.amount)
+        : amount !== undefined && amount !== null && lines.length === 1 ? Number(amount)
+        : priced.total;
+      prepared.push({ line, consultation, slots, assignment, session, lineAmount, lineSpecialistId });
     }
 
-    const booking = new Booking({
-      userId: user._id,
-      consultationId,
-      fullName,
-      mobileNumber,
-      email: user.email,
-      branchId: branch._id,
-      preferredLocation,
-      preferredDate: clinicDayStart(preferredDate),
-      preferredTimeSlots: slots,
-      slotTime: specialistId && confirmNow ? slots[0] : undefined,
-      specialistId: specialistId || undefined,
-      specialistName: specialistName || undefined,
-      specialistTier: specialistTier || undefined,
-      amount: amount !== undefined && amount !== null ? Number(amount) : consultation.price,
-      paymentStatus: paymentStatus || 'pending',
-      status: confirmNow ? 'Confirmed' : 'Awaiting Confirmation',
-      notes: notes || undefined,
-      source: 'reception',
-      adminNotes: `Created at reception by ${req.admin?.email || 'admin'}`,
-    });
-
-    if (confirmNow) {
-      booking.confirmedDate = clinicDayStart(preferredDate);
-      booking.confirmedTime = slots[0];
+    const created = [];
+    for (const { line, consultation, slots, assignment, session, lineAmount, lineSpecialistId } of prepared) {
+      const booking = new Booking({
+        userId: user._id,
+        consultationId: consultation._id,
+        visitGroupId,
+        fullName,
+        mobileNumber,
+        email: user.email,
+        branchId: branch._id,
+        preferredLocation,
+        preferredDate: clinicDayStart(preferredDate),
+        preferredTimeSlots: slots,
+        slotTime: lineSpecialistId && confirmNow ? slots[0] : undefined,
+        specialistId: lineSpecialistId || undefined,
+        specialistName: line.specialistName || (lineSpecialistId ? specialistName : undefined) || undefined,
+        specialistTier: line.specialistTier || (lineSpecialistId ? specialistTier : undefined) || undefined,
+        amount: lineAmount,
+        paymentStatus: assignment ? 'paid' : (paymentStatus || 'pending'),
+        paymentMethod: assignment ? 'Package' : undefined,
+        isPackageIncluded: Boolean(assignment),
+        packageAssignmentId: assignment ? assignment._id : undefined,
+        packageSessionId: session ? session._id : undefined,
+        status: confirmNow ? 'Confirmed' : 'Awaiting Confirmation',
+        notes: notes || undefined,
+        source: 'reception',
+        adminNotes: `Created at reception by ${req.admin?.email || 'admin'}${force ? ' (outside working hours, confirmed by desk)' : ''}`,
+      });
+      if (confirmNow) {
+        booking.confirmedDate = clinicDayStart(preferredDate);
+        booking.confirmedTime = slots[0];
+      }
+      await booking.save();
+      if (assignment && session) {
+        session.bookingId = booking._id;
+        session.bookingCreatedAt = new Date();
+        session.status = 'Booked';
+        session.scheduledDate = clinicDayStart(preferredDate);
+        session.scheduledTime = slots[0];
+        if (lineSpecialistId) { session.specialistId = lineSpecialistId; session.specialistName = line.specialistName || null; }
+        await assignment.save();
+      }
+      created.push({ booking, consultation });
     }
 
-    await booking.save();
+    const [{ booking, consultation }] = created;
     await booking.populate('consultationId', 'name category price image');
     await booking.populate('userId', 'fullName email phone patientId');
 
@@ -2240,7 +2321,7 @@ exports.createBookingAdmin = async (req, res) => {
         _id: booking._id,
         userId: booking.userId._id || booking.userId,
         patientName: booking.fullName,
-        consultation: { name: consultation.name },
+        consultation: { name: created.map((c) => c.consultation.name).join(' + ') },
         branch: { name: branch.name },
         appointmentDate: booking.preferredDate,
       });
@@ -2249,15 +2330,16 @@ exports.createBookingAdmin = async (req, res) => {
     }
 
     // Best-effort confirmations — a messaging outage must not lose the booking.
+    const treatmentLabel = created.map((c) => c.consultation.name).join(' + ');
     try {
       await whatsappService.sendBookingConfirmation(booking.mobileNumber, {
         patientName: booking.fullName,
         referenceNumber: booking.referenceNumber,
-        treatment: consultation.name,
+        treatment: treatmentLabel,
         date: booking.preferredDate.toLocaleDateString('en-US', {
           weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
         }),
-        timeSlots: booking.preferredTimeSlots.join(', '),
+        timeSlots: created.map((c) => c.booking.preferredTimeSlots[0]).join(', '),
         location: booking.preferredLocation,
       });
     } catch (whatsappError) {
@@ -2271,12 +2353,12 @@ exports.createBookingAdmin = async (req, res) => {
           booking.fullName,
           {
             referenceNumber: booking.referenceNumber,
-            treatment: consultation.name,
+            treatment: treatmentLabel,
             category: consultation.category,
             preferredDate: booking.preferredDate.toLocaleDateString('en-US', {
               weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
             }),
-            timeSlots: booking.preferredTimeSlots.join(', '),
+            timeSlots: created.map((c) => c.booking.preferredTimeSlots[0]).join(', '),
             location: booking.preferredLocation,
           },
           booking.preferredLocation,
@@ -2290,9 +2372,10 @@ exports.createBookingAdmin = async (req, res) => {
       success: true,
       message: createdUser
         ? `Booking created and a new patient record was opened for ${fullName}.`
-        : 'Booking created successfully',
+        : created.length > 1 ? `${created.length} services booked for ${fullName}.` : 'Booking created successfully',
       data: booking,
-      meta: { createdUser, patientId: user.patientId },
+      bookings: created.map((c) => c.booking),
+      meta: { createdUser, patientId: user.patientId, visitGroupId },
     });
   } catch (error) {
     console.error('❌ Admin create booking error:', error);
@@ -2561,5 +2644,67 @@ exports.updateConsultationStage = async (req, res) => {
   } catch (error) {
     console.error('updateConsultationStage failed:', error);
     return res.status(500).json({ success: false, message: 'Could not update the consultation stage' });
+  }
+};
+
+/**
+ * @desc  Undo the last desk status change (Zenoti's "Undo Check In" and friends).
+ * @route POST /api/bookings/admin/:id/undo
+ *
+ * Rules are deliberately narrow — only steps the desk itself takes here can
+ * be stepped back, and only while the visit is still today's business:
+ *   In Progress → Confirmed      (undo check-in; check-in code is re-armed)
+ *   Completed   → In Progress    (undo check-out, same clinic day only)
+ *   No Show     → Confirmed      (undo no-show)
+ *   Cancelled   → Confirmed / Awaiting Confirmation (undo a desk cancellation, today or future)
+ * A Zenoti-owned visit follows the same rules locally; Zenoti's own terminal
+ * state still wins on the next sync if it disagrees.
+ */
+exports.undoBookingStatusAdmin = async (req, res) => {
+  try {
+    const booking = await Booking.findById(req.params.id);
+    if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
+    const reason = String(req.body?.reason || '').trim();
+    const todayKey = clinicDateKey(new Date());
+    const visitKey = clinicDateKey(booking.confirmedDate || booking.preferredDate);
+    const from = booking.status;
+    let to = null;
+
+    if (from === 'In Progress') {
+      to = 'Confirmed';
+      booking.checkInTime = undefined;
+      booking.checkOutCode = null;
+      booking.checkOutCodeAt = null;
+      booking.manualCheckIn = undefined;
+      if (booking.consultationStage && !['booked', 'confirmed'].includes(booking.consultationStage)) booking.consultationStage = 'confirmed';
+    } else if (from === 'Completed') {
+      if (visitKey !== todayKey) return res.status(400).json({ success: false, message: 'Only a visit completed today can be re-opened.' });
+      to = 'In Progress';
+      booking.checkOutTime = undefined;
+      booking.sessionDuration = undefined;
+      booking.manualCheckOut = undefined;
+      if (['consultation_completed', 'prescription_created', 'treatment_recommended', 'follow_up_required', 'no_follow_up'].includes(booking.consultationStage || '')) booking.consultationStage = 'consultation_started';
+    } else if (from === 'No Show') {
+      to = 'Confirmed';
+    } else if (from === 'Cancelled') {
+      if (visitKey && visitKey < todayKey) return res.status(400).json({ success: false, message: 'A past cancellation cannot be undone.' });
+      to = booking.confirmedDate && booking.confirmedTime ? 'Confirmed' : 'Awaiting Confirmation';
+      booking.cancellationReason = undefined;
+      booking.cancelledAt = undefined;
+    } else {
+      return res.status(400).json({ success: false, message: `Nothing to undo for a ${from.toLowerCase()} booking.` });
+    }
+
+    booking.status = to;
+    booking.adminNotes = [booking.adminNotes, `Undo ${from} → ${to} by ${req.admin?.email || 'admin'}${reason ? ` — ${reason}` : ''}`].filter(Boolean).join('\n');
+    // Mirrored rows never echo a desk correction back to Zenoti.
+    if (booking.source === 'zenoti') booking.$locals.skipZenotiWrite = true;
+    await booking.save();
+    await booking.populate('consultationId', 'name category price image');
+    await booking.populate('userId', 'fullName email phone patientId');
+    return res.json({ success: true, message: `Reverted to ${to}`, data: booking, meta: { from, to } });
+  } catch (error) {
+    console.error('Undo booking status error:', error);
+    return res.status(500).json({ success: false, message: error.message || 'Failed to undo' });
   }
 };

@@ -17,6 +17,18 @@ const bookingSchema = new mongoose.Schema({
     index: true
   },
 
+  /**
+   * One desk visit with several services (Zenoti books "Acne facial" and
+   * "Exosome" as two rows of one appointment group). Each service is its own
+   * Booking — the diary, the slot engine and the mirror all work per service —
+   * and this id ties the rows together for the day book and the bill.
+   */
+  visitGroupId: {
+    type: String,
+    default: null,
+    index: true
+  },
+
   // Consultation/Treatment Reference
   consultationId: {
     type: mongoose.Schema.Types.ObjectId,

@@ -36,6 +36,8 @@ router.get(
   require('../controllers/dashboardController').getDashboard,
 );
 router.get('/inventory', requirePermission('inventory.view', 'analytics.view'), getInventoryAnalytics);
+// The desk's "Today's sales" register (visits, orders, packages paid on a day).
+router.get('/sales/today', requirePermission('today.view', 'bookings.view', 'analytics.view'), require('../controllers/analyticsController').getTodaysSales);
 // Preview (or send now) the automated 20:00 IST clinic summary.
 router.get(
   '/daily-summary',

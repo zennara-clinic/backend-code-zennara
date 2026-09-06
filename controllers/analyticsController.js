@@ -1468,3 +1468,83 @@ exports.getInventoryAnalyticsOld = async (req, res) => {
 };
 
 module.exports = exports;
+
+/**
+ * GET /api/analytics/sales/today?date=YYYY-MM-DD&branchId=
+ *
+ * Zenoti's "Today's Sales" register: every payment taken on a clinic day —
+ * service visits paid at the desk, product orders paid, package sales
+ * received — with totals by tender. Read-only; the desk opens a row from here.
+ */
+exports.getTodaysSales = async (req, res) => {
+  try {
+    const day = req.query.date && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date) ? req.query.date : null;
+    const start = clinicDayStart(day || new Date());
+    const end = clinicDayEnd(day || new Date());
+    const scope = branchScope(req);
+    const inDay = (field) => ({ [field]: { $gte: start, $lte: end } });
+
+    const [visits, orders, packages] = await Promise.all([
+      Booking.find({ ...scope, paymentStatus: 'paid', amount: { $gt: 0 }, $or: [inDay('paidAt'), { paidAt: null, ...inDay('checkOutTime') }] })
+        .populate('consultationId', 'name').populate('userId', 'fullName phone patientId')
+        .select('referenceNumber fullName mobileNumber amount paymentMethod paidAt checkOutTime status specialistName consultationId externalServiceName userId preferredLocation zenotiSource source')
+        .sort({ paidAt: -1 }).lean(),
+      ProductOrder.find({ ...(scope.branchId ? { branchId: scope.branchId } : {}), paymentStatus: { $in: ['paid', 'Paid', 'completed'] }, $or: [inDay('paidAt'), { paidAt: null, ...inDay('updatedAt') }] })
+        .populate('userId', 'fullName phone patientId')
+        .select('orderNumber userId items totalAmount finalAmount paymentMethod paymentStatus orderStatus paidAt createdAt')
+        .sort({ createdAt: -1 }).lean().catch(() => []),
+      PackageAssignment.find({ ...(scope.branchId ? { branchId: scope.branchId } : {}), 'payment.isReceived': true, ...inDay('payment.receivedDate') })
+        .populate('userId', 'fullName phone patientId')
+        .select('assignmentId packageDetails.packageName pricing.finalAmount payment userId createdAt')
+        .sort({ 'payment.receivedDate': -1 }).lean(),
+    ]);
+
+    const rows = [
+      ...visits.map((b) => ({
+        kind: 'visit', id: b._id, ref: b.referenceNumber || b.zenotiSource?.invoiceNumber || null,
+        customer: b.userId?.fullName || b.fullName, phone: b.userId?.phone || b.mobileNumber || null, patientId: b.userId?.patientId || null,
+        items: [`${b.consultationId?.name || b.externalServiceName || 'Service'} (1)`], amount: b.amount || 0, due: 0,
+        method: b.paymentMethod || 'Clinic', at: b.paidAt || b.checkOutTime || null, status: 'CLOSED', source: b.source === 'zenoti' ? 'Zenoti' : b.source === 'app' ? 'App' : 'Desk', staff: b.specialistName || null,
+      })),
+      ...orders.map((o) => ({
+        kind: 'order', id: o._id, ref: o.orderNumber || null,
+        customer: o.userId?.fullName || null, phone: o.userId?.phone || null, patientId: o.userId?.patientId || null,
+        items: (o.items || []).map((i) => `${i.name || i.productName || 'Product'} (${i.quantity || 1})`), amount: o.finalAmount ?? o.totalAmount ?? 0, due: 0,
+        method: o.paymentMethod || null, at: o.paidAt || o.createdAt || null, status: String(o.orderStatus || '').toUpperCase() || 'PAID', source: 'App', staff: null,
+      })),
+      ...packages.map((p) => ({
+        kind: 'package', id: p._id, ref: p.assignmentId || null,
+        customer: p.userId?.fullName || null, phone: p.userId?.phone || null, patientId: p.userId?.patientId || null,
+        items: [`${p.packageDetails?.packageName || 'Package'} (1)`], amount: p.pricing?.finalAmount || 0, due: 0,
+        method: p.payment?.paymentMethod || null, at: p.payment?.receivedDate || p.createdAt || null, status: 'CLOSED', source: 'Desk', staff: null,
+      })),
+    ].sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0));
+
+    const byMethod = {};
+    for (const r of rows) byMethod[r.method || 'Unknown'] = (byMethod[r.method || 'Unknown'] || 0) + (r.amount || 0);
+    // What is still owed today: visits done or in progress today with an unpaid value.
+    const dueRows = await Booking.find({ ...scope, paymentStatus: { $ne: 'paid' }, amount: { $gt: 0 }, status: { $in: ['In Progress', 'Completed'] }, $or: [inDay('checkOutTime'), inDay('checkInTime'), inDay('preferredDate')] })
+      .select('amount').lean();
+
+    return res.json({
+      success: true,
+      data: {
+        date: day || clinicDateKeySafe(start),
+        totals: {
+          count: rows.length, amount: rows.reduce((n, r) => n + (r.amount || 0), 0),
+          visits: visits.reduce((n, b) => n + (b.amount || 0), 0), products: orders.reduce((n, o) => n + (o.finalAmount ?? o.totalAmount ?? 0), 0), packages: packages.reduce((n, p) => n + (p.pricing?.finalAmount || 0), 0),
+          due: dueRows.reduce((n, b) => n + (b.amount || 0), 0), dueCount: dueRows.length,
+          byMethod,
+        },
+        rows,
+      },
+    });
+  } catch (error) {
+    console.error('Today sales error:', error);
+    return res.status(500).json({ success: false, message: 'Could not load today\'s sales' });
+  }
+};
+
+function clinicDateKeySafe(d) {
+  try { return require('../utils/bookingTime').clinicDateKey(d); } catch { return null; }
+}

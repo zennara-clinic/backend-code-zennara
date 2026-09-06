@@ -9,6 +9,7 @@ const {
   getAnyAvailability,
   getAnySlots,
   getFreeDermatologists,
+  getDayShifts,
 } = require('../controllers/dermatologistScheduleController');
 const { protectAdmin, auditLog } = require('../middleware/auth');
 
@@ -19,6 +20,8 @@ const { protectAdmin, auditLog } = require('../middleware/auth');
 router.get('/any/availability', getAnyAvailability);
 router.get('/any/slots', getAnySlots);
 router.get('/any/free', getFreeDermatologists);
+// Desk day book: every dermatologist's shift, leave and blocks for one date.
+router.get('/day-shifts', protectAdmin, getDayShifts);
 
 /*
  * Public — the app needs slots before anyone signs in, so it can show a
