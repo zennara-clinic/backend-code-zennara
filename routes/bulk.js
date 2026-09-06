@@ -27,6 +27,7 @@ router.use(protectAdmin);
 
 // Exporting is the safe half; importing writes to the catalogue, so it carries
 // the sensitive permission and is separately grantable.
+router.get('/price-list', requirePermission('bulk.export', 'services.view', 'packages.view'), bulk.priceList);
 router.get('/:entity/template', requirePermission('bulk.export', 'bulk.import'), bulk.template);
 router.get('/:entity/export', requirePermission('bulk.export'), bulk.exportEntity);
 

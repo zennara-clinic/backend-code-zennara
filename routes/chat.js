@@ -20,6 +20,11 @@ const VIEW = requirePermission('chat.view', 'chat.manage');
 const { receiveChatAttachment } = require('../middleware/chatAttachmentUpload');
 
 // User routes
+// Twilio webhooks (form-encoded, unauthenticated; signature checked when TWILIO_AUTH_TOKEN is set).
+const chatCtrl = require('../controllers/chatController');
+router.post('/whatsapp/inbound', express.urlencoded({ extended: false }), chatCtrl.whatsappInbound);
+router.post('/whatsapp/status', express.urlencoded({ extended: false }), chatCtrl.whatsappStatus);
+
 router.post('/initiate', protect, initiateChat);
 router.get('/user', protect, getUserChats);
 router.get('/user/unread', protect, require('../controllers/chatController').getUserUnread);
@@ -36,5 +41,7 @@ router.get('/admin/branch/:branchId', protectAdmin, VIEW, getChatsByBranch);
 router.get('/admin/stats', protectAdmin, VIEW, getChatStats);
 router.put('/admin/:chatId/close', protectAdmin, MANAGE, closeChat);
 router.put('/admin/:chatId/assign', protectAdmin, MANAGE, assignChat);
+router.put('/admin/:chatId/tags', protectAdmin, MANAGE, chatCtrl.setChatTags);
+router.post('/admin/start-whatsapp', protectAdmin, MANAGE, chatCtrl.startWhatsApp);
 
 module.exports = router;

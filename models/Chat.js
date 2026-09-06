@@ -29,6 +29,14 @@ const chatSchema = new mongoose.Schema({
     type: Number,
     default: 0
   },
+  /** app = in-app chat; whatsapp = the guest's WhatsApp thread (Twilio), like Zenoti's ezConnect. */
+  channel: { type: String, enum: ['app', 'whatsapp'], default: 'app', index: true },
+  /** The WhatsApp number the guest wrote from (E.164). */
+  waPhone: { type: String, default: null, index: true },
+  /** Last time the GUEST wrote — WhatsApp free-form replies are allowed for 24h after this. */
+  lastInboundAt: { type: Date, default: null },
+  tags: { type: [String], default: [] },
+  pinned: { type: Boolean, default: false },
   status: {
     type: String,
     enum: ['active', 'closed', 'archived'],

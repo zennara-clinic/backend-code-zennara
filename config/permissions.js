@@ -52,6 +52,7 @@ const GROUPS = [
       { key: 'contactChanges.manage', label: 'Approve / reject contact changes' },
       { key: 'chat.view', label: 'View chat' },
       { key: 'chat.manage', label: 'Reply in chat' },
+      { key: 'templates.manage', label: 'Edit message templates' },
       { key: 'support.view', label: 'View support inbox' },
       { key: 'support.manage', label: 'Respond to support messages' },
     ],

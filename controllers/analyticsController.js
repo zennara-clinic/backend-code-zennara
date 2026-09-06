@@ -1568,6 +1568,39 @@ exports.getTodaysSales = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/admin/analytics/sales/by-staff?from&to&branchId
+ * Zenoti's "Employee sales": who sold what, from closed invoices (sale-by per
+ * line), plus visits paid without a bill attributed to their dermatologist.
+ */
+exports.getSalesByStaff = async (req, res) => {
+  try {
+    const Invoice = require('../models/Invoice');
+    const from = req.query.from ? clinicDayStart(req.query.from) : clinicDayStart(new Date(Date.now() - 29 * 86400000));
+    const to = req.query.to ? clinicDayEnd(req.query.to) : clinicDayEnd(new Date());
+    const scope = branchScope(req);
+    const invScope = scope.branchId ? { branchId: scope.branchId } : {};
+    const invoices = await Invoice.find({ ...invScope, status: 'closed', closedAt: { $gte: from, $lte: to } }).select('lines closedAt invoiceNumber').lean();
+    const rows = new Map();
+    const bump = (name, kind, amount, qty = 1) => {
+      const k = name || 'Unattributed';
+      const r = rows.get(k) || { staff: k, services: 0, products: 0, packages: 0, memberships: 0, other: 0, total: 0, items: 0, bills: new Set() };
+      r[kind] = (r[kind] || 0) + amount; r.total += amount; r.items += qty; rows.set(k, r); return r;
+    };
+    for (const inv of invoices) for (const l of inv.lines || []) {
+      const kind = l.kind === 'service' ? 'services' : l.kind === 'product' ? 'products' : l.kind === 'package' ? 'packages' : l.kind === 'membership' ? 'memberships' : 'other';
+      const r = bump(l.soldByName, kind, Number(l.total) || 0, Number(l.qty) || 1); r.bills.add(String(inv._id));
+    }
+    const visits = await Booking.find({ ...scope, invoiceId: null, paymentStatus: 'paid', amount: { $gt: 0 }, paidAt: { $gte: from, $lte: to } }).select('specialistName amount').lean();
+    for (const b of visits) bump(b.specialistName, 'services', Number(b.amount) || 0);
+    const data = [...rows.values()].map((r) => ({ ...r, bills: r.bills.size, total: Math.round(r.total * 100) / 100 })).sort((a, b) => b.total - a.total);
+    return res.json({ success: true, data, range: { from, to }, totals: { total: data.reduce((n, r) => n + r.total, 0), staff: data.length, invoices: invoices.length } });
+  } catch (error) {
+    console.error('sales by staff error:', error);
+    return res.status(500).json({ success: false, message: 'Could not build the staff sales report' });
+  }
+};
+
 function clinicDateKeySafe(d) {
   try { return require('../utils/bookingTime').clinicDateKey(d); } catch { return null; }
 }

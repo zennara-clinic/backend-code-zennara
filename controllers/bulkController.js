@@ -423,3 +423,40 @@ exports.template = async (req, res) => {
 };
 
 module.exports.ENTITIES = ENTITIES;
+
+
+/**
+ * GET /api/bulk/price-list?format=csv|html&branchId=
+ * Zenoti's "Price list" export: services and packages as a guest-facing
+ * price sheet (name, duration, price incl. GST at the chosen centre).
+ */
+exports.priceList = async (req, res) => {
+  try {
+    const Consultation = require('../models/Consultation');
+    const Package = require('../models/Package');
+    const Branch = require('../models/Branch');
+    const branch = req.query.branchId && /^[0-9a-f]{24}$/i.test(req.query.branchId) ? await Branch.findById(req.query.branchId).lean() : null;
+    const services = await Consultation.find({ isActive: { $ne: false } }).sort({ category: 1, name: 1 });
+    const packages = await Package.find({ isActive: true }).sort({ name: 1 });
+    const inr = (n) => Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 });
+    const svcRows = services.map((s) => { const p = typeof s.priceAt === 'function' ? s.priceAt(branch?._id) : { total: s.price, taxPercent: 0, available: true }; return { kind: 'Service', category: s.category || '', name: s.name, code: s.code || '', duration: s.duration_minutes || '', price: p.total, tax: p.taxPercent, available: p.available !== false }; }).filter((r) => r.available);
+    const pkgRows = packages.map((p) => { const pr = typeof p.priceAt === 'function' ? p.priceAt(branch?._id) : { total: p.price, taxPercent: 5, available: true }; return { kind: 'Package', category: p.category || 'Packages', name: p.name, code: p.code || '', duration: (p.services || []).reduce((n, s) => n + (Number(s.sessions) || 1), 0) + ' sessions', price: pr.total, tax: pr.taxPercent, available: pr.available !== false }; }).filter((r) => r.available);
+    const rows = [...svcRows, ...pkgRows];
+    const stamp = new Date().toISOString().slice(0, 10);
+    if (req.query.format === 'html') {
+      const esc = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+      const byCat = new Map();
+      for (const r of rows) { const k = `${r.kind === 'Package' ? 'Packages · ' : ''}${r.category}`; if (!byCat.has(k)) byCat.set(k, []); byCat.get(k).push(r); }
+      const sections = [...byCat.entries()].map(([cat, list]) => `<h2>${esc(cat)}</h2><table><tbody>${list.map((r) => `<tr><td>${esc(r.name)}${r.code ? ` <span class="c">${esc(r.code)}</span>` : ''}</td><td class="d">${esc(r.duration)}${r.kind === 'Service' && r.duration ? ' min' : ''}</td><td class="p">₹${inr(r.price)}</td></tr>`).join('')}</tbody></table>`).join('');
+      res.type('html');
+      return res.send(`<!doctype html><html><head><meta charset="utf-8"><title>Zennara price list</title><style>body{font-family:Manrope,Arial,sans-serif;max-width:760px;margin:24px auto;color:#1a1a1a;padding:0 16px}h1{font-size:22px;margin:0}h2{font-size:14px;margin:22px 0 6px;color:#2c3e2f;border-bottom:1px solid #ddd;padding-bottom:4px}table{width:100%;border-collapse:collapse}td{padding:5px 0;font-size:13px;border-bottom:1px dotted #eee}.d{color:#666;width:120px}.p{text-align:right;font-weight:700;width:110px}.c{color:#999;font-size:10.5px}.sub{color:#666;font-size:12px}@media print{body{margin:0}}</style></head><body><h1>Zennara Clinics — Price list</h1><div class="sub">${esc(branch?.name || 'All centres')} · ${stamp} · prices include GST</div>${sections}<p class="sub">Prices may change without notice. Consultation required before certain treatments.</p></body></html>`);
+    }
+    const csv = toCsv(['Type', 'Category', 'Name', 'Code', 'Duration / sessions', 'Price (incl. GST)', 'GST %'], rows.map((r) => [r.kind, r.category, r.name, r.code, r.duration, r.price, r.tax]));
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="zennara-price-list-${stamp}.csv"`);
+    return res.send(csv);
+  } catch (error) {
+    console.error('price list failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not build the price list' });
+  }
+};

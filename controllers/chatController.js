@@ -216,7 +216,8 @@ exports.getChatMessages = async (req, res) => {
     }
     // Admins have access to all chats, no additional check needed
 
-    const messages = await Message.find({ chatId })
+    const visible = req.user && !req.admin ? { chatId, messageType: { $ne: 'note' } } : { chatId };
+    const messages = await Message.find(visible)
       .sort({ createdAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit)
@@ -281,6 +282,44 @@ exports.sendMessage = async (req, res) => {
         success: false,
         message: 'Unauthorized'
       });
+    }
+
+    // Private note: staff-only, never leaves the panel (ezConnect "Private Note").
+    if (req.admin && req.body.kind === 'note') {
+      const note = await Message.create({ chatId, ...sender, content, messageType: 'note', isDelivered: true, deliveredAt: new Date(), metadata: { private: true } });
+      emitNewMessage(req.io, chat, note);
+      return res.status(201).json({ success: true, data: note });
+    }
+
+    // WhatsApp thread: free text only inside 24h of the guest's last message;
+    // outside it, a pre-approved template (Twilio Content SID) is required.
+    if (chat.channel === 'whatsapp' && req.admin) {
+      const wa = require('../services/whatsappService');
+      const MessageTemplate = require('../models/MessageTemplate');
+      const withinWindow = chat.lastInboundAt && Date.now() - new Date(chat.lastInboundAt).getTime() < 24 * 3600 * 1000;
+      let sendResult;
+      let outText = content;
+      if (req.body.templateId) {
+        const tpl = await MessageTemplate.findById(req.body.templateId);
+        if (!tpl) return res.status(404).json({ success: false, message: 'Template not found' });
+        const { varsFrom } = require('./messageTemplateController');
+        const vars = await varsFrom({ userId: chat.userId, bookingId: req.body.bookingId }, req.admin?.name);
+        outText = MessageTemplate.render(tpl.body, vars);
+        if (tpl.twilioContentSid) {
+          const cv = {}; (tpl.contentVariables || []).forEach((k, i) => { cv[String(i + 1)] = vars[k] ?? ''; });
+          sendResult = await wa.sendTemplateMessage(chat.waPhone || '', tpl.twilioContentSid, cv);
+        } else if (withinWindow) sendResult = await wa.sendMessage(chat.waPhone || '', outText);
+        else return res.status(409).json({ success: false, code: 'WA_WINDOW_CLOSED', message: 'WhatsApp messages can be sent only in response to an incoming message (last 24h). Choose a template that has an approved WhatsApp Content SID.' });
+        await MessageTemplate.updateOne({ _id: tpl._id }, { $inc: { usageCount: 1 }, $set: { lastUsedAt: new Date() } });
+      } else {
+        if (!withinWindow) return res.status(409).json({ success: false, code: 'WA_WINDOW_CLOSED', message: 'WhatsApp messages can be sent only in response to an incoming message (last 24h). Choose a template.' });
+        sendResult = await wa.sendMessage(chat.waPhone || '', outText);
+      }
+      if (!sendResult?.success) return res.status(502).json({ success: false, message: `WhatsApp did not accept the message: ${sendResult?.error || 'unknown error'}` });
+      const waMessage = await Message.create({ chatId, ...sender, content: outText, messageType: req.body.templateId ? 'template' : 'text', isDelivered: false, metadata: { channel: 'whatsapp', sid: sendResult.messageSid, status: sendResult.status || 'queued', template: req.body.templateId || null } });
+      await updateChatAfterMessage(chat, sender.senderModel, outText);
+      emitNewMessage(req.io, chat, waMessage);
+      return res.status(201).json({ success: true, data: waMessage });
     }
 
     // Create message
@@ -656,4 +695,112 @@ exports.getUserUnread = async (req, res) => {
     console.error('Error counting unread:', error);
     res.status(500).json({ success: false, message: 'Error counting unread messages' });
   }
+};
+
+
+/* ------------------------------------------------------------------------ */
+/* WhatsApp channel (Twilio) — the guest's WhatsApp thread in the desk inbox  */
+/* ------------------------------------------------------------------------ */
+
+function twilioSignatureOk(req) {
+  const token = process.env.TWILIO_AUTH_TOKEN;
+  if (!token) return true; // not configured → accept (dev)
+  try {
+    const twilio = require('twilio');
+    const url = `${req.headers['x-forwarded-proto'] || req.protocol}://${req.get('host')}${req.originalUrl}`;
+    return twilio.validateRequest(token, req.headers['x-twilio-signature'] || '', url, req.body || {});
+  } catch { return true; }
+}
+
+const e164 = (v) => { const d = String(v || '').replace(/^whatsapp:/, '').replace(/[^\d+]/g, ''); if (!d) return null; if (d.startsWith('+')) return d; return d.length === 10 ? `+91${d}` : `+${d}`; };
+
+/**
+ * POST /api/chat/whatsapp/inbound — Twilio webhook for an incoming WhatsApp
+ * message. Finds the guest by phone (creates a contact when unknown, as
+ * ezConnect does), opens or reuses their WhatsApp thread at the centre the
+ * number belongs to, stores the message (+ media links) and pushes it live.
+ */
+exports.whatsappInbound = async (req, res) => {
+  try {
+    if (!twilioSignatureOk(req)) return res.status(403).send('bad signature');
+    const from = e164(req.body.From); const to = e164(req.body.To);
+    const body = String(req.body.Body || '').trim();
+    const numMedia = Number(req.body.NumMedia) || 0;
+    if (!from) return res.status(400).send('no sender');
+    const digits = from.replace(/^\+91/, '').replace(/\D/g, '');
+    let user = await User.findOne({ $or: [{ phone: digits }, { phone: from }, { phone: new RegExp(`${digits}$`) }] });
+    if (!user) {
+      user = await User.create({ fullName: String(req.body.ProfileName || '').trim() || `WhatsApp ${digits.slice(-4)}`, phone: digits, email: `wa.${digits}@zennara.local`, isVerified: false, referralSource: 'WhatsApp' });
+    }
+    let branch = to ? await Branch.findOne({ 'messaging.whatsappNumber': { $in: [to, to.replace('+', ''), `whatsapp:${to}`] } }).lean() : null;
+    if (!branch && user.location) branch = await Branch.findOne({ name: user.location }).lean();
+    if (!branch) branch = await Branch.findOne({ isActive: true }).sort({ displayOrder: 1 }).lean();
+    let chat = await Chat.findOne({ userId: user._id, channel: 'whatsapp', status: { $ne: 'archived' } }).sort({ lastMessageTime: -1 });
+    if (!chat) chat = await Chat.create({ userId: user._id, branchId: branch?._id, branchName: branch?.name || '', channel: 'whatsapp', waPhone: from, status: 'active', lastMessage: '', unreadCount: 0 });
+    else if (chat.status === 'closed') chat.status = 'active';
+    chat.waPhone = from; chat.lastInboundAt = new Date();
+    const media = []; for (let i = 0; i < numMedia; i += 1) media.push({ url: req.body[`MediaUrl${i}`], contentType: req.body[`MediaContentType${i}`] });
+    const content = body || (media.length ? `[${media.length} attachment${media.length === 1 ? '' : 's'}]` : '(empty message)');
+    const message = await Message.create({ chatId: chat._id, senderId: user._id, senderModel: 'User', senderName: user.fullName, content, messageType: 'text', isDelivered: true, deliveredAt: new Date(), metadata: { channel: 'whatsapp', sid: req.body.MessageSid || null, media, profileName: req.body.ProfileName || null } });
+    await updateChatAfterMessage(chat, 'User', content);
+    emitNewMessage(req.io, chat, message);
+    res.type('text/xml').send('<Response></Response>');
+  } catch (error) {
+    console.error('WhatsApp inbound error:', error);
+    res.status(500).send('error');
+  }
+};
+
+/** POST /api/chat/whatsapp/status — Twilio delivery receipts (sent / delivered / read / failed). */
+exports.whatsappStatus = async (req, res) => {
+  try {
+    if (!twilioSignatureOk(req)) return res.status(403).send('bad signature');
+    const sid = req.body.MessageSid || req.body.SmsSid; const status = req.body.MessageStatus || req.body.SmsStatus;
+    if (sid && status) {
+      const set = { 'metadata.status': status };
+      if (['delivered', 'read'].includes(status)) { set.isDelivered = true; set.deliveredAt = new Date(); }
+      if (status === 'read') { set.isRead = true; set.readAt = new Date(); }
+      if (status === 'failed' || status === 'undelivered') set['metadata.error'] = req.body.ErrorMessage || req.body.ErrorCode || 'failed';
+      const m = await Message.findOneAndUpdate({ 'metadata.sid': sid }, { $set: set }, { new: true });
+      if (m && req.io) req.io.to(String(m.chatId)).emit('messageStatus', { messageId: m._id, status });
+    }
+    res.type('text/xml').send('<Response></Response>');
+  } catch (error) { res.status(500).send('error'); }
+};
+
+/** PUT /api/chat/admin/:chatId/tags { tags: [], pinned? } — ezConnect "Assign Tag" / Pinned. */
+exports.setChatTags = async (req, res) => {
+  try {
+    const chat = await Chat.findById(req.params.chatId);
+    if (!chat) return res.status(404).json({ success: false, message: 'Chat not found' });
+    if (Array.isArray(req.body.tags)) chat.tags = req.body.tags.map((t) => String(t).trim()).filter(Boolean).slice(0, 12);
+    if (req.body.pinned !== undefined) chat.pinned = !!req.body.pinned;
+    await chat.save();
+    return res.json({ success: true, data: chat });
+  } catch (error) { return res.status(500).json({ success: false, message: error.message }); }
+};
+
+/**
+ * POST /api/chat/admin/start-whatsapp { userId, templateId, bookingId? } —
+ * open (or reuse) a guest's WhatsApp thread from the desk and send a template
+ * (the only way to start a conversation outside the 24h window).
+ */
+exports.startWhatsApp = async (req, res) => {
+  try {
+    const { userId, templateId, bookingId } = req.body || {};
+    const user = await User.findById(userId);
+    if (!user || !user.phone) return res.status(404).json({ success: false, message: 'Guest with a phone number not found' });
+    const MessageTemplate = require('../models/MessageTemplate');
+    const tpl = templateId ? await MessageTemplate.findById(templateId) : null;
+    if (!tpl) return res.status(400).json({ success: false, message: 'Choose a template to start a WhatsApp conversation.' });
+    let branch = req.body.branchId ? await Branch.findById(req.body.branchId).lean() : null;
+    if (!branch && user.location) branch = await Branch.findOne({ name: user.location }).lean();
+    if (!branch) branch = await Branch.findOne({ isActive: true }).sort({ displayOrder: 1 }).lean();
+    let chat = await Chat.findOne({ userId: user._id, channel: 'whatsapp', status: { $ne: 'archived' } }).sort({ lastMessageTime: -1 });
+    if (!chat) chat = await Chat.create({ userId: user._id, branchId: branch?._id, branchName: branch?.name || '', channel: 'whatsapp', waPhone: e164(user.phone), status: 'active', lastMessage: '', unreadCount: 0 });
+    if (chat.status === 'closed') { chat.status = 'active'; await chat.save(); }
+    req.params.chatId = String(chat._id);
+    req.body = { templateId: tpl._id, bookingId, content: tpl.name };
+    return exports.sendMessage(req, res);
+  } catch (error) { return res.status(500).json({ success: false, message: error.message }); }
 };

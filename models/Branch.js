@@ -130,6 +130,16 @@ const branchSchema = new mongoose.Schema({
   invoicePrefix: { type: String, default: null, trim: true, uppercase: true },
   gstin: { type: String, default: null, trim: true, uppercase: true },
   pan: { type: String, default: null, trim: true, uppercase: true },
+  /**
+   * Guest messaging per centre. `zenotiSendsGuestMessages` = Zenoti's ezConnect
+   * already messages guests for appointments booked there, so our automatic
+   * WhatsApp for Zenoti-sourced bookings is suppressed (no double messages).
+   */
+  messaging: {
+    whatsappEnabled: { type: Boolean, default: true },
+    zenotiSendsGuestMessages: { type: Boolean, default: false },
+    whatsappNumber: { type: String, default: null, trim: true },
+  },
   legalName: { type: String, default: null, trim: true },
   stateCode: { type: String, default: '36', trim: true },
 

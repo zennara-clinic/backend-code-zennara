@@ -15,6 +15,7 @@ const Consultation = require('../models/Consultation');
 const User = require('../models/User');
 const Branch = require('../models/Branch');
 const PackageAssignment = require('../models/PackageAssignment');
+const guestMessaging = require('../utils/guestMessaging');
 const emailService = require('../utils/emailService');
 const NotificationHelper = require('../utils/notificationHelper');
 const whatsappService = require('../services/whatsappService');
@@ -181,6 +182,7 @@ exports.createBooking = async (req, res) => {
 
     // Send WhatsApp booking confirmation
     try {
+      if (!(await guestMessaging.shouldSendBookingWhatsApp(booking, 'confirmation')).ok) throw Object.assign(new Error('suppressed: Zenoti sends guest messages for this centre'), { suppressed: true });
       await whatsappService.sendBookingConfirmation(
         booking.mobileNumber,
         {
@@ -459,6 +461,7 @@ exports.cancelBooking = async (req, res) => {
 
     // Send WhatsApp cancellation notification
     try {
+      if (!(await guestMessaging.shouldSendBookingWhatsApp(booking, 'cancelled')).ok) throw Object.assign(new Error('suppressed: Zenoti sends guest messages for this centre'), { suppressed: true });
       await whatsappService.sendAppointmentCancelled(
         booking.mobileNumber,
         {
@@ -610,6 +613,7 @@ exports.rescheduleBooking = async (req, res) => {
 
     // Send WhatsApp rescheduled notification
     try {
+      if (!(await guestMessaging.shouldSendBookingWhatsApp(booking, 'rescheduled')).ok) throw Object.assign(new Error('suppressed: Zenoti sends guest messages for this centre'), { suppressed: true });
       await whatsappService.sendAppointmentRescheduled(
         booking.mobileNumber,
         {
@@ -756,6 +760,7 @@ exports.checkInBooking = async (req, res) => {
 
     // Send WhatsApp check-in notification
     try {
+      if (!(await guestMessaging.shouldSendBookingWhatsApp(booking, 'checkin')).ok) throw Object.assign(new Error('suppressed: Zenoti sends guest messages for this centre'), { suppressed: true });
       await whatsappService.sendCheckInSuccessful(
         booking.mobileNumber,
         {
@@ -861,6 +866,7 @@ exports.checkOutBooking = async (req, res) => {
 
     // Send WhatsApp completion notification
     try {
+      if (!(await guestMessaging.shouldSendBookingWhatsApp(booking, 'completed')).ok) throw Object.assign(new Error('suppressed: Zenoti sends guest messages for this centre'), { suppressed: true });
       await whatsappService.sendAppointmentCompleted(
         booking.mobileNumber,
         {
@@ -1173,6 +1179,7 @@ exports.confirmBooking = async (req, res) => {
 
     // Send WhatsApp confirmation notification
     try {
+      if (!(await guestMessaging.shouldSendBookingWhatsApp(booking, 'confirmation')).ok) throw Object.assign(new Error('suppressed: Zenoti sends guest messages for this centre'), { suppressed: true });
       await whatsappService.sendAppointmentConfirmed(
         booking.mobileNumber,
         {
@@ -1279,6 +1286,7 @@ exports.markNoShow = async (req, res) => {
 
     // Send WhatsApp no-show notification
     try {
+      if (!(await guestMessaging.shouldSendBookingWhatsApp(booking, 'noshow')).ok) throw Object.assign(new Error('suppressed: Zenoti sends guest messages for this centre'), { suppressed: true });
       await whatsappService.sendNoShowNotification(
         booking.mobileNumber,
         {
@@ -1414,6 +1422,7 @@ exports.checkInBookingAdmin = async (req, res) => {
 
     // Send WhatsApp check-in notification (admin)
     try {
+      if (!(await guestMessaging.shouldSendBookingWhatsApp(booking, 'checkin')).ok) throw Object.assign(new Error('suppressed: Zenoti sends guest messages for this centre'), { suppressed: true });
       await whatsappService.sendCheckInSuccessful(
         booking.mobileNumber,
         {
@@ -1523,6 +1532,7 @@ exports.checkOutBookingAdmin = async (req, res) => {
 
     // Send WhatsApp completion notification (admin)
     try {
+      if (!(await guestMessaging.shouldSendBookingWhatsApp(booking, 'completed')).ok) throw Object.assign(new Error('suppressed: Zenoti sends guest messages for this centre'), { suppressed: true });
       await whatsappService.sendAppointmentCompleted(
         booking.mobileNumber,
         {
@@ -1837,6 +1847,7 @@ exports.verifyCheckInCode = async (req, res) => {
     } catch (e) { console.error('⚠️ check-in email failed:', e.message); }
 
     try {
+      if (!(await guestMessaging.shouldSendBookingWhatsApp(booking, 'checkin')).ok) throw Object.assign(new Error('suppressed: Zenoti sends guest messages for this centre'), { suppressed: true });
       await whatsappService.sendCheckInSuccessful(booking.mobileNumber, {
         patientName: booking.fullName,
         treatment: booking.consultationId.name,
@@ -1909,6 +1920,7 @@ exports.verifyCheckOutCode = async (req, res) => {
     } catch (e) { console.error('⚠️ completion email failed:', e.message); }
 
     try {
+      if (!(await guestMessaging.shouldSendBookingWhatsApp(booking, 'completed')).ok) throw Object.assign(new Error('suppressed: Zenoti sends guest messages for this centre'), { suppressed: true });
       await whatsappService.sendAppointmentCompleted(booking.mobileNumber, {
         patientName: booking.fullName,
         treatment: booking.consultationId.name,
@@ -2006,6 +2018,7 @@ exports.cancelBookingAdmin = async (req, res) => {
 
     // Send WhatsApp cancellation notification (admin)
     try {
+      if (!(await guestMessaging.shouldSendBookingWhatsApp(booking, 'cancelled')).ok) throw Object.assign(new Error('suppressed: Zenoti sends guest messages for this centre'), { suppressed: true });
       await whatsappService.sendAppointmentCancelled(
         booking.mobileNumber,
         {
@@ -2332,6 +2345,7 @@ exports.createBookingAdmin = async (req, res) => {
     // Best-effort confirmations — a messaging outage must not lose the booking.
     const treatmentLabel = created.map((c) => c.consultation.name).join(' + ');
     try {
+      if (!(await guestMessaging.shouldSendBookingWhatsApp(booking, 'confirmation')).ok) throw Object.assign(new Error('suppressed: Zenoti sends guest messages for this centre'), { suppressed: true });
       await whatsappService.sendBookingConfirmation(booking.mobileNumber, {
         patientName: booking.fullName,
         referenceNumber: booking.referenceNumber,
