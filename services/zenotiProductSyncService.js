@@ -180,8 +180,11 @@ async function syncProducts({ trigger = 'manual' } = {}) {
         if (entry.sku) inv.code = entry.sku;
         if (entry.packSize) inv.formulation = entry.packSize;
         if (entry.brand) inv.orgName = entry.brand;
-        inv.zenotiSyncedAt = new Date();
-        await inv.save({ validateModifiedOnly: true });
+        // Same rule as the master row: write only on a real change.
+        if (inv.isNew || inv.modifiedPaths().some((p) => p !== 'zenotiSyncedAt')) {
+          inv.zenotiSyncedAt = new Date();
+          await inv.save({ validateModifiedOnly: true });
+        }
       }
 
       let product = await Product.findOne({ zenotiProductId: entry.zenotiProductId });
@@ -255,6 +258,10 @@ async function syncProducts({ trigger = 'manual' } = {}) {
       }
       // Otherwise `trackStock` is settled once, below, for rows that have never
       // had it decided — a panel decision (true or false) is never overridden.
+      // Only touch the database when a field actually changed — this runs
+      // hourly across 700 products and used to rewrite every row every time.
+      const changed = product.isNew || product.modifiedPaths().some((p) => p !== 'zenotiSyncedAt');
+      if (!changed) { stats.updated -= 1; stats.unchanged = (stats.unchanged || 0) + 1; continue; }
       product.zenotiSyncedAt = new Date();
 
       await product.save({ validateModifiedOnly: true });

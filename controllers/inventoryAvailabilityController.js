@@ -55,6 +55,12 @@ exports.getAvailability = async (req, res) => {
     const cap = Math.min(Number(limit) || 200, 500);
 
     const filter = { isActive: true };
+    // Which products this centre actually carries (Zenoti's per-centre range).
+    // Products mirrored before the centre feed existed carry no `centres` and
+    // stay visible everywhere rather than disappearing from the list.
+    if (branchId && /^[0-9a-f]{24}$/i.test(branchId)) {
+      filter.$and = [{ $or: [{ 'centres.branchId': branchId }, { centres: { $size: 0 } }, { centres: { $exists: false } }] }];
+    }
     if (search && String(search).trim()) {
       const rx = new RegExp(String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
       filter.$or = [{ name: rx }, { sku: rx }, { code: rx }, { brand: rx }, { OrgName: rx }, { formulation: rx }];
