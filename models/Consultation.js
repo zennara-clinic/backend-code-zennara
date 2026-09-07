@@ -178,6 +178,24 @@ const consultationSchema = new mongoose.Schema({
 
   /** The Zenoti service this treatment/consultation is booked as (chosen in the panel). */
   zenotiServiceId: { type: String, default: null, trim: true, lowercase: true },
+  /** Its name in Zenoti, so the panel can show the choice without a round-trip. */
+  zenotiServiceName: { type: String, default: null, trim: true },
+  /**
+   * True when the mapping was picked automatically rather than by a person.
+   *
+   * The app sells treatment GROUPS and Zenoti bills VARIANTS — "Doublo HIFU"
+   * is 20 Zenoti lines by body area. A default had to be chosen so bookings
+   * reach the clinic at all, but which line a treatment should bill against is
+   * the clinic's call, so an automatic choice is marked for confirmation
+   * instead of passing itself off as decided.
+   */
+  zenotiServiceAuto: { type: Boolean, default: false },
+  /** The runners-up, so correcting the choice is a click and not a search. */
+  zenotiServiceAlternatives: [{
+    _id: false,
+    id: { type: String, trim: true },
+    name: { type: String, trim: true },
+  }],
 
   /* ---- Zenoti service-master columns (its own export format) ---- */
   /** Second level of the clinic's taxonomy, e.g. Category "Laser" → Sub "Spa". */

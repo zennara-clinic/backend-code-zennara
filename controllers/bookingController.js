@@ -1,5 +1,13 @@
 const mongoose = require('mongoose');
 const Booking = require('../models/Booking');
+
+/**
+ * A catalogue entry that backs the consultation flow rather than a treatment.
+ * Mirrors resolveServiceId's own test, so the booking gate and the Zenoti push
+ * agree about which rows have a fallback and which need a real mapping.
+ */
+const isConsultationEntry = (c) => /^consultations?$/i.test(String(c?.category || '').trim())
+  || /consultation/i.test(String(c?.name || ''));
 const zenotiWrite = require('../services/zenotiWriteService');
 
 /** A dermatologist login only ever sees its own diary, whatever specialistId it asks for. */
@@ -80,6 +88,29 @@ exports.createBooking = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'Consultation not found'
+      });
+    }
+
+    /*
+     * A treatment with no Zenoti service behind it cannot be booked.
+     *
+     * Without a mapping the push to Zenoti never happens: the guest keeps a
+     * confirmation and the clinic's diary never hears about it, so they arrive
+     * for an appointment nobody knows exists. Three of the first four app
+     * bookings failed exactly that way and one guest was left with a slot for
+     * the next morning that the clinic had no record of.
+     *
+     * Refusing the booking is worse for one customer and better for every
+     * customer: "not bookable online, please call" is recoverable, turning up
+     * to a clinic that has never heard of you is not. Consultations are exempt
+     * — resolveServiceId falls back to Zenoti's generic Consultation row, so
+     * they always reach the diary.
+     */
+    if (!isConsultationEntry(consultation) && !consultation.zenotiServiceId) {
+      return res.status(409).json({
+        success: false,
+        code: 'SERVICE_NOT_BOOKABLE_ONLINE',
+        message: `${consultation.name} can't be booked in the app yet — please call the clinic and we'll arrange it for you.`,
       });
     }
 
