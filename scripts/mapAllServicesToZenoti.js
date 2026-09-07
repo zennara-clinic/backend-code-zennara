@@ -75,8 +75,16 @@ const INTERNAL = /\b(staff|internal|test|demo|trial|training)\b|[-/]\s*dr\.?\s*\
     list.forEach((s) => { if (s.id && !byId.has(s.id)) byId.set(s.id, s); });
   }
   const all = [...byId.values()];
-  const bookable = all.filter((s) => !INTERNAL.test(String(s.name || '')));
-  console.log(`Zenoti: ${all.length} services, ${bookable.length} guest-bookable\n`);
+  /*
+   * Zenoti's own can_book flag is the difference between a mapping that looks
+   * right and one that works. "Pico Laser", "Hifu", "Botox", "GFC Face" and
+   * "Exosome 5ml" all exist and match perfectly by name — and Zenoti refuses to
+   * book any of them. Mapping onto one produces a failure at the exact moment a
+   * guest is waiting for a confirmation, so they are excluded outright.
+   */
+  const bookable = all.filter((s) => !INTERNAL.test(String(s.name || '')) && s.canBook !== false);
+  const notBookable = all.filter((s) => s.canBook === false).length;
+  console.log(`Zenoti: ${all.length} services · ${notBookable} flagged not-bookable · ${bookable.length} usable\n`);
 
   const ours = await Consultation.find({ isArchived: { $ne: true }, inCatalog: true })
     .select('id name code category subCategory zenotiServiceId').lean();
@@ -87,7 +95,16 @@ const INTERNAL = /\b(staff|internal|test|demo|trial|training)\b|[-/]\s*dr\.?\s*\
   const plan = []; const stuck = [];
 
   for (const c of ours) {
-    if (c.zenotiServiceId) { plan.push({ c, z: null, how: 'already mapped', alts: [] }); continue; }
+    if (c.zenotiServiceId) {
+      // Keep an existing mapping only if it still points at something Zenoti
+      // will actually book; otherwise fall through and find a replacement.
+      const cur = byId.get(String(c.zenotiServiceId).toLowerCase());
+      if (cur && cur.canBook !== false && !INTERNAL.test(String(cur.name || ''))) {
+        plan.push({ c, z: null, how: 'already mapped', alts: [] });
+        continue;
+      }
+      console.log(`  ! remapping "${c.name}" — current target ${cur ? `"${cur.name}" is not bookable` : 'no longer exists'}`);
+    }
 
     const viaCode = c.code ? byCode.get(norm(c.code)) : null;
     if (viaCode) { plan.push({ c, z: viaCode, how: 'code', alts: [] }); continue; }
@@ -169,6 +186,7 @@ const INTERNAL = /\b(staff|internal|test|demo|trial|training)\b|[-/]\s*dr\.?\s*\
         $set: {
           zenotiServiceId: String(z.id).toLowerCase(),
           zenotiServiceName: z.name,
+          zenotiCanBook: z.canBook !== false,
           zenotiServiceAuto: !!auto,
           zenotiServiceAlternatives: alts,
           ...(z.code && !c.code ? { code: z.code } : {}),

@@ -106,7 +106,8 @@ exports.createBooking = async (req, res) => {
      * — resolveServiceId falls back to Zenoti's generic Consultation row, so
      * they always reach the diary.
      */
-    if (!isConsultationEntry(consultation) && !consultation.zenotiServiceId) {
+    if (!isConsultationEntry(consultation)
+      && (!consultation.zenotiServiceId || consultation.zenotiCanBook === false)) {
       return res.status(409).json({
         success: false,
         code: 'SERVICE_NOT_BOOKABLE_ONLINE',
