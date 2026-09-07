@@ -49,17 +49,21 @@ function parseCsv(text) {
 }
 
 /** Rows → objects keyed by the header row, with the original line numbers. */
-function parseCsvToObjects(text) {
+function parseCsvToObjects(text, expect = []) {
   const rows = parseCsv(text);
   if (!rows.length) return { headers: [], records: [] };
-  const headers = rows[0].map((h) => String(h || '').trim());
-  const records = rows.slice(1).map((cells, index) => {
-    const obj = {};
-    headers.forEach((h, i) => { obj[h] = cells[i] === undefined ? '' : String(cells[i]).trim(); });
-    // +2: one for the header row, one because humans count from 1. This is the
-    // number the error report has to quote for it to be usable in Excel.
-    return { row: index + 2, data: obj };
-  });
+  // A CSV saved out of Zenoti carries the same title rows as the XLSX.
+  const head = findHeaderRow(rows, expect);
+  const headers = (rows[head] || []).map((h) => String(h || '').trim());
+  const records = rows.slice(head + 1)
+    .filter((cells) => cells.some((c) => String(c ?? '').trim() !== ''))
+    .map((cells, index) => {
+      const obj = {};
+      headers.forEach((h, i) => { obj[h] = cells[i] === undefined ? '' : String(cells[i]).trim(); });
+      // +2: one for the header row, one because humans count from 1. This is the
+      // number the error report has to quote for it to be usable in Excel.
+      return { row: head + index + 2, data: obj };
+    });
   return { headers, records };
 }
 
@@ -85,11 +89,37 @@ function toCsv(columns, rows) {
  * it still imports CSV rather than failing to boot. The caller gets a clear
  * message instead of a stack trace.
  */
-function readWorkbook(file) {
+/**
+ * Find the real header row in a grid.
+ *
+ * A file exported straight out of Zenoti opens with title rows —
+ *   Curispro Health Care Services PVT LTD
+ *   Center : Jubilee Hills
+ *   Services
+ *   ServiceCode | ServiceName | Category | ...
+ * — so taking row 0 as the header reads the company name as a column and every
+ * real row as data with no headers. The clinic should not have to hand-edit an
+ * export before uploading it, so the header is located instead of assumed:
+ * the first row (within the first 25) that contains at least two of the
+ * columns we expect. Falls back to row 0 when nothing matches, which is the
+ * ordinary case for our own template.
+ */
+function findHeaderRow(grid, expect = []) {
+  if (!expect.length) return 0;
+  const want = new Set(expect.map((c) => String(c).trim().toLowerCase()));
+  const limit = Math.min(grid.length, 25);
+  for (let i = 0; i < limit; i += 1) {
+    const cells = (grid[i] || []).map((c) => String(c ?? '').trim().toLowerCase());
+    if (cells.filter((c) => c && want.has(c)).length >= 2) return i;
+  }
+  return 0;
+}
+
+function readWorkbook(file, expect = []) {
   const name = String(file?.originalname || '').toLowerCase();
   const isExcel = name.endsWith('.xlsx') || name.endsWith('.xls');
 
-  if (!isExcel) return parseCsvToObjects(file.buffer.toString('utf8'));
+  if (!isExcel) return parseCsvToObjects(file.buffer.toString('utf8'), expect);
 
   let xlsx;
   try {
@@ -105,15 +135,18 @@ function readWorkbook(file) {
   // header:1 keeps the raw grid, so the same header/row logic serves both formats.
   const grid = xlsx.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
   if (!grid.length) return { headers: [], records: [] };
-  const headers = grid[0].map((h) => String(h || '').trim());
-  const records = grid.slice(1)
+  const head = findHeaderRow(grid, expect);
+  const headers = (grid[head] || []).map((h) => String(h || '').trim());
+  const records = grid.slice(head + 1)
     .filter((cells) => cells.some((c) => String(c ?? '').trim() !== ''))
     .map((cells, index) => {
       const obj = {};
       headers.forEach((h, i) => { obj[h] = cells[i] === undefined ? '' : String(cells[i]).trim(); });
-      return { row: index + 2, data: obj };
+      // The spreadsheet row number the error report quotes, so a person can
+      // find the bad row in Excel.
+      return { row: head + index + 2, data: obj };
     });
   return { headers, records };
 }
 
-module.exports = { parseCsv, parseCsvToObjects, toCsv, csvCell, readWorkbook };
+module.exports = { parseCsv, parseCsvToObjects, toCsv, csvCell, readWorkbook, findHeaderRow };

@@ -12,6 +12,7 @@ const {
   updateConsultation,
   deleteConsultation,
   toggleConsultationStatus,
+  setCatalogMembership,
   getConsultationStats
 } = require('../controllers/consultationController');
 const { protectAdmin, identifyAdmin, requireRole, requirePermission } = require('../middleware/auth');
@@ -31,6 +32,9 @@ router.post('/', protectAdmin, MANAGE, createConsultation);
 router.patch('/reorder', protectAdmin, MANAGE, require('../controllers/consultationController').reorderConsultations);
 router.put('/:id', protectAdmin, MANAGE, updateConsultation);
 router.delete('/:id', protectAdmin, MANAGE, deleteConsultation);
+// Publish/unpublish to the app catalogue. Declared before the :id routes so
+// "catalog" is never read as a service id.
+router.patch('/catalog', protectAdmin, MANAGE, setCatalogMembership);
 router.patch('/:id/toggle', protectAdmin, MANAGE, toggleConsultationStatus);
 
 // Dynamic route (must be last)

@@ -143,8 +143,49 @@ const consultationSchema = new mongoose.Schema({
     default: true,
     index: true
   },
+
+  /* ------------------------- Service master vs catalogue -------------------
+   * Two different questions, deliberately two fields:
+   *
+   *   isActive   — is this row live at all (the clinic still performs it)?
+   *   inCatalog  — should a customer SEE and buy it in the app?
+   *
+   * The master list is everything the clinic bills for: ~775 rows including
+   * staff lines, per-doctor variants and one-off billing entries. None of that
+   * belongs on a customer's phone. The catalogue is the curated subset the desk
+   * has deliberately published, and the app reads ONLY that.
+   * ------------------------------------------------------------------------ */
+  inCatalog: {
+    type: Boolean,
+    default: false,
+    index: true,
+  },
+  /** Who published it to the catalogue, and when — this is a storefront change. */
+  catalogAddedAt: { type: Date, default: null },
+  catalogAddedBy: { type: String, default: null, trim: true },
+
+  /**
+   * Superseded rows kept for history.
+   *
+   * 36,000+ bookings and 2,400 package sales point at services by id. Deleting
+   * a replaced service would strand every one of them, so a re-import retires
+   * the old row instead: archived rows never appear in the panel's service list
+   * or the app, but every historical reference still resolves.
+   */
+  isArchived: { type: Boolean, default: false, index: true },
+  archivedAt: { type: Date, default: null },
+  archivedReason: { type: String, default: null, trim: true },
+
   /** The Zenoti service this treatment/consultation is booked as (chosen in the panel). */
   zenotiServiceId: { type: String, default: null, trim: true, lowercase: true },
+
+  /* ---- Zenoti service-master columns (its own export format) ---- */
+  /** Second level of the clinic's taxonomy, e.g. Category "Laser" → Sub "Spa". */
+  subCategory: { type: String, default: null, trim: true, index: true },
+  /** Zenoti's BusinessUnitName column. */
+  businessUnit: { type: String, default: null, trim: true },
+  /** Zenoti's ServiceType column ("None", "Addon"…). */
+  serviceType: { type: String, default: null, trim: true },
 
   /* ---- Service master attributes (mirroring Zenoti's service record) ---- */
   /** Clinic-facing service code ("4DCLF"), from Zenoti or the panel. Not unique: Zenoti's codes repeat. */

@@ -35,6 +35,15 @@ const bool = (v, fallback = null) => {
   return fallback;
 };
 
+/**
+ * Categories arrive from Zenoti in whatever case the person typing used —
+ * "body countouring ", "Medical Treatment", "SKIN". Normalising on the way in
+ * is what stops the same category appearing three times in the panel's filter.
+ */
+const titleCase = (v) => String(v || '').trim().replace(/\s+/g, ' ')
+  .toLowerCase()
+  .replace(/\b[a-z]/g, (c) => c.toUpperCase());
+
 const num = (v, fallback = null) => {
   const n = Number(String(v ?? '').replace(/[₹,\s]/g, ''));
   return Number.isFinite(n) ? n : fallback;
@@ -48,68 +57,119 @@ const num = (v, fallback = null) => {
  * explicitly rather than guessing from whatever columns happen to be present.
  */
 const ENTITIES = {
+  /**
+   * Services — Zenoti's own service-master columns, verbatim.
+   *
+   * The clinic exports its master data from Zenoti as
+   *   ServiceCode | ServiceName | Category | Sub Category | BusinessUnitName | ServiceType | ServiceLength
+   * so that is exactly what this importer reads and writes. A file the clinic
+   * pulls from Zenoti imports here untouched, and our export opens in Zenoti's
+   * own template. Price is NOT in that export (Zenoti keeps it per centre), so
+   * an import never overwrites a price someone set here.
+   *
+   * `AppCatalog` and `Price` are ours, appended after Zenoti's columns: the
+   * export round-trips what the desk has published without a second file.
+   */
   services: {
     model: () => Consultation,
     label: 'services',
     columns: [
-      'zenotiServiceId', 'code', 'name', 'type', 'category', 'durationMinutes',
-      'price', 'showPriceInApp', 'isActive', 'appVisible', 'displayOrder', 'summary',
+      'ServiceCode', 'ServiceName', 'Category', 'Sub Category',
+      'BusinessUnitName', 'ServiceType', 'ServiceLength',
+      'AppCatalog', 'Price',
     ],
-    /** Slug from the name; the clinic's own service code is not unique. */
-    keyOf: (row) => slugify(row.name),
+    required: ['ServiceName'],
+    taxonomy: ['category', 'subCategory'],
+    taxonomyColumns: ['Category', 'Sub Category'],
+    /**
+     * Two rows are the same service when the NAME matches, case and spacing
+     * ignored. Zenoti's ServiceCode is not usable as a key — in the clinic's
+     * own export it is variously the service name, a bare number ("1", "189")
+     * or blank, and it repeats.
+     */
+    keyOf: (row) => slugify(row.ServiceName),
     async find(key, row) {
-      if (row.zenotiServiceId) {
-        const hit = await Consultation.findOne({ zenotiServiceId: String(row.zenotiServiceId).toLowerCase() });
+      const code = String(row.ServiceCode || '').trim();
+      if (code && !/^\d+(\.\d+)?$/.test(code)) {
+        const hit = await Consultation.findOne({ code, isArchived: { $ne: true } });
         if (hit) return hit;
       }
-      return Consultation.findOne({ slug: key });
+      return Consultation.findOne({ slug: key, isArchived: { $ne: true } });
     },
     validate(row) {
       const errors = [];
-      if (!String(row.name || '').trim()) errors.push('name is required');
-      if (!String(row.category || '').trim()) errors.push('category is required');
-      if (row.price !== '' && num(row.price) === null) errors.push(`price "${row.price}" is not a number`);
-      if (row.durationMinutes !== '' && num(row.durationMinutes) === null) errors.push(`durationMinutes "${row.durationMinutes}" is not a number`);
+      if (!String(row.ServiceName || '').trim()) errors.push('ServiceName is required');
+      if (!String(row.Category || '').trim()) errors.push('Category is required');
+      if (row.ServiceLength !== '' && num(row.ServiceLength) === null) {
+        errors.push(`ServiceLength "${row.ServiceLength}" is not a number`);
+      }
+      if (row.Price !== '' && row.Price !== undefined && num(row.Price) === null) {
+        errors.push(`Price "${row.Price}" is not a number`);
+      }
       return errors;
     },
-    apply(doc, row, { creating }) {
+    /**
+     * `id` and `slug` are both required and unique, and neither is in Zenoti's
+     * export — they are derived from the name. Uniqueness is checked against
+     * archived rows too, because an archived service still holds its slug.
+     */
+    async prepare(row) {
+      const base = slugify(row.ServiceName) || 'service';
+      let slug = base;
+      for (let n = 2; await Consultation.exists({ slug }); n += 1) slug = `${base}-${n}`;
+      let id = slug;
+      for (let n = 2; await Consultation.exists({ id }); n += 1) id = `${slug}-${n}`;
+      return { slug, id };
+    },
+    apply(doc, row, { creating, prepared }) {
+      const name = String(row.ServiceName).trim();
       if (creating) {
-        doc.slug = slugify(row.name);
-        // Required by the schema and rarely in a spreadsheet; the panel fills
-        // the real copy in afterwards.
-        doc.summary = row.summary || row.name;
-        doc.about = row.summary || row.name;
-        doc.price = num(row.price, 0);
+        doc.slug = prepared?.slug || slugify(name);
+        doc.id = prepared?.id || doc.slug;
+        // Required by the schema and never in Zenoti's export; the panel fills
+        // the customer-facing copy in afterwards.
+        doc.summary = name;
+        doc.about = name;
+        doc.price = 0;
+        // A newly imported service is master data, not a storefront item. It
+        // reaches the app only when someone publishes it to the catalogue.
+        doc.inCatalog = false;
+        doc.isActive = true;
       }
-      doc.name = row.name;
-      if (row.type !== '') doc.type = row.type;
-      doc.category = row.category;
-      if (row.price !== '') doc.price = num(row.price, doc.price);
-      if (row.durationMinutes !== '') doc.duration_minutes = num(row.durationMinutes, null);
-      if (row.summary !== '') doc.summary = row.summary;
-      if (row.zenotiServiceId !== '') doc.zenotiServiceId = String(row.zenotiServiceId).toLowerCase();
-      const show = bool(row.showPriceInApp); if (show !== null) doc.showPriceInApp = show;
-      // "appVisible" and "isActive" are the same switch on this model; either
-      // column may be used, and isActive wins when both are given.
-      const visible = bool(row.appVisible); if (visible !== null) doc.isActive = visible;
-      const active = bool(row.isActive); if (active !== null) doc.isActive = active;
-      const order = num(row.displayOrder); if (order !== null) doc.displayOrder = order;
+      doc.name = name;
+      doc.category = titleCase(row.Category);
+      if (row['Sub Category'] !== '') doc.subCategory = titleCase(row['Sub Category']);
+      if (row.BusinessUnitName !== '') doc.businessUnit = String(row.BusinessUnitName).trim();
+      if (row.ServiceType !== '') doc.serviceType = String(row.ServiceType).trim();
+      // Zenoti writes a blank code as the service name; that is not a code.
+      const code = String(row.ServiceCode || '').trim();
+      if (code && code.toLowerCase() !== name.toLowerCase()) doc.code = code;
+      const mins = num(row.ServiceLength);
+      if (mins !== null && mins > 0) doc.duration_minutes = Math.round(mins);
+      // Our own columns, only when present — a plain Zenoti file leaves both alone.
+      const cat = bool(row.AppCatalog);
+      if (cat !== null && cat !== doc.inCatalog) {
+        doc.inCatalog = cat;
+        doc.catalogAddedAt = cat ? new Date() : null;
+      }
+      const price = num(row.Price);
+      if (price !== null) doc.price = price;
+      doc.isArchived = false;
       return doc;
     },
     exportRow: (d) => ({
-      zenotiServiceId: d.zenotiServiceId || '',
-      code: d.slug || '',
-      name: d.name || '',
-      type: d.type || '',
-      category: d.category || '',
-      durationMinutes: d.duration_minutes ?? '',
-      price: d.price ?? '',
-      showPriceInApp: d.showPriceInApp === false ? 'no' : 'yes',
-      isActive: d.isActive === false ? 'no' : 'yes',
-      appVisible: d.isActive === false ? 'no' : 'yes',
-      displayOrder: d.displayOrder ?? 0,
-      summary: d.summary || '',
+      ServiceCode: d.code || '',
+      ServiceName: d.name || '',
+      Category: d.category || '',
+      'Sub Category': d.subCategory || '',
+      BusinessUnitName: d.businessUnit || 'Default',
+      ServiceType: d.serviceType || 'None',
+      ServiceLength: d.duration_minutes ?? '',
+      AppCatalog: d.inCatalog ? 'yes' : 'no',
+      Price: d.price ?? '',
     }),
+    /** Archived rows are history; they must not come back out of an export. */
+    exportFilter: { isArchived: { $ne: true } },
   },
 
   categories: {
@@ -251,8 +311,10 @@ function entityOf(req, res) {
  * Shared by preview and commit so the two can never disagree on what a row means.
  */
 async function analyse(entity, file) {
-  const { headers, records } = readWorkbook(file);
-  const missing = ['name'].filter((c) => !headers.includes(c));
+  // The entity's own columns are handed to the parser so it can find the header
+  // row inside a file that opens with Zenoti's title rows.
+  const { headers, records } = readWorkbook(file, entity.columns);
+  const missing = (entity.required || ['name']).filter((c) => !headers.includes(c));
   if (missing.length) {
     const err = new Error(`The file is missing required column(s): ${missing.join(', ')}. Download the template to see the expected headers.`);
     err.status = 400;
@@ -294,7 +356,56 @@ async function analyse(entity, file) {
     creates: rows.filter((r) => r.action === 'create').length,
     updates: rows.filter((r) => r.action === 'update').length,
     errors: rows.filter((r) => r.action === 'error').length,
+    taxonomy: await taxonomyReport(entity, rows),
     rows,
+  };
+}
+
+/**
+ * Categories and sub-categories the file introduces, and the near-duplicates.
+ *
+ * Zenoti's own data has "body countouring ", "Body Countouring" and
+ * "Medical Treatment" / "Medical Treatments" side by side. Importing those
+ * verbatim gives the panel three filters for one category, so the preview
+ * names them before anyone commits: what is new, and what looks like a
+ * spelling variant of something already on the books.
+ */
+async function taxonomyReport(entity, rows) {
+  if (!entity.taxonomy) return null;
+  const Model = entity.model();
+  const [catField, subField] = entity.taxonomy;
+
+  const level = async (field, pick) => {
+    const incoming = new Map();
+    rows.forEach((r) => {
+      const v = String(pick(r.data) || '').trim();
+      if (!v) return;
+      const k = v.toLowerCase().replace(/\s+/g, ' ');
+      incoming.set(k, { value: v, rows: (incoming.get(k)?.rows || 0) + 1 });
+    });
+    const known = (await Model.distinct(field, { isArchived: { $ne: true } })).filter(Boolean);
+    const knownKeys = new Map(known.map((k) => [String(k).toLowerCase().replace(/\s+/g, ' '), k]));
+    // "Medical Treatment" vs "Medical Treatments" — same word stem, different row.
+    const stem = (k) => k.replace(/[^a-z0-9]/g, '').replace(/s$/, '');
+    const knownStems = new Map(known.map((k) => [stem(String(k).toLowerCase()), k]));
+
+    const created = []; const matched = []; const nearDuplicates = [];
+    for (const [k, info] of incoming) {
+      if (knownKeys.has(k)) { matched.push({ value: info.value, rows: info.rows }); continue; }
+      const near = knownStems.get(stem(k));
+      if (near) nearDuplicates.push({ value: info.value, rows: info.rows, existing: near });
+      else created.push({ value: info.value, rows: info.rows });
+    }
+    return {
+      new: created.sort((a, b) => b.rows - a.rows),
+      existing: matched.length,
+      nearDuplicates: nearDuplicates.sort((a, b) => b.rows - a.rows),
+    };
+  };
+
+  return {
+    categories: await level(catField, (d) => d[entity.taxonomyColumns[0]]),
+    subCategories: subField ? await level(subField, (d) => d[entity.taxonomyColumns[1]]) : null,
   };
 }
 
@@ -337,19 +448,22 @@ exports.commit = async (req, res) => {
     let updated = 0;
 
     for (const r of analysis.rows) {
-      if (r.action === 'error') { failed.push({ row: r.row, name: r.data.name || '', errors: r.errors }); continue; }
+      if (r.action === 'error') { failed.push({ row: r.row, name: r.data.name || r.data.ServiceName || '', errors: r.errors }); continue; }
       if (r.action === 'create' && mode === 'update') continue;
       if (r.action === 'update' && mode === 'create') continue;
 
       try {
         const creating = r.action === 'create';
         const doc = creating ? new Model() : await Model.findById(r.existingId);
-        if (!doc) { failed.push({ row: r.row, name: r.data.name || '', errors: ['record disappeared while importing'] }); continue; }
-        entity.apply(doc, r.data, { creating });
+        if (!doc) { failed.push({ row: r.row, name: r.data.name || r.data.ServiceName || '', errors: ['record disappeared while importing'] }); continue; }
+        // Identifiers that must be unique are resolved against the database
+        // immediately before the write, not from the preview.
+        const prepared = creating && entity.prepare ? await entity.prepare(r.data) : null;
+        entity.apply(doc, r.data, { creating, prepared });
         await doc.save();
         if (creating) created += 1; else updated += 1;
       } catch (err) {
-        failed.push({ row: r.row, name: r.data.name || '', errors: [err.message] });
+        failed.push({ row: r.row, name: r.data.name || r.data.ServiceName || '', errors: [err.message] });
       }
     }
 
@@ -387,7 +501,7 @@ exports.exportEntity = async (req, res) => {
   const entity = entityOf(req, res);
   if (!entity) return undefined;
   try {
-    const docs = await entity.model().find({}).lean();
+    const docs = await entity.model().find(entity.exportFilter || {}).lean();
     const csv = toCsv(entity.columns, docs.map(entity.exportRow));
 
     await AdminAuditLog.logAction({

@@ -1,4 +1,17 @@
 const Consultation = require('../models/Consultation');
+
+/**
+ * What a customer is allowed to see.
+ *
+ * The service master holds everything the clinic bills for — ~800 rows,
+ * including staff lines, per-doctor variants and one-off billing entries. The
+ * app must show only what the desk has deliberately published to the
+ * catalogue, and never an archived row (which exists purely so historical
+ * bookings still resolve to a named treatment).
+ */
+const APP_VISIBLE = { isActive: true, inCatalog: true, isArchived: { $ne: true } };
+/** Everything the panel lists: live master data, archived rows excluded. */
+const NOT_ARCHIVED = { isArchived: { $ne: true } };
 const { clinicDateKey, clinicDayStart } = require('../utils/bookingTime');
 const Booking = require('../models/Booking');
 const Category = require('../models/Category');
@@ -241,6 +254,60 @@ exports.deleteConsultation = async (req, res) => {
   }
 };
 
+/**
+ * Publish a service to the app catalogue, or take it back off.
+ *
+ * Separate from the active toggle on purpose: "the clinic still performs this"
+ * and "a customer can see and buy this" are different decisions, and the second
+ * is a storefront change worth recording. Bulk-capable, because publishing a
+ * category is otherwise 40 clicks.
+ *
+ * @route  PATCH /api/consultations/catalog
+ * @access Private (Admin only)
+ */
+exports.setCatalogMembership = async (req, res) => {
+  try {
+    const { ids, inCatalog } = req.body || {};
+    const list = Array.isArray(ids) ? ids.filter(Boolean) : [];
+    if (!list.length) {
+      return res.status(400).json({ success: false, message: 'Choose at least one service.' });
+    }
+    if (typeof inCatalog !== 'boolean') {
+      return res.status(400).json({ success: false, message: 'Say whether these go in the catalogue or come out of it.' });
+    }
+
+    const objectIds = list.filter((v) => mongoose.Types.ObjectId.isValid(v));
+    const match = { $or: [{ _id: { $in: objectIds } }, { id: { $in: list } }, { slug: { $in: list } }] };
+
+    // An archived row is history; it must never reappear in the app.
+    const targets = await Consultation.find({ ...match, isArchived: { $ne: true } }).select('_id name category');
+    if (!targets.length) {
+      return res.status(404).json({ success: false, message: 'None of those services were found.' });
+    }
+
+    const who = req.admin?.name || req.admin?.email || 'Admin';
+    await Consultation.updateMany(
+      { _id: { $in: targets.map((t) => t._id) } },
+      inCatalog
+        ? { $set: { inCatalog: true, catalogAddedAt: new Date(), catalogAddedBy: who, isActive: true } }
+        : { $set: { inCatalog: false, catalogAddedAt: null, catalogAddedBy: null } },
+    );
+
+    await Promise.all([...new Set(targets.map((t) => t.category))].map((c) => updateCategoryCount(c)));
+
+    return res.json({
+      success: true,
+      message: inCatalog
+        ? `${targets.length} service${targets.length === 1 ? '' : 's'} published to the app`
+        : `${targets.length} service${targets.length === 1 ? '' : 's'} removed from the app`,
+      data: { count: targets.length },
+    });
+  } catch (error) {
+    console.error('Set catalog membership error:', error);
+    return res.status(500).json({ success: false, message: 'Could not update the catalogue' });
+  }
+};
+
 // @desc    Toggle consultation active status
 // @route   PATCH /api/consultations/:id/toggle
 // @access  Private (Admin only)
@@ -285,8 +352,8 @@ exports.toggleConsultationStatus = async (req, res) => {
 exports.getConsultationStats = async (req, res) => {
   try {
     const totalServices = await Consultation.countDocuments();
-    const activeServices = await Consultation.countDocuments({ isActive: true });
-    const inactiveServices = await Consultation.countDocuments({ isActive: false });
+    const activeServices = await Consultation.countDocuments({ isActive: true, ...NOT_ARCHIVED });
+    const inactiveServices = await Consultation.countDocuments({ isActive: false, ...NOT_ARCHIVED });
     
     // Get average rating (only from consultations with ratings)
     const ratingAgg = await Consultation.aggregate([
@@ -305,7 +372,7 @@ exports.getConsultationStats = async (req, res) => {
     const cancelledBookings = await Booking.countDocuments({ status: 'Cancelled' });
 
     // Get popular services count (services marked as popular)
-    const featuredServices = await Consultation.countDocuments({ isPopular: true, isActive: true });
+    const featuredServices = await Consultation.countDocuments({ isPopular: true, ...APP_VISIBLE });
 
     // Get services added this month
     // The clinic's month, not the server's timezone.
@@ -373,9 +440,16 @@ exports.getAllConsultations = async (req, res) => {
 
     // Build query. Staff can ask for the inactive ones too.
     const wantsInactive = req.admin && (req.query.includeInactive === 'true' || req.query.isActive === 'false' || req.query.isActive === 'all');
-    let query = wantsInactive
-      ? (req.query.isActive === 'false' ? { isActive: false } : {})
-      : { isActive: true };
+    let query = req.admin
+      ? (wantsInactive
+        ? (req.query.isActive === 'false' ? { ...NOT_ARCHIVED, isActive: false } : { ...NOT_ARCHIVED })
+        : { ...NOT_ARCHIVED, isActive: true })
+      : { ...APP_VISIBLE };
+    // Staff can ask for just the published subset, or just the unpublished master.
+    if (req.admin && req.query.inCatalog === 'true') query.inCatalog = true;
+    if (req.admin && req.query.inCatalog === 'false') query.inCatalog = { $ne: true };
+    if (req.admin && req.query.archived === 'true') { delete query.isArchived; query.isArchived = true; }
+    if (req.query.subCategory && req.query.subCategory !== 'All') query.subCategory = req.query.subCategory;
 
     // Level 1 of the taxonomy — Skin, Hair, Skin & Hair, Wellness, …
     if (type && type !== 'All') {
@@ -475,7 +549,7 @@ exports.getConsultation = async (req, res) => {
 
     // Build query - check if identifier is a valid MongoDB ObjectId.
     // Staff can open a deactivated service; the app cannot.
-    const query = req.admin ? {} : { isActive: true };
+    const query = req.admin ? {} : { ...APP_VISIBLE };
 
     // Check if it's a valid MongoDB ObjectId (24 hex characters)
     const isValidObjectId = /^[0-9a-fA-F]{24}$/.test(identifier);
@@ -524,10 +598,7 @@ exports.getConsultationsByCategory = async (req, res) => {
     const { category } = req.params;
     const { limit = 10 } = req.query;
 
-    const consultations = await Consultation.find({
-      category,
-      isActive: true
-    })
+    const consultations = await Consultation.find({ category, ...APP_VISIBLE })
       .sort({ rating: -1, reviews: -1 })
       .limit(Number(limit))
       .select('-__v');
@@ -553,7 +624,7 @@ exports.getFeaturedConsultations = async (req, res) => {
   try {
     const { limit = 6 } = req.query;
 
-    const consultations = await Consultation.find({ isActive: true })
+    const consultations = await Consultation.find({ ...APP_VISIBLE })
       .sort({ rating: -1, reviews: -1 })
       .limit(Number(limit))
       .select('-__v');
@@ -662,7 +733,7 @@ exports.searchConsultations = async (req, res) => {
 
     const consultations = await Consultation.find({
       $text: { $search: query },
-      isActive: true
+      ...(req.admin ? NOT_ARCHIVED : APP_VISIBLE),
     })
       .sort({ score: { $meta: 'textScore' } })
       .limit(Number(limit))
