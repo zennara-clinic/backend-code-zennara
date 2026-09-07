@@ -89,7 +89,11 @@ function localStatus(appointment) {
   if (status === '-2' || status === 'no show') return 'No Show';
   if (status === '-1' || status === '21' || /cancel|void/.test(status)) return 'Cancelled';
   if (appointment.isCompleted || progress === 2 || status === '1' || status === 'closed' || status === 'completed') return 'Completed';
-  if (appointment.isStarted || progress === 1 || status === '2' || status === 'checkin') return 'In Progress';
+  // Zenoti separates "In service" (4, progress 1) from "Checked in" (2): the
+  // guest is here versus the guest is in the room. We mirror both, so the day
+  // book and the Zenoti mobile app agree on who is actually being treated.
+  if (appointment.isStarted || progress === 1 || status === '4' || status === 'in service') return 'In Progress';
+  if (status === '2' || status === 'checkin' || status === 'checked in') return 'Checked In';
   // A row in the center appointment book is a real reserved appointment even
   // when Zenoti uses its default/new status (0).
   return 'Confirmed';
@@ -109,7 +113,7 @@ function localStatus(appointment) {
  *    read it, a state the desk advanced locally is kept.
  *  - As soon as Zenoti moves (checked in, closed, cancelled…), Zenoti wins.
  */
-const STATUS_RANK = { 'Awaiting Confirmation': 0, Confirmed: 1, Rescheduled: 1, 'In Progress': 2, Completed: 3 };
+const STATUS_RANK = { 'Awaiting Confirmation': 0, Confirmed: 1, Rescheduled: 1, 'Checked In': 2, 'In Progress': 3, Completed: 4 };
 const ZENOTI_TERMINAL = new Set(['Cancelled', 'No Show', 'Completed']);
 function mergeStatus(booking, appointment, zenotiStatus, isNew) {
   if (isNew || !booking.status) return zenotiStatus;
@@ -141,7 +145,7 @@ async function retireVanishedAppointments({ centerId, from, to, seenIds, runStar
   const filter = {
     source: 'zenoti',
     'zenotiSource.centerId': centerId,
-    status: { $in: ['Awaiting Confirmation', 'Confirmed', 'Rescheduled', 'In Progress'] },
+    status: { $in: ['Awaiting Confirmation', 'Confirmed', 'Rescheduled', 'Checked In', 'In Progress'] },
     preferredDate: { $gte: dayStart, $lte: dayEnd },
     zenotiAppointmentId: { $nin: [...seenIds] },
     zenotiLastInboundAt: { $lt: runStartedAt },

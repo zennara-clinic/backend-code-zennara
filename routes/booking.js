@@ -8,8 +8,6 @@ const {
   getBookingByReference,
   cancelBooking,
   rescheduleBooking,
-  checkInBooking,
-  checkOutBooking,
   rateBooking,
   getAvailableTimeSlots,
   getAllBookingsAdmin,
@@ -21,9 +19,6 @@ const {
   cancelBookingAdmin,
   createBookingAdmin,
   rescheduleBookingAdmin,
-  getVisitCode,
-  verifyCheckInCode,
-  verifyCheckOutCode,
   rejectReschedule
 } = require('../controllers/bookingController');
 const { protect, protectAdmin, auditLog, requirePermission } = require('../middleware/auth');
@@ -47,15 +42,30 @@ router.get('/admin/export', protectAdmin, VIEW, bookingController.exportBookings
 router.post('/admin', protectAdmin, auditLog('BOOKING_CREATED', 'BOOKING'), createBookingAdmin);
 router.get('/admin/:id', protectAdmin, VIEW, getBookingByIdAdmin);
 router.put('/admin/:id/confirm', protectAdmin, auditLog('BOOKING_CONFIRMED', 'BOOKING'), confirmBooking);
+/*
+ * The desk's appointment lifecycle, in Zenoti's own shape: check in, undo
+ * check-in, start, undo start, complete, reopen, no show, cancel and undos.
+ * One endpoint takes the action name; the two legacy paths below stay so an
+ * older panel build keeps working.
+ */
+router.get('/admin/:id/lifecycle', protectAdmin, VIEW, bookingController.getBookingLifecycleAdmin);
+router.post('/admin/:id/lifecycle', protectAdmin, requirePermission('bookings.manage'), auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.bookingLifecycleAdmin);
 router.put('/admin/:id/checkin', protectAdmin, auditLog('BOOKING_CHECKED_IN', 'BOOKING'), checkInBookingAdmin);
 router.put('/admin/:id/checkout', protectAdmin, auditLog('BOOKING_CHECKED_OUT', 'BOOKING'), checkOutBookingAdmin);
-// OTP-gated check-in/out: staff enter the code the guest reads to them.
-router.post('/admin/:id/visit-code', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.sendVisitCodeAdmin);
-router.get('/admin/:id/visit-code', protectAdmin, requirePermission('bookings.manage'), auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.revealVisitCodeAdmin);
 router.put('/admin/:id/dermatologist', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.setDermatologistAdmin);
 router.put('/admin/:id/therapist', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.setTherapistAdmin);
-router.put('/admin/:id/verify-checkin', protectAdmin, auditLog('BOOKING_CHECKED_IN', 'BOOKING'), verifyCheckInCode);
-router.put('/admin/:id/verify-checkout', protectAdmin, auditLog('BOOKING_CHECKED_OUT', 'BOOKING'), verifyCheckOutCode);
+// Visit codes were retired on 2026-09-07 — Zenoti has no such concept and the
+// desk now moves the appointment directly. Answer 410 rather than 404 so an
+// un-updated panel tab tells its user why the button vanished.
+const codesRetired = (_req, res) => res.status(410).json({
+  success: false,
+  code: 'VISIT_CODES_RETIRED',
+  message: 'Visit codes are gone. Use Check in / Start session / Complete session on the appointment.',
+});
+router.post('/admin/:id/visit-code', protectAdmin, codesRetired);
+router.get('/admin/:id/visit-code', protectAdmin, codesRetired);
+router.put('/admin/:id/verify-checkin', protectAdmin, codesRetired);
+router.put('/admin/:id/verify-checkout', protectAdmin, codesRetired);
 router.put('/admin/:id/no-show', protectAdmin, auditLog('BOOKING_NO_SHOW', 'BOOKING'), markNoShow);
 router.put('/admin/:id/cancel', protectAdmin, auditLog('BOOKING_CANCELLED', 'BOOKING'), cancelBookingAdmin);
 router.put('/admin/:id/payment', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.updateBookingPaymentAdmin);
@@ -94,17 +104,23 @@ router.post('/', createBooking);
 router.get('/', getUserBookings);
 router.get('/reference/:referenceNumber', getBookingByReference);
 router.get('/:id', getBooking);
-router.get('/:id/visit-code', getVisitCode);
+// Retired with the visit codes (see above): the app shows the live status of
+// the appointment instead of a code to read out.
+router.get('/:id/visit-code', (_req, res) => res.status(410).json({
+  success: false,
+  code: 'VISIT_CODES_RETIRED',
+  message: 'Check-in codes are no longer used — reception checks you in when you arrive.',
+}));
 router.put('/:id/cancel', cancelBooking);
 router.put('/:id/reschedule', rescheduleBooking);
 // Self check-in/out from the app is retired: attendance is recorded at the
-// desk (visit code or manual, audited) or arrives from Zenoti. Left open, a
-// guest could mark any booking — including a clinic one — as attended from
-// anywhere, and the diary merge would then keep that state.
+// desk or arrives from Zenoti. Left open, a guest could mark any booking —
+// including a clinic one — as attended from anywhere, and the diary merge
+// would then keep that state.
 const retired = (_req, res) => res.status(410).json({
   success: false,
   code: 'SELF_CHECKIN_RETIRED',
-  message: 'Check-in and check-out are done at reception with your visit code.',
+  message: 'Reception checks you in when you arrive at the clinic.',
 });
 router.put('/:id/checkin', retired);
 router.put('/:id/checkout', retired);

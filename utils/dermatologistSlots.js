@@ -33,13 +33,7 @@ const { toMinutes, toHHMM } = DermatologistSchedule;
  * pool; Completed keeps it, so a slot finished earlier today is not offered
  * again to somebody else.
  */
-const LIVE_STATUSES = [
-  'Awaiting Confirmation',
-  'Confirmed',
-  'Rescheduled',
-  'In Progress',
-  'Completed',
-];
+const LIVE_STATUSES = require('./bookingStatuses').LIVE;
 
 /** "2026-08-14" for a Date, in local clinic time — never toISOString(). */
 function dateKey(date) {

@@ -9,7 +9,7 @@ async function scopeToOwnDiary(req, query) {
 }
 const { publicEmail, isPlaceholderEmail } = require('../config/zenoti');
 const { buildBookingQuery } = require('../utils/listFilters');
-const visitCodes = require('../utils/visitCodes');
+const lifecycle = require('../services/bookingLifecycleService');
 const Doctor = require('../models/Doctor');
 const Consultation = require('../models/Consultation');
 const User = require('../models/User');
@@ -21,8 +21,9 @@ const NotificationHelper = require('../utils/notificationHelper');
 const whatsappService = require('../services/whatsappService');
 const twilioVoiceService = require('../services/twilioVoiceService');
 const {
-  bookingScheduledAt, clinicDateKey, clinicDayEnd, clinicDayStart, formatClinicDateTime,
+  bookingScheduledAt, clinicDateKey, clinicDayEnd, clinicDayStart, formatClinicDate, formatClinicDateTime,
 } = require('../utils/bookingTime');
+const { UPCOMING: BOOKING_UPCOMING, PAST: BOOKING_PAST } = require('../utils/bookingStatuses');
 const { validateBranchBooking } = require('../utils/branchSchedule');
 const { SESSION_SLOT_MINUTES } = require('../config/scheduling');
 
@@ -261,13 +262,9 @@ exports.getUserBookings = async (req, res) => {
 
     // Filter upcoming or past bookings
     if (upcoming === 'true') {
-      query.status = {
-        $in: ['Awaiting Confirmation', 'Confirmed', 'Rescheduled', 'In Progress']
-      };
+      query.status = { $in: BOOKING_UPCOMING };
     } else if (upcoming === 'false') {
-      query.status = {
-        $in: ['Cancelled', 'No Show', 'Completed']
-      };
+      query.status = { $in: BOOKING_PAST };
     }
 
     // Newest appointment first. `createdAt` was wrong for the patient's own
@@ -572,207 +569,15 @@ exports.rejectReschedule = async (req, res) => {
   }
 };
 
-// @desc    Check-in booking
-// @route   PUT /api/bookings/:id/checkin
-// @access  Private
-exports.checkInBooking = async (req, res) => {
-  try {
-    const booking = await Booking.findOne({
-      _id: req.params.id,
-      userId: req.user._id
-    });
+/*
+ * Self check-in / check-out from the app were removed on 2026-09-07.
+ *
+ * Attendance is a fact the clinic observes, not something a guest can assert
+ * from anywhere with a phone — and it now has to match Zenoti, where only the
+ * desk moves an appointment. The routes answer 410 (see routes/booking.js).
+ */
 
-    if (!booking) {
-      return res.status(404).json({
-        success: false,
-        message: 'Booking not found'
-      });
-    }
-
-    if (!['Confirmed', 'Rescheduled'].includes(booking.status)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Only confirmed bookings can be checked in'
-      });
-    }
-
-    booking.status = 'In Progress';
-    booking.checkInTime = new Date();
-
-    await booking.save();
-
-    // Populate consultation details for email
-    await booking.populate('consultationId', 'name');
-
-    // Create notification for check-in
-    try {
-      await NotificationHelper.bookingCheckedIn({
-        _id: booking._id,
-        patientName: booking.fullName,
-        consultation: { name: booking.consultationId.name },
-        checkInTime: booking.checkInTime
-      });
-      console.log('🔔 Booking check-in notification created');
-    } catch (notifError) {
-      console.error('⚠️ Failed to create notification:', notifError.message);
-    }
-
-    // Send check-in email
-    try {
-      await emailService.sendCheckInSuccessful(
-        booking.email,
-        booking.fullName,
-        {
-          treatment: booking.consultationId.name,
-          time: booking.preferredTimeSlots[0],
-          location: booking.preferredLocation,
-          waitTime: '5-10' // You can make this dynamic based on queue
-        },
-        booking.preferredLocation
-      );
-      console.log('📧 Check-in email sent');
-    } catch (emailError) {
-      console.error('⚠️ Email sending failed:', emailError.message);
-    }
-
-    // Send WhatsApp check-in notification
-    try {
-      if (!(await guestMessaging.shouldSendBookingWhatsApp(booking, 'checkin')).ok) throw Object.assign(new Error('suppressed: Zenoti sends guest messages for this centre'), { suppressed: true });
-      await whatsappService.sendCheckInSuccessful(
-        booking.mobileNumber,
-        {
-          patientName: booking.fullName,
-          treatment: booking.consultationId.name,
-          time: booking.preferredTimeSlots[0],
-          location: booking.preferredLocation,
-          waitTime: '5-10'
-        }
-      );
-      console.log('WhatsApp check-in notification sent');
-    } catch (whatsappError) {
-      console.error('WhatsApp sending failed:', whatsappError.message);
-    }
-
-    res.status(200).json({
-      success: true,
-      message: 'Checked in successfully',
-      data: booking
-    });
-  } catch (error) {
-    console.error('❌ Check-in booking error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to check in'
-    });
-  }
-};
-
-// @desc    Check-out booking (Complete)
-// @route   PUT /api/bookings/:id/checkout
-// @access  Private
-exports.checkOutBooking = async (req, res) => {
-  try {
-    const booking = await Booking.findOne({
-      _id: req.params.id,
-      userId: req.user._id
-    });
-
-    if (!booking) {
-      return res.status(404).json({
-        success: false,
-        message: 'Booking not found'
-      });
-    }
-
-    if (booking.status !== 'In Progress') {
-      return res.status(400).json({
-        success: false,
-        message: 'Only in-progress bookings can be checked out'
-      });
-    }
-
-    booking.status = 'Completed';
-    booking.checkOutTime = new Date();
-    require('../utils/guestStats').touchLastVisit(booking.userId, booking.checkOutTime);
-
-    // Calculate session duration
-    if (booking.checkInTime) {
-      const duration = (booking.checkOutTime - booking.checkInTime) / 1000 / 60; // minutes
-      booking.sessionDuration = Math.round(duration);
-    }
-
-    await booking.save();
-
-    // Populate consultation details for email
-    await booking.populate('consultationId', 'name');
-
-    // Create notification for completion
-    try {
-      await NotificationHelper.bookingCompleted({
-        _id: booking._id,
-        userId: booking.userId,
-        patientName: booking.fullName,
-        consultation: { name: booking.consultationId.name },
-        checkOutTime: booking.checkOutTime,
-        sessionDuration: booking.sessionDuration
-      });
-      console.log('🔔 Booking completion notification created');
-    } catch (notifError) {
-      console.error('⚠️ Failed to create notification:', notifError.message);
-    }
-
-    // Send appointment completed email
-    try {
-      await emailService.sendAppointmentCompleted(
-        booking.email,
-        booking.fullName,
-        {
-          treatment: booking.consultationId.name,
-          date: booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
-          time: booking.preferredTimeSlots[0],
-          location: booking.preferredLocation
-        },
-        booking.preferredLocation
-      );
-      console.log('📧 Appointment completed email sent');
-    } catch (emailError) {
-      console.error('⚠️ Email sending failed:', emailError.message);
-    }
-
-    // Send WhatsApp completion notification
-    try {
-      if (!(await guestMessaging.shouldSendBookingWhatsApp(booking, 'completed')).ok) throw Object.assign(new Error('suppressed: Zenoti sends guest messages for this centre'), { suppressed: true });
-      await whatsappService.sendAppointmentCompleted(
-        booking.mobileNumber,
-        {
-          patientName: booking.fullName,
-          treatment: booking.consultationId.name,
-          date: booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
-          location: booking.preferredLocation,
-          sessionDuration: booking.sessionDuration,
-          bookingId: booking._id
-        }
-      );
-      console.log('WhatsApp completion notification sent');
-    } catch (whatsappError) {
-      console.error('WhatsApp sending failed:', whatsappError.message);
-    }
-
-    res.status(200).json({
-      success: true,
-      message: 'Checked out successfully',
-      data: booking
-    });
-  } catch (error) {
-    console.error('❌ Check-out booking error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to check out'
-    });
-  }
-};
-
-// @desc    Rate booking
+// @desc    Rate booking// @desc    Rate booking
 // @route   PUT /api/bookings/:id/rate
 // @access  Private
 exports.rateBooking = async (req, res) => {
@@ -1001,12 +806,14 @@ exports.confirmBooking = async (req, res) => {
       }
     }
 
+    const from = booking.status;
     booking.status = 'Confirmed';
     booking.confirmedDate = clinicDayStart(confirmedDate);
     booking.confirmedTime = confirmedTime;
     // Keep the diary's primary field in step for calendar-booked consults.
     if (booking.slotTime) booking.slotTime = confirmedTime || booking.slotTime;
 
+    lifecycle.logStatus(booking, { action: 'confirm', from, to: 'Confirmed', admin: req.admin });
     booking.$locals.zenotiStaffAction = true; // a person at the desk decided this
     await booking.save();
 
@@ -1095,24 +902,8 @@ exports.markNoShow = async (req, res) => {
         message: 'Booking not found'
       });
     }
-    if (booking.source === 'zenoti') {
-      return res.status(409).json({
-        success: false,
-        code: 'ZENOTI_OWNED_APPOINTMENT',
-        message: 'This appointment was booked in Zenoti. Mark the no-show in Zenoti — it appears here within 2 minutes.'
-      });
-    }
-
-    if (!['Confirmed', 'Rescheduled', 'Awaiting Confirmation'].includes(booking.status)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Only upcoming bookings can be marked as no-show'
-      });
-    }
-
-    booking.status = 'No Show';
-    booking.$locals.zenotiStaffAction = true; // a person at the desk decided this
-    await booking.save();
+    // Transition, Zenoti push and audit trail all live in one place.
+    await lifecycle.apply(booking, 'no_show', { admin: req.admin, reason: req.body?.reason, via: 'panel' });
 
     // Populate consultation details for email
     await booking.populate('consultationId', 'name');
@@ -1173,6 +964,9 @@ exports.markNoShow = async (req, res) => {
       data: booking
     });
   } catch (error) {
+    if (error.name === 'LifecycleError') {
+      return res.status(error.status).json({ success: false, code: error.code, message: error.message, meta: error.meta });
+    }
     console.error('❌ Mark no-show error:', error);
     res.status(500).json({
       success: false,
@@ -1210,310 +1004,194 @@ exports.getBookingByIdAdmin = async (req, res) => {
   }
 };
 
-// @desc    Check-in booking (Admin)
-// @route   PUT /api/bookings/admin/:id/checkin
-// @access  Private (Admin)
-exports.checkInBookingAdmin = async (req, res) => {
-  try {
-    const booking = await Booking.findById(req.params.id);
-
-    if (!booking) {
-      return res.status(404).json({
-        success: false,
-        message: 'Booking not found'
-      });
-    }
-
-    if (!['Confirmed', 'Rescheduled', 'No Show'].includes(booking.status)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Only confirmed bookings can be checked in'
-      });
-    }
-
-    // Manual (no-code) check-in: used when the guest has no app and no way to
-    // receive the code. Always recorded with who did it and why.
-    const reason = String((req.body && req.body.reason) || '').trim();
-    if (!reason) {
-      return res.status(400).json({ success: false, message: 'A reason is required to check in without a code.' });
-    }
-    await applyDermatologist(booking, req.body);
-    booking.status = 'In Progress';
-    booking.checkInTime = new Date();
-    booking.checkInCode = null;
-    booking.manualCheckIn = { reason, by: req.admin && req.admin._id, byName: req.admin && req.admin.name, at: new Date() };
-
-    // Populate consultation details for email
-    await booking.populate('consultationId', 'name');
-    await visitCodes.deliver(booking, 'checkout', { by: req.admin });
-    booking.$locals.zenotiStaffAction = true; // a person at the desk decided this
-    await booking.save();
-    await notifyManualCheck(booking, 'checkin');
-
-    // Create notification for check-in (admin endpoint)
-    try {
-      await NotificationHelper.bookingCheckedIn({
-        _id: booking._id,
-        patientName: booking.fullName,
-        consultation: { name: booking.consultationId.name },
-        checkInTime: booking.checkInTime
-      });
-      console.log('🔔 Booking check-in notification created');
-    } catch (notifError) {
-      console.error('⚠️ Failed to create notification:', notifError.message);
-    }
-
-    // Send check-in email
-    try {
-      await emailService.sendCheckInSuccessful(
-        booking.email,
-        booking.fullName,
-        {
-          treatment: booking.consultationId.name,
-          time: booking.confirmedTime || booking.preferredTimeSlots[0],
-          location: booking.preferredLocation,
-          waitTime: '5-10'
-        },
-        booking.preferredLocation
-      );
-      console.log('📧 Check-in email sent');
-    } catch (emailError) {
-      console.error('⚠️ Email sending failed:', emailError.message);
-    }
-
-    // Send WhatsApp check-in notification (admin)
-    try {
-      if (!(await guestMessaging.shouldSendBookingWhatsApp(booking, 'checkin')).ok) throw Object.assign(new Error('suppressed: Zenoti sends guest messages for this centre'), { suppressed: true });
-      await whatsappService.sendCheckInSuccessful(
-        booking.mobileNumber,
-        {
-          patientName: booking.fullName,
-          treatment: booking.consultationId.name,
-          time: booking.confirmedTime || booking.preferredTimeSlots[0],
-          location: booking.preferredLocation,
-          waitTime: '5-10'
-        }
-      );
-      console.log('WhatsApp check-in notification sent');
-    } catch (whatsappError) {
-      console.error('WhatsApp sending failed:', whatsappError.message);
-    }
-
-    res.status(200).json({
-      success: true,
-      message: 'Patient checked in successfully',
-      data: booking
-    });
-  } catch (error) {
-    console.error('❌ Check-in booking admin error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to check in booking'
-    });
-  }
-};
-
-// @desc    Check-out booking (Admin)
-// @route   PUT /api/bookings/admin/:id/checkout
-// @access  Private (Admin)
-exports.checkOutBookingAdmin = async (req, res) => {
-  try {
-    const booking = await Booking.findById(req.params.id);
-
-    if (!booking) {
-      return res.status(404).json({
-        success: false,
-        message: 'Booking not found'
-      });
-    }
-
-    if (booking.status !== 'In Progress') {
-      return res.status(400).json({
-        success: false,
-        message: 'Only in-progress bookings can be checked out'
-      });
-    }
-
-    const reason = String((req.body && req.body.reason) || '').trim();
-    if (!reason) {
-      return res.status(400).json({ success: false, message: 'A reason is required to check out without a code.' });
-    }
-    booking.status = 'Completed';
-    booking.checkOutTime = new Date();
-    booking.checkOutCode = null;
-    booking.manualCheckOut = { reason, by: req.admin && req.admin._id, byName: req.admin && req.admin.name, at: new Date() };
-    require('../utils/guestStats').touchLastVisit(booking.userId, booking.checkOutTime);
-    if (booking.checkInTime) {
-      booking.sessionDuration = Math.max(0, Math.round((booking.checkOutTime - booking.checkInTime) / 60000));
-    }
-    applySessionFromBody(booking, req);
-
-    booking.$locals.zenotiStaffAction = true; // a person at the desk decided this
-    await booking.save();
-    await booking.populate('consultationId', 'name');
-    await notifyManualCheck(booking, 'checkout');
-
-    // Populate consultation details
-    await booking.populate('consultationId', 'name');
-
-    // Create notification for completion (admin endpoint)
-    try {
-      await NotificationHelper.bookingCompleted({
-        _id: booking._id,
-        userId: booking.userId,
-        patientName: booking.fullName,
-        consultation: { name: booking.consultationId.name },
-        checkOutTime: booking.checkOutTime
-      });
-      console.log('🔔 Booking completion notification created');
-    } catch (notifError) {
-      console.error('⚠️ Failed to create notification:', notifError.message);
-    }
-
-    // Send completion email
-    try {
-      await emailService.sendAppointmentCompleted(
-        booking.email,
-        booking.fullName,
-        {
-          treatment: booking.consultationId.name,
-          date: booking.confirmedDate?.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) || booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
-          location: booking.preferredLocation
-        },
-        booking.preferredLocation
-      );
-      console.log('📧 Completion email sent');
-    } catch (emailError) {
-      console.error('⚠️ Email sending failed:', emailError.message);
-    }
-
-    // Send WhatsApp completion notification (admin)
-    try {
-      if (!(await guestMessaging.shouldSendBookingWhatsApp(booking, 'completed')).ok) throw Object.assign(new Error('suppressed: Zenoti sends guest messages for this centre'), { suppressed: true });
-      await whatsappService.sendAppointmentCompleted(
-        booking.mobileNumber,
-        {
-          patientName: booking.fullName,
-          treatment: booking.consultationId.name,
-          date: booking.confirmedDate?.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) || booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
-          location: booking.preferredLocation,
-          sessionDuration: booking.sessionDuration,
-          bookingId: booking._id
-        }
-      );
-      console.log('WhatsApp completion notification sent');
-    } catch (whatsappError) {
-      console.error('WhatsApp sending failed:', whatsappError.message);
-    }
-
-    res.status(200).json({
-      success: true,
-      message: 'Booking completed successfully',
-      data: booking
-    });
-  } catch (error) {
-    console.error('❌ Check-out booking admin error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to check out booking'
-    });
-  }
-};
-
 /* ===========================================================================
- * Visit codes — the guest reads a code to reception, who verifies it in the
- * panel. The code appears in the app (and on email + WhatsApp) 1 hour before
- * the appointment (check-in), and again once the guest is checked in (check-out).
+ * Appointment lifecycle — the desk's actions, mirroring Zenoti's own
+ * appointment book: check in, undo check-in, start, undo start, complete,
+ * reopen, no show, cancel and their undos.
+ *
+ * Every one of them goes through services/bookingLifecycleService, which owns
+ * the legal transitions, the check-in time window and the Zenoti push. These
+ * handlers only translate HTTP to that call and send the guest's notifications.
  * ======================================================================== */
 
-/** The appointment's start Date, from the confirmed (or preferred) date + time. */
-function appointmentStart(booking) {
-  return bookingScheduledAt(booking);
-}
-
-
 /**
- * Tell the guest that reception started / closed their session without a
- * code: an in-app notification plus an email. Never throws.
+ * Tell the guest what just happened to their appointment.
+ *
+ * In-app notification always; email and WhatsApp only for the two moments
+ * worth interrupting someone for (they are here, and they are done). An undo
+ * is a desk correction, so it updates the app silently rather than sending
+ * "your session has started" twice.
  */
-async function notifyManualCheck(booking, kind) {
-  const isOut = kind === 'checkout';
-  const treatment = (booking.consultationId && booking.consultationId.name) || booking.externalServiceName || 'your appointment';
-  const line = isOut ? 'You are checked out without code for this session.' : 'You are checked in without code for this session.';
-  try {
-    if (booking.userId) {
+async function notifyLifecycle(booking, action) {
+  const treatment = (booking.consultationId && booking.consultationId.name)
+    || booking.externalServiceName || 'your appointment';
+  const time = booking.confirmedTime || booking.slotTime || (booking.preferredTimeSlots || [])[0];
+  const dateLabel = formatClinicDate(booking.confirmedDate || booking.preferredDate);
+
+  const inApp = {
+    check_in: ['Checked in', `You're checked in for ${treatment}. Please take a seat — we'll call you shortly.`],
+    undo_check_in: ['Check-in reversed', `Reception reversed the check-in for ${treatment}.`],
+    start: ['Session started', `Your ${treatment} session has started.`],
+    undo_start: ['Session start reversed', `Reception reversed the start of your ${treatment} session.`],
+    complete: ['Visit complete', `Your ${treatment} visit is complete. Thank you for visiting Zennara.`],
+    undo_complete: ['Visit reopened', `Reception reopened your ${treatment} visit.`],
+    no_show: ['Marked as no show', `You were marked absent for ${treatment} on ${dateLabel}.`],
+    undo_no_show: ['No show reversed', `The no-show on your ${treatment} appointment was reversed.`],
+  }[action];
+
+  if (inApp && booking.userId) {
+    try {
       await NotificationHelper.create({
         userId: booking.userId,
         type: 'booking',
-        title: isOut ? 'Session completed' : 'Session started',
-        message: `${line} ${treatment}${booking.preferredLocation ? ` · ${booking.preferredLocation}` : ''}`,
+        title: inApp[0],
+        message: `${inApp[1]}${booking.preferredLocation ? ` · ${booking.preferredLocation}` : ''}`,
         relatedId: booking._id,
         relatedModel: 'Booking',
-        priority: 'medium',
+        priority: action === 'complete' ? 'high' : 'medium',
       });
-    }
-  } catch (e) { console.error('⚠️ Manual check notification failed:', e.message); }
-  try {
-    if (booking.email && !/@guest\.zennara\.in$|@zennara\.local$/i.test(booking.email)) {
-      await emailService.sendManualCheckNotice(booking.email, booking.fullName, {
-        kind, treatment, location: booking.preferredLocation, referenceNumber: booking.referenceNumber, at: new Date(),
+    } catch (e) { console.error('⚠️ lifecycle notification failed:', e.message); }
+  }
+
+  if (action === 'check_in') {
+    try {
+      await NotificationHelper.bookingCheckedIn({
+        _id: booking._id, patientName: booking.fullName,
+        consultation: { name: treatment }, checkInTime: booking.checkInTime,
       });
-    }
-  } catch (e) { console.error('⚠️ Manual check email failed:', e.message); }
+    } catch (e) { console.error('⚠️ check-in staff notification failed:', e.message); }
+    try {
+      if (!isPlaceholderEmail(booking.email)) {
+        await emailService.sendCheckInSuccessful(booking.email, booking.fullName, {
+          treatment, time, location: booking.preferredLocation, waitTime: '5-10',
+        }, booking.preferredLocation);
+      }
+    } catch (e) { console.error('⚠️ check-in email failed:', e.message); }
+    try {
+      if ((await guestMessaging.shouldSendBookingWhatsApp(booking, 'checkin')).ok) {
+        await whatsappService.sendCheckInSuccessful(booking.mobileNumber, {
+          patientName: booking.fullName, treatment, time,
+          location: booking.preferredLocation, waitTime: '5-10',
+        });
+      }
+    } catch (e) { console.error('⚠️ check-in WhatsApp failed:', e.message); }
+  }
+
+  if (action === 'complete') {
+    try {
+      await NotificationHelper.bookingCompleted({
+        _id: booking._id, userId: booking.userId, patientName: booking.fullName,
+        consultation: { name: treatment }, checkOutTime: booking.checkOutTime,
+      });
+    } catch (e) { console.error('⚠️ completion staff notification failed:', e.message); }
+    try {
+      if (!isPlaceholderEmail(booking.email)) {
+        await emailService.sendAppointmentCompleted(booking.email, booking.fullName, {
+          treatment, date: dateLabel, location: booking.preferredLocation,
+        }, booking.preferredLocation);
+      }
+    } catch (e) { console.error('⚠️ completion email failed:', e.message); }
+    try {
+      if ((await guestMessaging.shouldSendBookingWhatsApp(booking, 'completed')).ok) {
+        await whatsappService.sendAppointmentCompleted(booking.mobileNumber, {
+          patientName: booking.fullName, treatment, date: dateLabel,
+          location: booking.preferredLocation, sessionDuration: booking.sessionDuration,
+          bookingId: booking._id,
+        });
+      }
+    } catch (e) { console.error('⚠️ completion WhatsApp failed:', e.message); }
+  }
 }
 
-// @desc    Staff send (or resend) the guest's check-in / check-out code by email / WhatsApp
-// @route   POST /api/bookings/admin/:id/visit-code
-// @access  Private (Admin)
-// For guests who don't use the app: the code is the SAME one the app would show,
-// so a guest who later opens the app sees the code they were emailed.
-exports.sendVisitCodeAdmin = async (req, res) => {
+/** Human wording for the result line the panel shows after an action. */
+const LIFECYCLE_DONE = {
+  check_in: 'Guest checked in',
+  undo_check_in: 'Check-in reversed',
+  start: 'Session started',
+  undo_start: 'Start reversed — the guest is checked in',
+  complete: 'Session completed',
+  undo_complete: 'Session reopened',
+  no_show: 'Marked as no show',
+  undo_no_show: 'No show reversed',
+  cancel: 'Appointment cancelled',
+  undo_cancel: 'Cancellation reversed',
+  confirm: 'Appointment confirmed',
+};
+
+/**
+ * Run one lifecycle action.
+ *
+ * @route POST /api/bookings/admin/:id/lifecycle
+ * body: { action, reason?, force?, specialistId?/specialistName?, session? }
+ */
+exports.bookingLifecycleAdmin = async (req, res) => {
+  const action = String(req.body?.action || '').trim();
   try {
-    const { kind = 'checkin', channel = 'email', regenerate = false } = req.body || {};
-    const booking = await Booking.findById(req.params.id).populate('consultationId', 'name');
+    const booking = await Booking.findById(req.params.id);
     if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
 
-    const isOut = kind === 'checkout';
-    if (isOut && booking.status !== 'In Progress') {
-      return res.status(400).json({ success: false, message: 'A check-out code only applies once the guest is checked in.' });
-    }
-    if (!isOut && !['Confirmed', 'No Show', 'Rescheduled', 'Awaiting Confirmation'].includes(booking.status)) {
-      return res.status(400).json({ success: false, message: `Cannot send a check-in code for a booking that is ${booking.status}.` });
-    }
-    if (regenerate) { booking[isOut ? 'checkOutCode' : 'checkInCode'] = null; }
-    const channels = channel === 'both' ? ['email', 'whatsapp'] : [channel];
-    const { delivered, failed } = await visitCodes.deliver(booking, kind, { channels, by: req.admin });
-    await booking.save();
+    await lifecycle.apply(booking, action, {
+      admin: req.admin,
+      reason: req.body?.reason,
+      force: req.body?.force === true || req.body?.force === 'true',
+      via: 'panel',
+      // Attribution and the session write-up belong to the transition that
+      // carries them: who ran it (set at check-in / start) and what was used
+      // (recorded at completion).
+      mutate: async (doc) => {
+        if (['check_in', 'start'].includes(action)) await applyDermatologist(doc, req.body);
+        if (action === 'complete') applySessionFromBody(doc, req);
+      },
+    });
 
-    res.status(delivered.length ? 200 : 502).json({
-      success: delivered.length > 0,
-      message: delivered.length
-        ? `${isOut ? 'Check-out' : 'Check-in'} code sent by ${delivered.join(' and ')}.`
-        : `Could not send the code: ${failed.map((f) => f.reason).join('; ')}`,
-      data: { kind: isOut ? 'checkout' : 'checkin', delivered, failed, sentAt: new Date(), log: booking.visitCodeLog },
+    await booking.populate('consultationId', 'name category price image');
+    await notifyLifecycle(booking, action);
+
+    return res.status(200).json({
+      success: true,
+      message: LIFECYCLE_DONE[action] || 'Appointment updated',
+      data: booking,
+      meta: lifecycle.lifecycleState(booking),
     });
   } catch (error) {
-    console.error('❌ Send visit code failed:', error);
-    res.status(500).json({ success: false, message: 'Failed to send the visit code' });
+    if (error.name === 'LifecycleError') {
+      return res.status(error.status).json({
+        success: false, code: error.code, message: error.message, meta: error.meta,
+      });
+    }
+    console.error('❌ Booking lifecycle error:', error);
+    return res.status(error.status || 500).json({ success: false, message: error.message || 'Failed to update the appointment' });
   }
 };
 
-// @desc    Reveal the current code to an admin (support fallback; audited)
-// @route   GET /api/bookings/admin/:id/visit-code
-exports.revealVisitCodeAdmin = async (req, res) => {
+/** Legacy route names kept so older panel builds keep working. */
+const lifecycleAlias = (action) => (req, res) => {
+  req.body = { ...(req.body || {}), action };
+  return exports.bookingLifecycleAdmin(req, res);
+};
+// PUT /api/bookings/admin/:id/checkin
+exports.checkInBookingAdmin = lifecycleAlias('check_in');
+// PUT /api/bookings/admin/:id/checkout — "check out" is Zenoti's "close the
+// service"; the desk-facing word for it is now Complete.
+exports.checkOutBookingAdmin = lifecycleAlias('complete');
+
+/**
+ * What this booking can do right now — the panel renders its action bar from
+ * this rather than re-deriving the rules in TypeScript.
+ * @route GET /api/bookings/admin/:id/lifecycle
+ */
+exports.getBookingLifecycleAdmin = async (req, res) => {
   try {
-    const booking = await Booking.findById(req.params.id).select('status checkInCode checkInCodeAt checkInCodeSentAt checkOutCode checkOutCodeAt checkOutCodeSentAt');
+    const booking = await Booking.findById(req.params.id).select('status source confirmedDate confirmedTime preferredDate preferredTimeSlots slotTime statusLog checkInTime checkOutTime');
     if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
-    const kind = booking.status === 'In Progress' ? 'checkout' : 'checkin';
-    const { code } = visitCodes.ensureCode(booking, kind);
-    if (booking.isModified()) await booking.save();
-    res.json({ success: true, data: { kind, code, generatedAt: kind === 'checkout' ? booking.checkOutCodeAt : booking.checkInCodeAt, sentAt: kind === 'checkout' ? booking.checkOutCodeSentAt : booking.checkInCodeSentAt } });
+    return res.json({ success: true, data: { ...lifecycle.lifecycleState(booking), statusLog: booking.statusLog } });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Failed to read the visit code' });
+    return res.status(500).json({ success: false, message: 'Failed to read the appointment lifecycle' });
   }
 };
 
 /**
+ * Put a dermatologist on the booking/**
  * Put a dermatologist on the booking — from the roster (specialistId) or a
  * custom name. Used before a session starts so every visit is attributed.
  */
@@ -1582,216 +1260,17 @@ exports.setTherapistAdmin = async (req, res) => {
   }
 };
 
-// @desc    Get / generate the guest's current visit code
-// @route   GET /api/bookings/:id/visit-code
-// @access  Private (owner)
-exports.getVisitCode = async (req, res) => {
-  try {
-    const booking = await Booking.findById(req.params.id).populate('consultationId', 'name');
-    if (!booking) {
-      return res.status(404).json({ success: false, message: 'Booking not found' });
-    }
-    if (String(booking.userId) !== String(req.user._id)) {
-      return res.status(403).json({ success: false, message: 'Not your booking' });
-    }
+/*
+ * The visit-code (OTP) check-in was removed on 2026-09-07.
+ *
+ * It asked the guest to read a 6-digit code to reception, which Zenoti has no
+ * concept of: the code lived only in our database, so a check-in done at the
+ * desk in Zenoti and one done here could not be told apart, and the app kept
+ * showing a code for a visit Zenoti had already closed. Attendance is now the
+ * lifecycle above, in the same shape Zenoti uses. The old routes answer 410.
+ */
 
-    // Check-out stage — the guest is in the chair.
-    if (booking.status === 'In Progress') {
-      // Normally already issued + sent at check-in; mint one here if not.
-      const { fresh } = visitCodes.ensureCode(booking, 'checkout');
-      if (fresh) { await visitCodes.deliver(booking, 'checkout', { by: null }); }
-      if (booking.isModified()) await booking.save();
-      return res.status(200).json({
-        success: true,
-        data: { stage: 'checkout', code: booking.checkOutCode, message: 'Read this code to reception to complete your visit.' },
-      });
-    }
-
-    if (booking.status === 'Completed') {
-      return res.status(200).json({ success: true, data: { stage: 'done', message: 'This visit is complete.' } });
-    }
-    if (booking.status === 'Cancelled') {
-      return res.status(200).json({ success: true, data: { stage: 'none', message: 'No check-in code for this appointment.' } });
-    }
-    if (booking.status === 'Awaiting Confirmation') {
-      return res.status(200).json({ success: true, data: { stage: 'pending', message: 'Your booking is awaiting clinic confirmation.' } });
-    }
-    if (booking.status === 'Rescheduled') {
-      return res.status(200).json({ success: true, data: { stage: 'pending', message: 'Your reschedule request is awaiting clinic confirmation.' } });
-    }
-
-    // Confirmed / No Show (late arrival) — the check-in code opens 1 hour before
-    // the slot and stays available so staff can still check a late guest in with
-    // it (verify-checkin also accepts No Show).
-    const start = appointmentStart(booking);
-    const WINDOW = 60 * 60 * 1000;
-    if (start && Date.now() < start.getTime() - WINDOW) {
-      return res.status(200).json({
-        success: true,
-        data: {
-          stage: 'early',
-          availableAt: new Date(start.getTime() - WINDOW).toISOString(),
-          message: 'Your check-in code appears 1 hour before your appointment.',
-        },
-      });
-    }
-
-    const { fresh } = visitCodes.ensureCode(booking, 'checkin');
-    if (fresh) { await visitCodes.deliver(booking, 'checkin', { by: null }); }
-    if (booking.isModified()) await booking.save();
-    return res.status(200).json({
-      success: true,
-      data: { stage: 'checkin', code: booking.checkInCode, message: 'Show this code at reception to check in.' },
-    });
-  } catch (error) {
-    console.error('❌ Get visit code error:', error);
-    res.status(500).json({ success: false, message: 'Could not load your visit code.' });
-  }
-};
-
-// @desc    Staff verifies the guest's check-in code → In Progress
-// @route   PUT /api/bookings/admin/:id/verify-checkin
-// @access  Private (Admin)
-exports.verifyCheckInCode = async (req, res) => {
-  try {
-    const code = String((req.body && req.body.code) || '').trim();
-    const booking = await Booking.findById(req.params.id);
-    if (!booking) {
-      return res.status(404).json({ success: false, message: 'Booking not found' });
-    }
-    if (!['Confirmed', 'No Show'].includes(booking.status)) {
-      return res.status(400).json({ success: false, message: 'Only confirmed bookings can be checked in' });
-    }
-    if (!booking.checkInCode) {
-      return res.status(400).json({ success: false, message: "The guest hasn't generated a check-in code yet — ask them to open the appointment in the Zennara app." });
-    }
-    if (code !== booking.checkInCode) {
-      return res.status(400).json({ success: false, message: "That code doesn't match. Please ask the guest to read it again." });
-    }
-
-    await applyDermatologist(booking, req.body);
-    booking.status = 'In Progress';
-    booking.checkInTime = new Date();
-    booking.checkInCode = null;
-    booking.checkInCodeAt = null;
-    await booking.populate('consultationId', 'name');
-    // The session has started: issue the check-out code now and send it, so a
-    // guest without the app already has it when the treatment ends.
-    await visitCodes.deliver(booking, 'checkout', { by: req.admin });
-    booking.$locals.zenotiStaffAction = true; // a person at the desk decided this
-    await booking.save();
-
-    try {
-      await NotificationHelper.bookingCheckedIn({
-        _id: booking._id,
-        patientName: booking.fullName,
-        consultation: { name: booking.consultationId.name },
-        checkInTime: booking.checkInTime,
-      });
-    } catch (e) { console.error('⚠️ check-in notification failed:', e.message); }
-
-    try {
-      await emailService.sendCheckInSuccessful(booking.email, booking.fullName, {
-        treatment: booking.consultationId.name,
-        time: booking.confirmedTime || booking.preferredTimeSlots[0],
-        location: booking.preferredLocation,
-        waitTime: '5-10',
-      }, booking.preferredLocation);
-    } catch (e) { console.error('⚠️ check-in email failed:', e.message); }
-
-    try {
-      if (!(await guestMessaging.shouldSendBookingWhatsApp(booking, 'checkin')).ok) throw Object.assign(new Error('suppressed: Zenoti sends guest messages for this centre'), { suppressed: true });
-      await whatsappService.sendCheckInSuccessful(booking.mobileNumber, {
-        patientName: booking.fullName,
-        treatment: booking.consultationId.name,
-        time: booking.confirmedTime || booking.preferredTimeSlots[0],
-        location: booking.preferredLocation,
-        waitTime: '5-10',
-      });
-    } catch (e) { console.error('⚠️ check-in WhatsApp failed:', e.message); }
-
-    res.status(200).json({ success: true, message: 'Guest checked in', data: booking });
-  } catch (error) {
-    console.error('❌ Verify check-in error:', error);
-    res.status(500).json({ success: false, message: 'Failed to check in' });
-  }
-};
-
-// @desc    Staff verifies the guest's check-out code → Completed
-// @route   PUT /api/bookings/admin/:id/verify-checkout
-// @access  Private (Admin)
-exports.verifyCheckOutCode = async (req, res) => {
-  try {
-    const code = String((req.body && req.body.code) || '').trim();
-    const booking = await Booking.findById(req.params.id);
-    if (!booking) {
-      return res.status(404).json({ success: false, message: 'Booking not found' });
-    }
-    if (booking.status !== 'In Progress') {
-      return res.status(400).json({ success: false, message: 'Only in-progress bookings can be checked out' });
-    }
-    if (!booking.checkOutCode) {
-      return res.status(400).json({ success: false, message: "The guest hasn't generated a check-out code yet — ask them to open the appointment in the Zennara app." });
-    }
-    if (code !== booking.checkOutCode) {
-      return res.status(400).json({ success: false, message: "That code doesn't match. Please ask the guest to read it again." });
-    }
-
-    booking.status = 'Completed';
-    booking.checkOutTime = new Date();
-    require('../utils/guestStats').touchLastVisit(booking.userId, booking.checkOutTime);
-    if (booking.checkInTime) {
-      booking.sessionDuration = Math.max(0, Math.round((booking.checkOutTime - booking.checkInTime) / 60000));
-    }
-    applySessionFromBody(booking, req);
-    booking.checkOutCode = null;
-    booking.checkOutCodeAt = null;
-    applySessionFromBody(booking, req);
-    booking.$locals.zenotiStaffAction = true; // a person at the desk decided this
-    await booking.save();
-    await booking.populate('consultationId', 'name');
-
-    const dateLabel = (booking.confirmedDate || booking.preferredDate)
-      .toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-
-    try {
-      await NotificationHelper.bookingCompleted({
-        _id: booking._id,
-        userId: booking.userId,
-        patientName: booking.fullName,
-        consultation: { name: booking.consultationId.name },
-        checkOutTime: booking.checkOutTime,
-      });
-    } catch (e) { console.error('⚠️ completion notification failed:', e.message); }
-
-    try {
-      await emailService.sendAppointmentCompleted(booking.email, booking.fullName, {
-        treatment: booking.consultationId.name,
-        date: dateLabel,
-        location: booking.preferredLocation,
-      }, booking.preferredLocation);
-    } catch (e) { console.error('⚠️ completion email failed:', e.message); }
-
-    try {
-      if (!(await guestMessaging.shouldSendBookingWhatsApp(booking, 'completed')).ok) throw Object.assign(new Error('suppressed: Zenoti sends guest messages for this centre'), { suppressed: true });
-      await whatsappService.sendAppointmentCompleted(booking.mobileNumber, {
-        patientName: booking.fullName,
-        treatment: booking.consultationId.name,
-        date: dateLabel,
-        location: booking.preferredLocation,
-        sessionDuration: booking.sessionDuration,
-        bookingId: booking._id,
-      });
-    } catch (e) { console.error('⚠️ completion WhatsApp failed:', e.message); }
-
-    res.status(200).json({ success: true, message: 'Guest checked out — visit complete', data: booking });
-  } catch (error) {
-    console.error('❌ Verify check-out error:', error);
-    res.status(500).json({ success: false, message: 'Failed to check out' });
-  }
-};
-
-// @desc    Cancel booking (Admin)
+// @desc    Cancel booking (Admin)// @desc    Cancel booking (Admin)
 // @route   PUT /api/bookings/admin/:id/cancel
 // @access  Private (Admin)
 exports.cancelBookingAdmin = async (req, res) => {
@@ -1824,13 +1303,12 @@ exports.cancelBookingAdmin = async (req, res) => {
       });
     }
 
-    booking.status = 'Cancelled';
-    booking.cancellationReason = reason || 'Cancelled by admin';
-    booking.cancelledAt = new Date();
     booking.cancelledBy = 'admin';
-
-    booking.$locals.zenotiStaffAction = true; // a person at the desk decided this
-    await booking.save();
+    await lifecycle.apply(booking, 'cancel', {
+      admin: req.admin,
+      reason: reason || 'Cancelled by admin',
+      via: 'panel',
+    });
 
     // Populate consultation details for email
     await booking.populate('consultationId', 'name');
@@ -1893,6 +1371,9 @@ exports.cancelBookingAdmin = async (req, res) => {
       data: booking
     });
   } catch (error) {
+    if (error.name === 'LifecycleError') {
+      return res.status(error.status).json({ success: false, code: error.code, message: error.message, meta: error.meta });
+    }
     console.error('❌ Cancel booking admin error:', error);
     res.status(500).json({
       success: false,
@@ -2511,62 +1992,52 @@ exports.updateConsultationStage = async (req, res) => {
 };
 
 /**
- * @desc  Undo the last desk status change (Zenoti's "Undo Check In" and friends).
- * @route POST /api/bookings/admin/:id/undo
+ * Step the last desk decision back.
  *
- * Rules are deliberately narrow — only steps the desk itself takes here can
- * be stepped back, and only while the visit is still today's business:
- *   In Progress → Confirmed      (undo check-in; check-in code is re-armed)
- *   Completed   → In Progress    (undo check-out, same clinic day only)
- *   No Show     → Confirmed      (undo no-show)
- *   Cancelled   → Confirmed / Awaiting Confirmation (undo a desk cancellation, today or future)
- * A Zenoti-owned visit follows the same rules locally; Zenoti's own terminal
- * state still wins on the next sync if it disagrees.
+ * Kept as its own route because the panel's undo button doesn't know (or care)
+ * which action it is reversing — it just knows this booking went somewhere it
+ * shouldn't have. The reverse action is derived from the current status and
+ * then runs through the same validation as any other transition.
  */
+const UNDO_FOR_STATUS = {
+  'Checked In': 'undo_check_in',
+  'In Progress': 'undo_start',
+  Completed: 'undo_complete',
+  'No Show': 'undo_no_show',
+  Cancelled: 'undo_cancel',
+};
+
 exports.undoBookingStatusAdmin = async (req, res) => {
+  const action = UNDO_FOR_STATUS[String(req.body?.status || '') || ''] || null;
   try {
     const booking = await Booking.findById(req.params.id);
     if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
-    const reason = String(req.body?.reason || '').trim();
-    const todayKey = clinicDateKey(new Date());
-    const visitKey = clinicDateKey(booking.confirmedDate || booking.preferredDate);
-    const from = booking.status;
-    let to = null;
 
-    if (from === 'In Progress') {
-      to = 'Confirmed';
-      booking.checkInTime = undefined;
-      booking.checkOutCode = null;
-      booking.checkOutCodeAt = null;
-      booking.manualCheckIn = undefined;
-      if (booking.consultationStage && !['booked', 'confirmed'].includes(booking.consultationStage)) booking.consultationStage = 'confirmed';
-    } else if (from === 'Completed') {
-      if (visitKey !== todayKey) return res.status(400).json({ success: false, message: 'Only a visit completed today can be re-opened.' });
-      to = 'In Progress';
-      booking.checkOutTime = undefined;
-      booking.sessionDuration = undefined;
-      booking.manualCheckOut = undefined;
-      if (['consultation_completed', 'prescription_created', 'treatment_recommended', 'follow_up_required', 'no_follow_up'].includes(booking.consultationStage || '')) booking.consultationStage = 'consultation_started';
-    } else if (from === 'No Show') {
-      to = 'Confirmed';
-    } else if (from === 'Cancelled') {
-      if (visitKey && visitKey < todayKey) return res.status(400).json({ success: false, message: 'A past cancellation cannot be undone.' });
-      to = booking.confirmedDate && booking.confirmedTime ? 'Confirmed' : 'Awaiting Confirmation';
-      booking.cancellationReason = undefined;
-      booking.cancelledAt = undefined;
-    } else {
-      return res.status(400).json({ success: false, message: `Nothing to undo for a ${from.toLowerCase()} booking.` });
+    const undo = action || UNDO_FOR_STATUS[booking.status];
+    if (!undo) {
+      return res.status(400).json({ success: false, message: `Nothing to undo for a ${booking.status.toLowerCase()} booking.` });
     }
 
-    booking.status = to;
-    booking.adminNotes = [booking.adminNotes, `Undo ${from} → ${to} by ${req.admin?.email || 'admin'}${reason ? ` — ${reason}` : ''}`].filter(Boolean).join('\n');
-    // Mirrored rows never echo a desk correction back to Zenoti.
-    if (booking.source === 'zenoti') booking.$locals.skipZenotiWrite = true;
-    await booking.save();
+    const from = booking.status;
+    await lifecycle.apply(booking, undo, {
+      admin: req.admin,
+      reason: req.body?.reason,
+      via: 'panel',
+    });
     await booking.populate('consultationId', 'name category price image');
     await booking.populate('userId', 'fullName email phone patientId');
-    return res.json({ success: true, message: `Reverted to ${to}`, data: booking, meta: { from, to } });
+    await notifyLifecycle(booking, undo);
+
+    return res.json({
+      success: true,
+      message: `Reverted to ${booking.status}`,
+      data: booking,
+      meta: { from, to: booking.status, action: undo, ...lifecycle.lifecycleState(booking) },
+    });
   } catch (error) {
+    if (error.name === 'LifecycleError') {
+      return res.status(error.status).json({ success: false, code: error.code, message: error.message, meta: error.meta });
+    }
     console.error('Undo booking status error:', error);
     return res.status(500).json({ success: false, message: error.message || 'Failed to undo' });
   }

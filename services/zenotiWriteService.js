@@ -745,9 +745,14 @@ async function retryFailedBookingPushes({ limit = 10, trigger = 'schedule' } = {
     // duplicate it. Those stay flagged in the panel for the desk's "Create in
     // Zenoti now", which a person can check against Zenoti's diary first.
     zenotiBookingId: null,
-    // Confirmed only: an unconfirmed booking has no business in Zenoti yet.
-    status: 'Confirmed',
-    eventAt: { $gte: new Date() },
+    // Confirmed or later: an unconfirmed booking has no business in Zenoti
+    // yet, but one the guest has already arrived for certainly does — a
+    // check-in on a booking that never made it across is exactly the gap this
+    // retry exists to close.
+    status: { $in: ['Confirmed', 'Checked In', 'In Progress'] },
+    // Today onwards: a guest currently in the building has a slot that is
+    // already a few minutes in the past.
+    eventAt: { $gte: new Date(Date.now() - 12 * 60 * 60 * 1000) },
   })
     .sort({ eventAt: 1 })
     .limit(Math.min(Number(limit) || 10, 25))
@@ -860,101 +865,210 @@ function existingRecordWritebackEnabled() {
   return String(process.env.ZENOTI_EDIT_EXISTING_WRITEBACK || 'false').toLowerCase() === 'true';
 }
 
-async function syncBookingState(bookingId, { staffAction = false } = {}) {
+/**
+ * Which Zenoti call each desk action makes.
+ *
+ * Verified against the live API on 2026-09-07 with nil ids (nothing created):
+ *   check_in        PUT /v1/appointments/{group}/check_in        → permitted
+ *   undo_check_in   PUT /v1/appointments/{group}/undo_check_in   → permitted
+ *   progress        PUT /v1/appointments/{id}/progress           → permitted
+ *                     progress 0 = not started, 1 = in service, 2 = closed
+ *   confirm         PUT /v1/invoices/{id}/confirm                → permitted
+ *   cancel          PUT /v1/invoices/{id}/cancel                 → permitted
+ *   no_show         PUT /v1/appointments/{group}/no_show         → 401 DENIED
+ *
+ * `no_show` is the one Zenoti refuses for this organisation's API user ("User
+ * does not have authorization", code 438). It is still attempted so the reason
+ * is recorded on the booking and visible at the desk; the clinic has to grant
+ * the permission in Zenoti for it to succeed. Zenoti exposes no undo_no_show
+ * route at all (404), so that correction stays local.
+ */
+const LIFECYCLE_CALLS = {
+  confirm: async (ctx) => {
+    if (!ctx.invoiceId || !ctx.updatedById) throw new Error('Zenoti needs the invoice id and ZENOTI_UPDATED_BY_ID to confirm an appointment.');
+    return liveWrite('confirm', () => zenoti.request(`/v1/invoices/${ctx.invoiceId}/confirm`, {
+      method: 'PUT', body: { updated_by_id: ctx.updatedById },
+    }));
+  },
+  check_in: async (ctx) => {
+    if (!ctx.groupId) throw new Error('Zenoti needs the appointment group id to check a guest in.');
+    return liveWrite('checkIn', () => zenoti.request(`/v1/appointments/${ctx.groupId}/check_in`, { method: 'PUT' }));
+  },
+  undo_check_in: async (ctx) => {
+    if (!ctx.groupId) throw new Error('Zenoti needs the appointment group id to undo a check-in.');
+    return liveWrite('undoCheckIn', () => zenoti.request(`/v1/appointments/${ctx.groupId}/undo_check_in`, { method: 'PUT' }));
+  },
+  start: (ctx) => progressWrite(ctx, 1, 'progressStart'),
+  undo_start: (ctx) => progressWrite(ctx, 0, 'progressUndoStart'),
+  complete: (ctx) => progressWrite(ctx, 2, 'progressComplete'),
+  undo_complete: (ctx) => progressWrite(ctx, 1, 'progressReopen'),
+  no_show: async (ctx) => {
+    if (!ctx.groupId) throw new Error('Zenoti needs the appointment group id to mark a no-show.');
+    return liveWrite('noShow', () => zenoti.request(`/v1/appointments/${ctx.groupId}/no_show`, {
+      method: 'PUT', body: { comments: ctx.booking.cancellationReason || 'No show recorded in Zennara' },
+    }));
+  },
+  cancel: async (ctx) => {
+    if (!ctx.invoiceId) throw new Error('Zenoti needs the invoice id to cancel this appointment.');
+    return liveWrite('cancelAppointment', () => zenoti.request(`/v1/invoices/${ctx.invoiceId}/cancel`, {
+      method: 'PUT',
+      query: {
+        comments: ctx.booking.cancellationReason || 'Cancelled from Zennara',
+        // Zenoti validates reason_id when the org has cancel reasons configured
+        // (this org has none today); set ZENOTI_CANCEL_REASON_ID once it does.
+        ...(process.env.ZENOTI_CANCEL_REASON_ID ? { reason_id: process.env.ZENOTI_CANCEL_REASON_ID } : {}),
+      },
+    }));
+  },
+  reschedule: async (ctx) => {
+    if (!ctx.user?.zenotiGuestId) throw new Error('Booking owner is not linked to a Zenoti guest.');
+    return rescheduleLinkedBooking(ctx.booking, ctx.user);
+  },
+};
+
+/**
+ * Zenoti moves a service through its own progress enum rather than a status
+ * string, and it insists on knowing which employee made the change.
+ */
+async function progressWrite(ctx, progress, action) {
+  if (!ctx.booking.zenotiAppointmentId) throw new Error('This booking is not linked to a Zenoti appointment.');
+  if (!ctx.updatedById) throw new Error('Zenoti needs an updater employee: set ZENOTI_UPDATED_BY_ID, or link the provider to their Zenoti employee record.');
+  return liveWrite(action, () => zenoti.request(`/v1/appointments/${ctx.booking.zenotiAppointmentId}/progress`, {
+    method: 'PUT',
+    body: {
+      updated_by_id: ctx.updatedById,
+      progress,
+      ...(ctx.booking.zenotiAppointmentSegmentId ? { appointment_segment_id: ctx.booking.zenotiAppointmentSegmentId } : {}),
+    },
+  }));
+}
+
+/**
+ * Desk actions that Zenoti owns for an appointment IT created. Attendance
+ * (check-in / start / completion, and undoing those) is ours to record and is
+ * pushed; the schedule itself is changed in Zenoti only.
+ *
+ * Why: on 2026-09-02/03 the automatic no-show job marked hundreds of mirrored
+ * clinic appointments No Show and wrote every one of them into Zenoti. See
+ * "Technical Documentation/ZENOTI-NO-SHOW-INCIDENT-2026-09-03.md".
+ */
+const ZENOTI_OWNED_ALLOWED = new Set([
+  'check_in', 'undo_check_in', 'start', 'undo_start', 'complete', 'undo_complete',
+]);
+
+/**
+ * Push ONE lifecycle action to Zenoti and report what happened.
+ *
+ * Unlike the older status-derived path, this is told exactly which action the
+ * desk took — the only way to express an undo, since "Confirmed" is the
+ * resulting status of both a confirmation and an undone check-in.
+ *
+ * Always resolves; never throws. Returns { status, error } where status is
+ * 'synced' | 'failed' | 'skipped' | 'dryrun' | 'off'.
+ */
+async function pushLifecycleAction(bookingId, action) {
   const Booking = require('../models/Booking');
   const User = require('../models/User');
+
+  const finish = async (booking, status, error) => {
+    if (booking) {
+      booking.zenotiSyncStatus = status === 'off' ? booking.zenotiSyncStatus : status;
+      booking.zenotiSyncError = error || null;
+      booking.zenotiSyncedAt = new Date();
+      booking.$locals.skipZenotiWrite = true;
+      await booking.save({ validateModifiedOnly: true }).catch(() => {});
+    }
+    return { status, error: error || null };
+  };
+
   const booking = await Booking.findById(bookingId);
-  if (!booking || isOff() || (!booking.zenotiAppointmentId && !booking.zenotiInvoiceId)) return;
+  if (!booking) return { status: 'skipped', error: 'Booking not found' };
+  if (isOff()) return { status: 'off', error: 'Zenoti write-back is off (ZENOTI_WRITE_MODE).' };
   if (!lifecycleWritebackEnabled()) {
-    logger.info('Zenoti lifecycle write-back disabled (ZENOTI_LIFECYCLE_WRITEBACK != true)', { bookingId, status: booking.status });
-    return;
+    return { status: 'skipped', error: 'Zenoti lifecycle write-back is paused (ZENOTI_LIFECYCLE_WRITEBACK=false).' };
   }
+  if (!booking.zenotiAppointmentId && !booking.zenotiInvoiceId) {
+    /*
+     * The guest is standing here, and the appointment never reached Zenoti —
+     * a service that wasn't mapped when it was confirmed, or a push that
+     * failed. Create it now, then record the attendance against it, rather
+     * than leaving a visit that happened with no trace in the CRM.
+     */
+    if (booking.source !== 'zenoti') {
+      await syncBooking(booking._id).catch(() => {});
+      const again = await Booking.findById(bookingId).select('zenotiAppointmentId zenotiInvoiceId zenotiAppointmentGroupId zenotiInvoiceItemId zenotiSyncError');
+      if (again?.zenotiAppointmentId) {
+        booking.zenotiAppointmentId = again.zenotiAppointmentId;
+        booking.zenotiInvoiceId = again.zenotiInvoiceId;
+        booking.zenotiAppointmentGroupId = again.zenotiAppointmentGroupId;
+        booking.zenotiInvoiceItemId = again.zenotiInvoiceItemId;
+      } else if (again?.zenotiSyncError) {
+        booking.zenotiSyncError = again.zenotiSyncError;
+      }
+    }
+    if (!booking.zenotiAppointmentId && !booking.zenotiInvoiceId) {
+      return finish(booking, 'skipped',
+        booking.zenotiSyncError || 'This booking is not in Zenoti yet, so the change could not be recorded there.');
+    }
+  }
+  if (booking.source === 'zenoti' && !ZENOTI_OWNED_ALLOWED.has(action)) {
+    return finish(booking, 'skipped',
+      `Not written: this appointment was booked in Zenoti, so ${action.replace(/_/g, ' ')} is done in Zenoti itself.`);
+  }
+
+  const call = LIFECYCLE_CALLS[action];
+  if (!call) return finish(booking, 'skipped', `Zenoti has no equivalent for "${action}".`);
+
+  try {
+    await hydrateAppointmentIds(booking);
+    const ctx = {
+      booking,
+      user: await User.findById(booking.userId).select('zenotiGuestId'),
+      updatedById: await resolveUpdatedById(booking),
+      invoiceId: booking.zenotiInvoiceId || booking.zenotiAppointmentId,
+      groupId: booking.zenotiAppointmentGroupId,
+    };
+    logWrite(`lifecycle:${action}`, {
+      bookingId: String(booking._id), invoiceId: ctx.invoiceId, groupId: ctx.groupId, status: booking.status,
+    });
+
+    if (!isLive()) return finish(booking, 'dryrun', null);
+
+    await call(ctx);
+    return finish(booking, 'synced', null);
+  } catch (error) {
+    logger.error('Zenoti lifecycle action failed', { bookingId: String(bookingId), action, error: error.message });
+    return finish(booking, 'failed', error.message);
+  }
+}
+
+/**
+ * Legacy status-derived write-back, still used by the Booking model's post-save
+ * hook for paths that change `status` without going through the lifecycle
+ * service (a reschedule, an inbound correction). New desk actions should call
+ * `pushLifecycleAction` so an undo can be expressed.
+ */
+const STATUS_TO_ACTION = {
+  Cancelled: 'cancel',
+  'No Show': 'no_show',
+  'Checked In': 'check_in',
+  'In Progress': 'start',
+  Completed: 'complete',
+  Rescheduled: 'reschedule',
+  Confirmed: 'confirm',
+};
+
+async function syncBookingState(bookingId, { staffAction = false } = {}) {
+  const Booking = require('../models/Booking');
+  const booking = await Booking.findById(bookingId).select('status source');
+  if (!booking) return;
   if (booking.source === 'zenoti' && !staffAction) {
     logger.info('Zenoti lifecycle write-back refused: Zenoti-owned appointment changed by an automated path', { bookingId, status: booking.status });
     return;
   }
-  // Policy for appointments the CLINIC booked in Zenoti: the desk may record
-  // attendance here (check-in, completion) and that is written to Zenoti;
-  // cancelling, moving, confirming or no-showing them is done in Zenoti only.
-  if (booking.source === 'zenoti' && !['In Progress', 'Completed'].includes(booking.status)) {
-    booking.zenotiSyncStatus = 'skipped';
-    booking.zenotiSyncError = `Not written: a Zenoti-booked appointment is ${booking.status.toLowerCase()} in Zenoti itself, never from here.`;
-    booking.$locals.skipZenotiWrite = true;
-    await booking.save({ validateModifiedOnly: true }).catch(() => {});
-    return;
-  }
-
-  try {
-    await hydrateAppointmentIds(booking);
-    const user = await User.findById(booking.userId).select('zenotiGuestId');
-    const updatedById = await resolveUpdatedById(booking);
-    const invoiceId = booking.zenotiInvoiceId || booking.zenotiAppointmentId;
-    const groupId = booking.zenotiAppointmentGroupId;
-    const action = `bookingState:${booking.status}`;
-    logWrite(action, { bookingId: booking._id, invoiceId, groupId });
-
-    if (!isLive()) {
-      booking.zenotiSyncStatus = 'dryrun';
-      booking.zenotiSyncError = null;
-    } else if (booking.status === 'Cancelled') {
-      if (!invoiceId) throw new Error('Zenoti invoice id is required to cancel this booking.');
-      await liveWrite('cancelAppointment', () => zenoti.request(`/v1/invoices/${invoiceId}/cancel`, {
-        method: 'PUT',
-        query: {
-          comments: booking.cancellationReason || 'Cancelled from Zennara',
-          // Zenoti validates reason_id when the org has cancel reasons configured
-          // (this org has none today); set ZENOTI_CANCEL_REASON_ID once it does.
-          ...(process.env.ZENOTI_CANCEL_REASON_ID ? { reason_id: process.env.ZENOTI_CANCEL_REASON_ID } : {}),
-        },
-      }));
-      booking.zenotiSyncStatus = 'synced';
-    } else if (booking.status === 'No Show') {
-      if (!groupId) throw new Error('Zenoti appointment group id is required to mark no-show.');
-      await liveWrite('noShow', () => zenoti.request(`/v1/appointments/${groupId}/no_show`, {
-        method: 'PUT', body: { comments: booking.cancellationReason || 'No show recorded in Zennara' },
-      }));
-      booking.zenotiSyncStatus = 'synced';
-    } else if (booking.status === 'In Progress') {
-      if (!groupId) throw new Error('Zenoti appointment group id is required to check in.');
-      await liveWrite('checkIn', () => zenoti.request(`/v1/appointments/${groupId}/check_in`, { method: 'PUT' }));
-      if (updatedById && booking.zenotiAppointmentId) {
-        await liveWrite('progressStart', () => zenoti.request(`/v1/appointments/${booking.zenotiAppointmentId}/progress`, {
-          method: 'PUT', body: { updated_by_id: updatedById, progress: 1, ...(booking.zenotiAppointmentSegmentId ? { appointment_segment_id: booking.zenotiAppointmentSegmentId } : {}) },
-        }));
-      }
-      booking.zenotiSyncStatus = 'synced';
-    } else if (booking.status === 'Completed') {
-      if (!updatedById) throw new Error('Zenoti needs an updater employee to complete a service: set ZENOTI_UPDATED_BY_ID or link the dermatologist to Zenoti.');
-      await liveWrite('progressComplete', () => zenoti.request(`/v1/appointments/${booking.zenotiAppointmentId}/progress`, {
-        method: 'PUT', body: { updated_by_id: updatedById, progress: 2, ...(booking.zenotiAppointmentSegmentId ? { appointment_segment_id: booking.zenotiAppointmentSegmentId } : {}) },
-      }));
-      booking.zenotiSyncStatus = 'synced';
-    } else if (booking.status === 'Rescheduled') {
-      if (!user?.zenotiGuestId) throw new Error('Booking owner is not linked to a Zenoti guest.');
-      await rescheduleLinkedBooking(booking, user);
-      booking.zenotiSyncStatus = 'synced';
-    } else if (booking.status === 'Confirmed') {
-      if (!invoiceId || !updatedById) throw new Error('Zenoti invoice id and ZENOTI_UPDATED_BY_ID are required to confirm appointments.');
-      await liveWrite('confirm', () => zenoti.request(`/v1/invoices/${invoiceId}/confirm`, {
-        method: 'PUT', body: { updated_by_id: updatedById },
-      }));
-      booking.zenotiSyncStatus = 'synced';
-    } else {
-      booking.zenotiSyncStatus = 'skipped';
-      booking.zenotiSyncError = `No Zenoti lifecycle action for ${booking.status}`;
-    }
-
-    if (booking.zenotiSyncStatus === 'synced') booking.zenotiSyncError = null;
-    booking.zenotiSyncedAt = new Date();
-    booking.$locals.skipZenotiWrite = true;
-    await booking.save({ validateModifiedOnly: true });
-  } catch (error) {
-    booking.zenotiSyncStatus = 'failed';
-    booking.zenotiSyncError = error.message;
-    booking.$locals.skipZenotiWrite = true;
-    await booking.save({ validateModifiedOnly: true }).catch(() => {});
-    logger.error('Zenoti syncBookingState failed', { bookingId, error: error.message });
-  }
+  const action = STATUS_TO_ACTION[booking.status];
+  if (!action) return;
+  await pushLifecycleAction(bookingId, action);
 }
 
 /* ------------------------------- Order push -------------------------------- */
@@ -1052,6 +1166,7 @@ module.exports = {
   syncPackageExpiry,
   syncBooking,
   syncBookingState,
+  pushLifecycleAction,
   syncOrder,
   resolveServiceId,
   resolveProductId,

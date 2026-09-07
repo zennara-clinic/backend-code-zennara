@@ -8,7 +8,16 @@ const { deleteFromS3 } = require('./s3Service');
 const connectedUsers = new Map();
 const connectedAdmins = new Map();
 
+/**
+ * The live server, kept so services outside the socket layer (the booking
+ * lifecycle, for one) can push an update to every open panel the instant a
+ * status moves — the day book must not wait for its next poll to show that a
+ * guest has been checked in.
+ */
+let ioRef = null;
+
 const setupSocketIO = (io) => {
+  ioRef = io;
   // Authentication middleware for socket
   io.use(async (socket, next) => {
     try {
@@ -69,9 +78,15 @@ const setupSocketIO = (io) => {
     // Handle user/admin connection
     if (socket.userType === 'user' && socket.user) {
       connectedUsers.set(socket.user._id.toString(), socket.id);
+      // One room per guest, so a booking update reaches every device they have
+      // open rather than only the most recently connected socket.
+      socket.join(`user_${socket.user._id}`);
       console.log(`👤 User connected: ${socket.user.fullName} (${socket.user._id})`);
     } else if (socket.userType === 'admin' && socket.admin) {
       connectedAdmins.set(socket.admin._id.toString(), socket.id);
+      // Every signed-in staff member watches the same appointment stream.
+      socket.join('staff');
+      if (socket.admin.branchId) socket.join(`staff_branch_${socket.admin.branchId}`);
       console.log(`👨‍💼 Admin connected: ${socket.admin.name} (${socket.admin._id})`);
     }
 
@@ -465,8 +480,39 @@ const setupSocketIO = (io) => {
 const getConnectedUsers = () => connectedUsers;
 const getConnectedAdmins = () => connectedAdmins;
 
+/**
+ * Tell every open panel — and the guest's own app — that an appointment moved.
+ *
+ * Fire-and-forget: if nobody is listening, or sockets are not up yet (a cron
+ * boot run), this is a no-op. The payload is deliberately small; clients
+ * re-read the booking rather than trusting a broadcast.
+ */
+const emitBookingUpdate = async (bookingId, action = null) => {
+  if (!ioRef) return;
+  try {
+    const Booking = require('../models/Booking');
+    const booking = await Booking.findById(bookingId)
+      .select('userId status branchId preferredLocation referenceNumber zenotiAppointmentId')
+      .lean();
+    if (!booking) return;
+    const payload = {
+      bookingId: String(booking._id),
+      status: booking.status,
+      action,
+      referenceNumber: booking.referenceNumber,
+      at: new Date().toISOString(),
+    };
+    ioRef.to('staff').emit('booking:updated', payload);
+    if (booking.branchId) ioRef.to(`staff_branch_${booking.branchId}`).emit('booking:updated', payload);
+    if (booking.userId) ioRef.to(`user_${booking.userId}`).emit('booking:updated', payload);
+  } catch (error) {
+    console.error('⚠️ booking:updated broadcast failed:', error.message);
+  }
+};
+
 module.exports = {
   setupSocketIO,
   getConnectedUsers,
-  getConnectedAdmins
+  getConnectedAdmins,
+  emitBookingUpdate
 };

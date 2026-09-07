@@ -10,7 +10,7 @@ const Booking = require('../models/Booking');
 const PackageAssignment = require('../models/PackageAssignment');
 const User = require('../models/User');
 
-const LIVE = ['Awaiting Confirmation', 'Confirmed', 'Rescheduled', 'In Progress'];
+const { UPCOMING: LIVE } = require('./bookingStatuses');
 
 /** Record that a guest attended on `at` (idempotent: keeps the latest). */
 async function touchLastVisit(userId, at = new Date()) {

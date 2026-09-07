@@ -297,7 +297,7 @@ async function buildUserFilter(q) {
   if (q.noVisitSince) {
     // Lapsed guests: last completed visit before this date (or never).
     const cutoff = dayStart(q.noVisitSince);
-    const recent = await Booking.distinct('userId', { status: { $in: ['Completed', 'In Progress', 'Confirmed'] }, $or: [{ checkOutTime: { $gte: cutoff } }, { confirmedDate: { $gte: cutoff } }, { preferredDate: { $gte: cutoff } }] });
+    const recent = await Booking.distinct('userId', { status: { $in: require('./bookingStatuses').COUNTABLE }, $or: [{ checkOutTime: { $gte: cutoff } }, { confirmedDate: { $gte: cutoff } }, { preferredDate: { $gte: cutoff } }] });
     and.push({ _id: { $nin: recent } });
   }
   if (Object.keys(bookingMatch).length) {

@@ -92,8 +92,12 @@ test('center appointment normalizer retains operational schedule identifiers', (
 });
 
 test('Zenoti lifecycle maps to real Booking statuses', () => {
-  assert.equal(localStatus({ status: 4, progress: 0 }), 'Confirmed');
-  assert.equal(localStatus({ status: 2, progress: 0 }), 'In Progress');
+  // Zenoti 2 = "Checked in" (the guest is here) and 4 = "In service" (the guest
+  // is in the room). These were the wrong way round until 2026-09-07, so a
+  // checked-in guest showed as being treated and a guest under treatment showed
+  // as merely confirmed.
+  assert.equal(localStatus({ status: 4, progress: 0 }), 'In Progress');
+  assert.equal(localStatus({ status: 2, progress: 0 }), 'Checked In');
   assert.equal(localStatus({ status: 0, progress: 2 }), 'Completed');
   assert.equal(localStatus({ status: -1 }), 'Cancelled');
   assert.equal(localStatus({ status: -2 }), 'No Show');
@@ -210,13 +214,20 @@ test('service resolution ignores tier words but package resolution never guesses
 test('a Zenoti-booked appointment can never be cancelled, rescheduled or no-showed from our side', () => {
   const src = require('fs').readFileSync(require('path').join(__dirname, '../controllers/bookingController.js'), 'utf8');
   const guards = (src.match(/if \(booking\.source === 'zenoti'\) \{\s*\n\s*return res\.status\(409\)/g) || []).length;
-  assert.ok(guards >= 4, `expected unconditional 409 guards on guest cancel, admin cancel/reschedule and mark-no-show; found ${guards}`);
+  assert.ok(guards >= 3, `expected unconditional 409 guards on guest cancel and admin cancel/reschedule; found ${guards}`);
+  // No-show, confirm and the undos are guarded centrally instead of inline:
+  // one list in the lifecycle service covers every desk action, so a new
+  // action cannot be added without deciding whether Zenoti owns it.
+  const life = require('fs').readFileSync(require('path').join(__dirname, '../services/bookingLifecycleService.js'), 'utf8');
+  assert.ok(/const ZENOTI_OWNED_BLOCKED = new Set\(\['confirm', 'cancel', 'no_show', 'undo_cancel', 'undo_no_show'\]\)/.test(life),
+    'the lifecycle service must refuse schedule-changing actions on a Zenoti-booked appointment');
   // Guests no longer reschedule anything from the app — Zenoti-booked or not —
   // so that route needs no source check: it refuses everyone and says to call.
   assert.ok(/RESCHEDULE_AT_CLINIC/.test(src), 'the guest reschedule route must refuse and point at the clinic');
   assert.ok(!/source === 'zenoti' && !zenotiWrite\.lifecycleWritebackEnabled\(\)/.test(src), 'guards must not depend on the write-back switch');
   const write = require('fs').readFileSync(require('path').join(__dirname, '../services/zenotiWriteService.js'), 'utf8');
-  assert.ok(write.includes("booking.source === 'zenoti' && !['In Progress', 'Completed'].includes(booking.status)"), 'write-back policy for Zenoti rows must be attendance-only');
+  assert.ok(/const ZENOTI_OWNED_ALLOWED = new Set\(\[\s*'check_in', 'undo_check_in', 'start', 'undo_start', 'complete', 'undo_complete',/.test(write),
+    'write-back for Zenoti-booked rows must be attendance-only (never confirm/cancel/no-show)');
 });
 
 test('Zenoti shifts only narrow panel hours; they never extend them', () => {

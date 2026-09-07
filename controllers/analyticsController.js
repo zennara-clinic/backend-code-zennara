@@ -12,6 +12,7 @@ require('../models/Package');
 const {
   addClinicDays, clinicDateKey, clinicDayEnd, clinicDayStart, formatClinicDate, parseClockMinutes,
 } = require('../utils/bookingTime');
+const { COUNTABLE: BOOKING_COUNTABLE, ATTENDED: BOOKING_PRESENT_OR_DONE } = require('../utils/bookingStatuses');
 
 // Get Financial Dashboard Analytics
 
@@ -42,7 +43,7 @@ exports.getFinancialAnalytics = async (req, res) => {
     // Build query filters
     const bookingFilter = {
       createdAt: { $gte: start, $lte: end },
-      status: { $in: ['Confirmed', 'Completed', 'In Progress'] }
+      status: { $in: BOOKING_COUNTABLE }
     };
     
     const orderFilter = {
@@ -344,7 +345,7 @@ exports.getDailyTargetProgress = async (req, res) => {
     
     const bookings = await Booking.find({
       createdAt: { $gte: today, $lt: tomorrow },
-      status: { $in: ['Confirmed', 'Completed', 'In Progress'] }
+      status: { $in: BOOKING_COUNTABLE }
     }).populate('consultationId', 'price');
     
     const orders = await ProductOrder.find({
@@ -411,7 +412,7 @@ exports.getPatientAnalytics = async (req, res) => {
       {
         $match: {
           createdAt: { $gte: startDate, $lte: endDate },
-          status: { $in: ['Confirmed', 'Completed', 'In Progress'] },
+          status: { $in: BOOKING_COUNTABLE },
           ...branchScope(req)
         }
       },
@@ -442,7 +443,7 @@ exports.getPatientAnalytics = async (req, res) => {
       {
         $match: {
           createdAt: { $gte: threeMonthsAgo, $lte: endDate },
-          status: { $in: ['Confirmed', 'Completed', 'In Progress'] }
+          status: { $in: BOOKING_COUNTABLE }
         }
       },
       {
@@ -1105,7 +1106,7 @@ exports.getServiceAnalytics = async (req, res) => {
     const slotEnd = endDate ? clinicDayEnd(endDate) : end;
     const bookings = await Booking.find({
       $or: [{ confirmedDate: { $gte: slotStart, $lte: slotEnd } }, { confirmedDate: null, preferredDate: { $gte: slotStart, $lte: slotEnd } }],
-      status: { $in: ['Confirmed', 'Completed', 'In Progress'] },
+      status: { $in: BOOKING_COUNTABLE },
       ...branchScope(req)
     }).populate('consultationId', 'name category price duration_minutes');
 
@@ -1543,7 +1544,7 @@ exports.getTodaysSales = async (req, res) => {
     const collected = live.reduce((n, r) => n + Math.max(0, (r.amount || 0) - (r.due || 0)), 0);
     const invoiceDue = live.reduce((n, r) => n + (r.due || 0), 0);
     // Visits done or in progress today that have neither been billed nor paid.
-    const dueRows = await Booking.find({ ...scope, invoiceId: null, paymentStatus: { $ne: 'paid' }, amount: { $gt: 0 }, status: { $in: ['In Progress', 'Completed'] }, $or: [inDay('checkOutTime'), inDay('checkInTime'), inDay('preferredDate')] })
+    const dueRows = await Booking.find({ ...scope, invoiceId: null, paymentStatus: { $ne: 'paid' }, amount: { $gt: 0 }, status: { $in: BOOKING_PRESENT_OR_DONE }, $or: [inDay('checkOutTime'), inDay('checkInTime'), inDay('preferredDate')] })
       .select('amount').lean();
     const sumKind = (k) => live.filter((r) => r.kind === k).reduce((n, r) => n + (r.amount || 0), 0);
     const invoiceLines = (kind) => invoices.filter((i) => i.status !== 'void').reduce((n, i) => n + (i.lines || []).filter((l) => l.kind === kind).reduce((m, l) => m + (l.total || 0), 0), 0);

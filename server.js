@@ -199,7 +199,6 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 connectDB();
 require('./utils/seedRoles').seedRoles();
 startBookingScheduler();
-require('./utils/bookingScheduler').startCheckInCodeJob();
 require('./utils/bookingScheduler').startRefillReminderJob();
 BookingStatusService.startAutoChecker();
 require('./utils/contactChangeScheduler').startContactChangeScheduler();

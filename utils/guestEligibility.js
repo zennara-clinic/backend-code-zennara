@@ -22,7 +22,7 @@ async function getGuestEligibility(userId) {
   const isConsult = (b) => (b.consultationId ? consultSet.has(String(b.consultationId)) : CONSULT_RX.test(b.externalServiceName || ''));
 
   const [bookings, ownedPackages, notes] = await Promise.all([
-    Booking.find({ userId, status: { $in: ['Completed', 'In Progress'] } }).select('consultationId externalServiceName status').lean(),
+    Booking.find({ userId, status: { $in: require('./bookingStatuses').ATTENDED } }).select('consultationId externalServiceName status').lean(),
     PackageAssignment.countDocuments({ userId, status: { $in: ['Active', 'Completed'] } }),
     ConsultationNote.find({ userId, status: 'Completed' }).select('prescription.productId assignedServices completedAt').lean(),
   ]);

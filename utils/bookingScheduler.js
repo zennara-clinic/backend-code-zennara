@@ -296,51 +296,14 @@ module.exports = {
 };
 
 /* ---------------------------------------------------------------------------
- * Check-in codes for guests who never open the app.
+ * The check-in code job was removed on 2026-09-07 along with visit codes.
  *
- * One hour before a confirmed slot, if no check-in code has been issued yet
- * (the app issues one when the guest opens the appointment), mint it and send
- * it by email + WhatsApp. Same code the app would show.
+ * It emailed and WhatsApp'd a 6-digit code an hour before every appointment.
+ * Nothing consumes a code any more — reception checks the guest in from the
+ * appointment itself — so sending one was telling guests to do something the
+ * desk no longer asks for.
  * ------------------------------------------------------------------------- */
-async function sendUpcomingCheckInCodes() {
-  const Booking = require('../models/Booking');
-  const visitCodes = require('./visitCodes');
-  const now = new Date();
-  const today = clinicDateKey(now);
-  const dayStart = clinicDayStart(today);
-  const dayEnd = clinicDayEnd(addClinicDays(today, 1));
-  const candidates = await Booking.find({
-    status: { $in: ['Confirmed', 'Rescheduled'] },
-    checkInCodeSentAt: null,
-    source: { $ne: 'zenoti' },
-    $or: [{ confirmedDate: { $gte: dayStart, $lte: dayEnd } }, { confirmedDate: null, preferredDate: { $gte: dayStart, $lte: dayEnd } }],
-  }).populate('consultationId', 'name');
-
-  let sent = 0;
-  for (const b of candidates) {
-    const start = bookingScheduledAt(b);
-    if (!start) continue;
-    const lead = start.getTime() - now.getTime();
-    if (lead > 65 * 60 * 1000 || lead < -30 * 60 * 1000) continue; // outside the 1h window
-    try {
-      const { delivered } = await visitCodes.deliver(b, 'checkin', { by: null });
-      // Don't retry forever on guests with no contact details.
-      if (!delivered.length) b.checkInCodeSentAt = new Date(0);
-      await b.save();
-      if (delivered.length) sent += 1;
-    } catch (e) {
-      console.error('⚠️ Check-in code auto-send failed:', b._id, e.message);
-    }
-  }
-  if (sent) console.log(`📨 Sent ${sent} check-in code(s) for upcoming appointments`);
-}
-
-function startCheckInCodeJob() {
-  cron.schedule('*/5 * * * *', () => {
-    sendUpcomingCheckInCodes().catch((e) => console.error('Check-in code job failed:', e.message));
-  });
-}
-module.exports.sendUpcomingCheckInCodes = sendUpcomingCheckInCodes;
+function startCheckInCodeJob() { /* retired — kept so callers don't break */ }
 module.exports.startCheckInCodeJob = startCheckInCodeJob;
 
 /* ---------------------------------------------------------------------------

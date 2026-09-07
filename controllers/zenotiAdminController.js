@@ -601,7 +601,7 @@ exports.syncHealth = async (_req, res) => {
 
     const now = new Date();
     const [bookingsPending, bookingsFailed, bookingsNeedPerson, usersPending, usersFailed, usersReview, pkgPending, notesFailed] = await Promise.all([
-      Booking.countDocuments({ source: { $in: ['app', 'reception'] }, status: 'Confirmed', zenotiAppointmentId: null, zenotiBookingId: null, zenotiSyncStatus: { $in: ['pending', 'failed', null] }, eventAt: { $gte: now } }),
+      Booking.countDocuments({ source: { $in: ['app', 'reception'] }, status: { $in: ['Confirmed', 'Checked In', 'In Progress'] }, zenotiAppointmentId: null, zenotiBookingId: null, zenotiSyncStatus: { $in: ['pending', 'failed', null] }, eventAt: { $gte: now } }),
       Booking.countDocuments({ source: { $in: ['app', 'reception'] }, zenotiSyncStatus: 'failed', eventAt: { $gte: now } }),
       Booking.countDocuments({ source: { $in: ['app', 'reception'] }, zenotiAppointmentId: null, zenotiBookingId: { $ne: null }, eventAt: { $gte: now } }),
       User.countDocuments({ zenotiGuestId: { $exists: false }, zenotiSyncStatus: 'pending' }),

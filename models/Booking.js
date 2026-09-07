@@ -176,6 +176,11 @@ const bookingSchema = new mongoose.Schema({
       'Awaiting Confirmation',
       'Confirmed',
       'Rescheduled',
+      // The guest is at the clinic but the service has not begun. Zenoti keeps
+      // this as its own appointment status (2, "Checked in") separately from
+      // "In service" (4); collapsing the two here is what made our day book
+      // disagree with the Zenoti mobile app about who was actually in a room.
+      'Checked In',
       'In Progress',
       'Cancelled',
       'No Show',
@@ -243,28 +248,33 @@ const bookingSchema = new mongoose.Schema({
   checkOutTime: Date,
   sessionDuration: Number, // in minutes
 
-  // Visit codes — the guest reads these to reception, who verifies them in the
-  // panel to check the guest in / out. Stored plaintext on purpose: the code is
-  // shown to its own owner on the appointment screen and is a short-lived,
-  // low-sensitivity presence check (not a credential).
-  checkInCode: { type: String, default: null },
-  checkInCodeAt: { type: Date, default: null },
-  checkOutCode: { type: String, default: null },
-  checkOutCodeAt: { type: Date, default: null },
-  // When reception last pushed the code to the guest (guests without the app).
-  checkInCodeSentAt: { type: Date, default: null },
-  checkOutCodeSentAt: { type: Date, default: null },
-  visitCodeLog: [{
-    kind: { type: String, enum: ['checkin', 'checkout'] },
-    channels: [String],
-    failed: [String],
-    at: Date,
+  /**
+   * Every desk decision that moved this appointment, newest last.
+   *
+   * Replaces the old visit-code trail. Reception, the dermatologist panel and
+   * the app all show the same lifecycle now, so "who checked this guest in,
+   * when, and did Zenoti accept it" has to be answerable from the record
+   * itself rather than from three different audited side-fields.
+   */
+  statusLog: [{
+    _id: false,
+    /** Lifecycle action name, e.g. 'check_in', 'undo_check_in', 'complete'. */
+    action: String,
+    from: String,
+    to: String,
+    at: { type: Date, default: Date.now },
     by: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
     byName: String,
+    /** Required when staff overrode a rule (early check-in, reopening a visit). */
+    reason: String,
+    /** True when the action was taken outside its allowed time window. */
+    overrode: { type: Boolean, default: false },
+    /** 'panel' | 'app' | 'zenoti' | 'system' */
+    via: { type: String, default: 'panel' },
+    /** What Zenoti did with it: 'synced' | 'failed' | 'skipped' | 'dryrun' | null */
+    zenoti: { type: String, default: null },
+    zenotiError: { type: String, default: null },
   }],
-  // Set when staff checked the guest in/out without a code (audited override).
-  manualCheckIn: { reason: String, by: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' }, byName: String, at: Date },
-  manualCheckOut: { reason: String, by: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' }, byName: String, at: Date },
 
   // Package linkage — set when this appointment was auto-created from a package
   // session (24h before its scheduled date). Such bookings are free (amount 0)
@@ -513,7 +523,7 @@ bookingSchema.pre('save', function (next) {
     || this.createdAt
     || new Date();
   if (this.slotTime) {
-    const live = ['Awaiting Confirmation', 'Confirmed', 'Rescheduled', 'In Progress', 'Completed'];
+    const live = ['Awaiting Confirmation', 'Confirmed', 'Rescheduled', 'Checked In', 'In Progress', 'Completed'];
     // Zenoti mirrors still block the diary (the slot engine filters on status),
     // but they sit outside the unique-slot race guard: a clinic visit can have
     // several services with one dermatologist at the same time.

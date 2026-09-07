@@ -58,6 +58,10 @@ class BookingStatusService {
         
         if (now > cutoffTime && !booking.checkInTime) {
           // Mark as No Show — a local decision; it is never pushed to Zenoti.
+          require('./bookingLifecycleService').logStatus(booking, {
+            action: 'no_show', from: booking.status, to: 'No Show', via: 'system',
+            reason: `No check-in ${gracePeriodMinutes} minutes after the slot`,
+          });
           booking.status = 'No Show';
           booking.$locals.skipZenotiWrite = true;
           await booking.save();
@@ -134,6 +138,10 @@ class BookingStatusService {
       const cutoffTime = new Date(appointmentDateTime.getTime() + (gracePeriodMinutes * 60 * 1000));
       
       if (now > cutoffTime && !booking.checkInTime) {
+        require('./bookingLifecycleService').logStatus(booking, {
+          action: 'no_show', from: booking.status, to: 'No Show', via: 'system',
+          reason: `No check-in ${gracePeriodMinutes} minutes after the slot`,
+        });
         booking.status = 'No Show';
         booking.$locals.skipZenotiWrite = true;
         await booking.save();
