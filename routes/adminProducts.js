@@ -27,8 +27,10 @@ const VIEW = requirePermission('products.view', 'coupons.view', 'coupons.manage'
 const MANAGE = requirePermission('products.manage');
 router.get('/statistics', VIEW, getProductStatistics);
 
+// The ledger behind one product's stock figure.
+router.get('/:id/stock-movements', VIEW, productCtrl.getStockMovements);
+
 // App Stock template — the Commerce catalogue's import / export sheet. One-way: never writes to Zenoti.
-router.get('/:id/stock-movements', protectAdmin, VIEW, adminProductController.getStockMovements);
 router.get('/app-stock/export', VIEW, productCtrl.appStockExport);
 router.post('/app-stock/preview', MANAGE, appStockUpload.single('file'), productCtrl.appStockPreview);
 router.post('/app-stock/import', MANAGE, appStockUpload.single('file'), auditLog('BULK_IMPORT', 'PRODUCT'), productCtrl.appStockImport);
