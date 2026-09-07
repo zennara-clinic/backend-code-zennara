@@ -648,16 +648,40 @@ exports.getFeaturedConsultations = async (req, res) => {
 // @access  Public
 exports.getCategories = async (req, res) => {
   try {
+    /*
+     * The taxonomy cascades: picking "Skin & Hair" must narrow the category row
+     * to the categories inside it. Without `type` the app listed all 13 under
+     * every tab, so choosing a type appeared to do nothing and picking a
+     * category from another type emptied the screen.
+     *
+     * `subCategory` narrows one level further, for a panel that has already
+     * picked a category.
+     */
+    const { type, category } = req.query;
+    const filter = { isActive: true };
+    if (type && type !== 'All') filter.type = type;
+
+    // Sub-categories (the treatment groups) inside a category, when asked for.
+    if (String(req.query.level || '') === 'subCategory') {
+      const q = { isArchived: { $ne: true }, ...(req.admin ? {} : APP_VISIBLE) };
+      if (type && type !== 'All') q.type = type;
+      if (category && category !== 'All') q.category = category;
+      const subs = (await Consultation.distinct('subCategory', q)).filter(Boolean).sort();
+      return res.status(200).json({ success: true, count: subs.length, data: subs });
+    }
+
     // Try to get from Category model first
-    let categories = await Category.find({ isActive: true })
-      .select('name slug consultationCount')
+    let categories = await Category.find(filter)
+      .select('name slug consultationCount type')
       .sort({ name: 1 });
     
     // If no categories in Category model, fallback to distinct from consultations
     if (!categories || categories.length === 0) {
-      const distinctCategories = await Consultation.distinct('category');
+      const q = { isArchived: { $ne: true }, ...(req.admin ? {} : APP_VISIBLE) };
+      if (type && type !== 'All') q.type = type;
+      const distinctCategories = await Consultation.distinct('category', q);
       // Convert to name array for backward compatibility
-      categories = distinctCategories;
+      categories = distinctCategories.filter(Boolean).sort();
     } else {
       // Extract just the names for backward compatibility
       categories = categories.map(cat => cat.name);

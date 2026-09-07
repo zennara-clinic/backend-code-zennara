@@ -21,7 +21,9 @@ const MANAGE = requirePermission('services.manage');
 // Public routes
 router.get('/', identifyAdmin, getAllConsultations);
 router.get('/featured', getFeaturedConsultations);
-router.get('/categories/list', getCategories);
+// identifyAdmin so staff see the whole master while the app sees only the
+// published catalogue; ?type= and ?category= cascade the taxonomy.
+router.get('/categories/list', identifyAdmin, getCategories);
 router.get('/category/:category', getConsultationsByCategory);
 router.get('/search/:query', searchConsultations);
 
