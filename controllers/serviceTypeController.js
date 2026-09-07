@@ -31,7 +31,24 @@ exports.getTypes = async (req, res) => {
       }
     }
 
-    return res.status(200).json({ success: true, count: types.length, data: types });
+    /*
+     * A type with nothing in it must not appear as a tab.
+     *
+     * "Consultations" stayed on the treatment page after its services moved to
+     * the consultation flow, so tapping it gave "No treatments in this category
+     * yet". Counts are computed live against what the caller can actually see —
+     * the stored treatmentCount is only refreshed by an explicit sync and
+     * counts isActive rather than what is published.
+     */
+    const visible = req.admin
+      ? { isArchived: { $ne: true } }
+      : { isActive: true, inCatalog: true, isArchived: { $ne: true } };
+    await Promise.all(types.map(async (t) => {
+      t.treatmentCount = await Consultation.countDocuments({ ...visible, type: t.name });
+    }));
+    const withTreatments = req.admin ? types : types.filter((t) => t.treatmentCount > 0);
+
+    return res.status(200).json({ success: true, count: withTreatments.length, data: withTreatments });
   } catch (error) {
     console.error('Get service types error:', error);
     return res.status(500).json({

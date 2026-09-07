@@ -12,6 +12,18 @@ const Consultation = require('../models/Consultation');
 const APP_VISIBLE = { isActive: true, inCatalog: true, isArchived: { $ne: true } };
 /** Everything the panel lists: live master data, archived rows excluded. */
 const NOT_ARCHIVED = { isArchived: { $ne: true } };
+
+/**
+ * The two rows that ARE the consultation flow.
+ *
+ * A consultation is booked by choosing a dermatologist, not by picking a
+ * treatment off the menu, so these must not appear in any treatment listing.
+ * They cannot simply be unpublished: the app fetches the catalogue and resolves
+ * them by slug to price the booking, so they have to stay visible to it while
+ * staying out of the browsable menu.
+ */
+const CONSULTATION_FLOW_SLUGS = ['senior-dermatologist-consultation', 'dermatologist-consultation'];
+const NOT_CONSULTATION_FLOW = { slug: { $nin: CONSULTATION_FLOW_SLUGS } };
 const { clinicDateKey, clinicDayStart } = require('../utils/bookingTime');
 const Booking = require('../models/Booking');
 const Category = require('../models/Category');
@@ -449,6 +461,9 @@ exports.getAllConsultations = async (req, res) => {
     if (req.admin && req.query.inCatalog === 'true') query.inCatalog = true;
     if (req.admin && req.query.inCatalog === 'false') query.inCatalog = { $ne: true };
     if (req.admin && req.query.archived === 'true') { delete query.isArchived; query.isArchived = true; }
+    // Staff browse the treatment menu; the consultation tiers are priced on the
+    // Dermatologists page, not here. ?includeConsultationTiers=true opts in.
+    if (req.admin && req.query.includeConsultationTiers !== 'true') Object.assign(query, NOT_CONSULTATION_FLOW);
     if (req.query.subCategory && req.query.subCategory !== 'All') query.subCategory = req.query.subCategory;
 
     // Level 1 of the taxonomy — Skin, Hair, Skin & Hair, Wellness, …
