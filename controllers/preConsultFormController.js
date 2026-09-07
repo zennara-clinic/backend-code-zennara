@@ -10,6 +10,12 @@ exports.createOrUpdateForm = async (req, res) => {
     const userId = req.user._id;
     const formData = req.body;
 
+    // A guest may save a draft or submit; only the clinic moves a form to
+    // Reviewed/Approved/Rejected. The consultation gate trusts this field.
+    if (formData.status && !['Draft', 'Submitted'].includes(formData.status)) {
+      delete formData.status;
+    }
+
     // Check if user exists
     const user = await User.findById(userId);
     if (!user) {
@@ -108,6 +114,39 @@ exports.getUserForms = async (req, res) => {
       message: 'Failed to fetch pre-consult forms',
       error: error.message
     });
+  }
+};
+
+
+// @desc    Has this guest completed the pre-consultation intake? (cheap gate check)
+// @route   GET /api/pre-consult-forms/status
+// @access  Private
+exports.getMyFormStatus = async (req, res) => {
+  try {
+    // The app blocks consultation booking until one submitted form exists, so
+    // only the newest submitted (or reviewed/approved) one matters here.
+    const done = await PreConsultForm.findOne({
+      userId: req.user._id,
+      status: { $in: ['Submitted', 'Approved', 'Reviewed'] },
+    }).select('_id status updatedAt').sort({ updatedAt: -1 }).lean();
+
+    // A half-finished form lets the app reopen the draft instead of a blank one.
+    const draft = done ? null : await PreConsultForm.findOne({ userId: req.user._id, status: 'Draft' })
+      .select('_id').sort({ updatedAt: -1 }).lean();
+
+    res.status(200).json({
+      success: true,
+      data: {
+        hasSubmitted: !!done,
+        formId: done?._id || null,
+        status: done?.status || (draft ? 'Draft' : null),
+        draftId: draft?._id || null,
+        submittedAt: done?.updatedAt || null,
+      },
+    });
+  } catch (error) {
+    console.error('Error reading pre-consult form status:', error);
+    res.status(500).json({ success: false, message: 'Failed to read the form status', error: error.message });
   }
 };
 

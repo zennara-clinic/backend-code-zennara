@@ -3,6 +3,7 @@ const router = express.Router();
 const {
   createOrUpdateForm,
   getUserForms,
+  getMyFormStatus,
   getFormById,
   deleteForm,
   submitForm,
@@ -34,6 +35,7 @@ router.post(
   require('../controllers/preConsultFormController').uploadFormPhotos,
 );
 router.post('/', createOrUpdateForm);
+router.get('/status', getMyFormStatus);
 router.get('/', getUserForms);
 router.get('/:id', getFormById);
 router.delete('/:id', deleteForm);
