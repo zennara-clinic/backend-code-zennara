@@ -1401,7 +1401,7 @@ exports.unfreezeAssignment = async (req, res) => {
     packageRules.unfreeze(pa, { by: who(req) });
     await pa.save();
     const last = pa.freezeHistory[pa.freezeHistory.length - 1];
-    return respond(res, pa, `Package unfrozen — ${last?.days || 0} day${last?.days === 1 ? '' : 's'} added to its validity${pa.validUntil ? ` (now ${new Date(pa.validUntil).toLocaleDateString('en-GB')})` : ''}.`);
+    return respond(res, pa, `Package unfrozen — ${last?.days || 0} day${last?.days === 1 ? '' : 's'} added to its validity${pa.validUntil ? ` (now ${new Date(pa.validUntil).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' })})` : ''}.`);
   } catch (e) { return oops(res, e); }
 };
 

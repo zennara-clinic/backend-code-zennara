@@ -214,9 +214,7 @@ exports.initiateRefund = async (req, res) => {
           orderNumber: refundOrder.orderNumber,
           refundAmount: amountToRefund,
           refundMethod: refundOrder.refundDetails.method,
-          refundDate: new Date().toLocaleDateString('en-IN', { 
-            day: '2-digit', month: 'short', year: 'numeric' 
-          }),
+          refundDate: new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' }),
           transactionId: refundOrder.refundDetails.transactionId || 'Will be updated soon',
           estimatedDays: refundOrder.refundDetails.method === 'Razorpay' ? '5-7' : '2-3'
         };
@@ -348,9 +346,7 @@ exports.completeRefund = async (req, res) => {
           orderNumber: order.orderNumber,
           refundAmount: order.refundDetails.amount,
           refundMethod: order.refundDetails.method,
-          refundDate: new Date().toLocaleDateString('en-IN', { 
-            day: '2-digit', month: 'short', year: 'numeric' 
-          }),
+          refundDate: new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' }),
           transactionId: order.refundDetails.transactionId,
           completedAt: new Date().toLocaleString('en-IN')
         };

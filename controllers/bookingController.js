@@ -167,9 +167,7 @@ exports.createBooking = async (req, res) => {
           referenceNumber: booking.referenceNumber,
           treatment: consultation.name,
           category: consultation.category,
-          preferredDate: booking.preferredDate.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }),
+          preferredDate: booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
           timeSlots: booking.preferredTimeSlots.join(', '),
           location: booking.preferredLocation
         },
@@ -189,9 +187,7 @@ exports.createBooking = async (req, res) => {
           patientName: booking.fullName,
           referenceNumber: booking.referenceNumber,
           treatment: consultation.name,
-          date: booking.preferredDate.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }),
+          date: booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
           timeSlots: booking.preferredTimeSlots.join(', '),
           location: booking.preferredLocation
         }
@@ -203,9 +199,7 @@ exports.createBooking = async (req, res) => {
 
     // Make automated voice call for booking confirmation
     try {
-      const formattedDate = booking.preferredDate.toLocaleDateString('en-US', { 
-        weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-      });
+      const formattedDate = booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
       
       await twilioVoiceService.makeBookingConfirmationCall(
         booking.mobileNumber,
@@ -446,9 +440,7 @@ exports.cancelBooking = async (req, res) => {
         {
           referenceNumber: booking.referenceNumber,
           treatment: booking.consultationId.name,
-          date: booking.preferredDate.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }),
+          date: booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
           time: booking.preferredTimeSlots[0],
           location: booking.preferredLocation
         },
@@ -468,9 +460,7 @@ exports.cancelBooking = async (req, res) => {
           patientName: booking.fullName,
           referenceNumber: booking.referenceNumber,
           treatment: booking.consultationId.name,
-          date: booking.preferredDate.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }),
+          date: booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
           time: booking.preferredTimeSlots[0],
           location: booking.preferredLocation,
           reason: reason
@@ -545,9 +535,7 @@ exports.rescheduleBooking = async (req, res) => {
     // declines the request.
     const originalDate = booking.confirmedDate || booking.preferredDate;
     const originalTime = booking.confirmedTime || booking.preferredTimeSlots[0];
-    const oldDate = originalDate.toLocaleDateString('en-US', {
-      weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
-    });
+    const oldDate = originalDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
     const oldTime = originalTime;
 
     booking.rescheduledFrom = { date: originalDate, time: originalTime };
@@ -598,9 +586,7 @@ exports.rescheduleBooking = async (req, res) => {
           treatment: booking.consultationId.name,
           oldDate: oldDate,
           oldTime: oldTime,
-          newDate: booking.preferredDate.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }),
+          newDate: booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
           newTime: booking.preferredTimeSlots[0],
           location: booking.preferredLocation
         },
@@ -622,9 +608,7 @@ exports.rescheduleBooking = async (req, res) => {
           treatment: booking.consultationId.name,
           oldDate: oldDate,
           oldTime: oldTime,
-          newDate: booking.preferredDate.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }),
+          newDate: booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
           newTime: booking.preferredTimeSlots[0],
           location: booking.preferredLocation
         }
@@ -851,9 +835,7 @@ exports.checkOutBooking = async (req, res) => {
         booking.fullName,
         {
           treatment: booking.consultationId.name,
-          date: booking.preferredDate.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }),
+          date: booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
           time: booking.preferredTimeSlots[0],
           location: booking.preferredLocation
         },
@@ -872,9 +854,7 @@ exports.checkOutBooking = async (req, res) => {
         {
           patientName: booking.fullName,
           treatment: booking.consultationId.name,
-          date: booking.preferredDate.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }),
+          date: booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
           location: booking.preferredLocation,
           sessionDuration: booking.sessionDuration,
           bookingId: booking._id
@@ -1163,9 +1143,7 @@ exports.confirmBooking = async (req, res) => {
         {
           referenceNumber: booking.referenceNumber,
           treatment: booking.consultationId.name,
-          confirmedDate: booking.confirmedDate.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }),
+          confirmedDate: booking.confirmedDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
           confirmedTime: booking.confirmedTime,
           location: booking.preferredLocation,
           address: 'Clinic Address' // You can get this from branchId
@@ -1186,9 +1164,7 @@ exports.confirmBooking = async (req, res) => {
           patientName: booking.fullName,
           referenceNumber: booking.referenceNumber,
           treatment: booking.consultationId.name,
-          confirmedDate: booking.confirmedDate.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }),
+          confirmedDate: booking.confirmedDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
           confirmedTime: booking.confirmedTime,
           location: booking.preferredLocation,
           address: 'Clinic Address' // You can get this from branchId
@@ -1269,11 +1245,7 @@ exports.markNoShow = async (req, res) => {
         booking.fullName,
         {
           treatment: booking.consultationId.name,
-          date: booking.confirmedDate?.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }) || booking.preferredDate.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }),
+          date: booking.confirmedDate?.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) || booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
           time: booking.confirmedTime || booking.preferredTimeSlots[0],
           location: booking.preferredLocation
         },
@@ -1292,11 +1264,7 @@ exports.markNoShow = async (req, res) => {
         {
           patientName: booking.fullName,
           treatment: booking.consultationId.name,
-          date: booking.confirmedDate?.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }) || booking.preferredDate.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }),
+          date: booking.confirmedDate?.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) || booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
           time: booking.confirmedTime || booking.preferredTimeSlots[0],
           location: booking.preferredLocation
         }
@@ -1516,11 +1484,7 @@ exports.checkOutBookingAdmin = async (req, res) => {
         booking.fullName,
         {
           treatment: booking.consultationId.name,
-          date: booking.confirmedDate?.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }) || booking.preferredDate.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }),
+          date: booking.confirmedDate?.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) || booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
           location: booking.preferredLocation
         },
         booking.preferredLocation
@@ -1538,11 +1502,7 @@ exports.checkOutBookingAdmin = async (req, res) => {
         {
           patientName: booking.fullName,
           treatment: booking.consultationId.name,
-          date: booking.confirmedDate?.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }) || booking.preferredDate.toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }),
+          date: booking.confirmedDate?.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }) || booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
           location: booking.preferredLocation,
           sessionDuration: booking.sessionDuration,
           bookingId: booking._id
@@ -1899,7 +1859,7 @@ exports.verifyCheckOutCode = async (req, res) => {
     await booking.populate('consultationId', 'name');
 
     const dateLabel = (booking.confirmedDate || booking.preferredDate)
-      .toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+      .toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
     try {
       await NotificationHelper.bookingCompleted({
@@ -2003,9 +1963,7 @@ exports.cancelBookingAdmin = async (req, res) => {
         {
           referenceNumber: booking.referenceNumber,
           treatment: booking.consultationId.name,
-          date: (booking.confirmedDate || booking.preferredDate).toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }),
+          date: (booking.confirmedDate || booking.preferredDate).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
           time: booking.confirmedTime || booking.preferredTimeSlots[0],
           location: booking.preferredLocation
         },
@@ -2025,9 +1983,7 @@ exports.cancelBookingAdmin = async (req, res) => {
           patientName: booking.fullName,
           referenceNumber: booking.referenceNumber,
           treatment: booking.consultationId.name,
-          date: (booking.confirmedDate || booking.preferredDate).toLocaleDateString('en-US', { 
-            weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' 
-          }),
+          date: (booking.confirmedDate || booking.preferredDate).toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
           time: booking.confirmedTime || booking.preferredTimeSlots[0],
           location: booking.preferredLocation,
           reason: reason || 'Cancelled by admin'
@@ -2350,9 +2306,7 @@ exports.createBookingAdmin = async (req, res) => {
         patientName: booking.fullName,
         referenceNumber: booking.referenceNumber,
         treatment: treatmentLabel,
-        date: booking.preferredDate.toLocaleDateString('en-US', {
-          weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-        }),
+        date: booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
         timeSlots: created.map((c) => c.booking.preferredTimeSlots[0]).join(', '),
         location: booking.preferredLocation,
       });
@@ -2369,9 +2323,7 @@ exports.createBookingAdmin = async (req, res) => {
             referenceNumber: booking.referenceNumber,
             treatment: treatmentLabel,
             category: consultation.category,
-            preferredDate: booking.preferredDate.toLocaleDateString('en-US', {
-              weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
-            }),
+            preferredDate: booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
             timeSlots: created.map((c) => c.booking.preferredTimeSlots[0]).join(', '),
             location: booking.preferredLocation,
           },

@@ -209,7 +209,7 @@ const getSupportMessageNotificationTemplate = (messageData) => {
           </div>
           
           <p class="timestamp">
-            Received at: ${new Date(messageData.timestamp).toLocaleString('en-US', { dateStyle: 'full', timeStyle: 'short' })}
+            Received at: ${new Date(messageData.timestamp).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'full', timeStyle: 'short' })}
           </p>
           
           <div class="cta-container">

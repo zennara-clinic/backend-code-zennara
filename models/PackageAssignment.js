@@ -443,7 +443,7 @@ packageAssignmentSchema.methods.serviceBalances = function() {
  */
 packageAssignmentSchema.methods.redeemable = function({ branchId = null, at = new Date() } = {}) {
   if (this.status !== 'Active') return { ok: false, code: 'PACKAGE_' + String(this.status).toUpperCase(), message: `This package is ${String(this.status).toLowerCase()}.` };
-  if (this.freeze?.isFrozen) return { ok: false, code: 'PACKAGE_FROZEN', message: `This package is frozen${this.freeze.resumeOn ? ` until ${new Date(this.freeze.resumeOn).toLocaleDateString('en-GB')}` : ''}. Unfreeze it first.` };
+  if (this.freeze?.isFrozen) return { ok: false, code: 'PACKAGE_FROZEN', message: `This package is frozen${this.freeze.resumeOn ? ` until ${new Date(this.freeze.resumeOn).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' })}` : ''}. Unfreeze it first.` };
   const until = this.graceUntil || this.validUntil;
   if (until && new Date(until) < at) return { ok: false, code: 'PACKAGE_EXPIRED', message: 'This package has expired.' };
   if (this.validUntil && new Date(this.validUntil) < at && this.graceUntil) return { ok: true, grace: true, message: 'In the grace period after expiry.' };

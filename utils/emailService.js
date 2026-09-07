@@ -213,7 +213,7 @@ exports.sendDataExportEmail = async (email, fullName, exportData) => {
 
   const esc = (v) => (v === undefined || v === null || v === '' ? '—' : String(v));
   const asDate = (v) =>
-    v ? new Date(v).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '—';
+    v ? new Date(v).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' }) : '—';
 
   const row = (label, value) =>
     `<tr><td style="padding:7px 0;color:#7A827E;font-size:13px;">${label}</td>` +
@@ -830,7 +830,7 @@ exports.sendManualCheckNotice = async (email, fullName, { kind, treatment, locat
     ? 'You are checked out without code for this session.'
     : 'You are checked in without code for this session.';
   const title = isOut ? 'Session completed' : 'Session started';
-  const when = at ? new Date(at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : '';
+  const when = at ? new Date(at).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
   const html = `
   <div style="font-family:Arial,Helvetica,sans-serif;max-width:600px;margin:0 auto;background:#ffffff;">
     <div style="background:${GREEN};padding:22px 24px;border-radius:14px 14px 0 0;">

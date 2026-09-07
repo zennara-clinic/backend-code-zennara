@@ -519,12 +519,10 @@ bookingSchema.pre('save', function (next) {
 bookingSchema.virtual('formattedDate').get(function() {
   if (!this.confirmedDate && !this.preferredDate) return '';
   const date = this.confirmedDate || this.preferredDate;
-  return date.toLocaleDateString('en-US', { 
-    weekday: 'long', 
+  return date.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', 
     day: 'numeric', 
     month: 'long', 
-    year: 'numeric' 
-  });
+    year: 'numeric' });
 });
 
 // Guests can cancel or reschedule only while more than 24 hours remain. The

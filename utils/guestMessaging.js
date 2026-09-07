@@ -55,7 +55,7 @@ async function templateVars({ user = null, booking = null, branch = null, invoic
     time: booking?.confirmedTime || booking?.preferredTimeSlots?.[0] || '', doctor: booking?.specialistName || '', reference: booking?.referenceNumber || '',
     amountDue: invoice ? `₹${(invoice.totals?.due || 0).toLocaleString('en-IN')}` : booking && booking.paymentStatus !== 'paid' ? `₹${(booking.amount || 0).toLocaleString('en-IN')}` : '₹0',
     staff: staffName || '', invoiceNumber: invoice?.invoiceNumber || '',
-    packageName: assignment?.packageDetails?.packageName || '', sessionsLeft: assignment ? String(assignment.serviceBalances ? assignment.serviceBalances().reduce((n, r) => n + r.balance, 0) : '') : '', expiry: assignment?.validUntil ? new Date(assignment.validUntil).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '',
+    packageName: assignment?.packageDetails?.packageName || '', sessionsLeft: assignment ? String(assignment.serviceBalances ? assignment.serviceBalances().reduce((n, r) => n + r.balance, 0) : '') : '', expiry: assignment?.validUntil ? new Date(assignment.validUntil).toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' }) : '',
     memberNumber: membership?.memberNumber || '',
   };
 }

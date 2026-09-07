@@ -350,10 +350,8 @@ exports.updateOrderStatus = async (req, res) => {
             break;
           case 'Delivered':
             console.log('Sending Delivered notifications...');
-            data.deliveredAt = order.deliveredAt.toLocaleString('en-IN', {
-              dateStyle: 'medium',
-              timeStyle: 'short'
-            });
+            data.deliveredAt = order.deliveredAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium',
+              timeStyle: 'short' });
             if (user.phone) await whatsappService.sendOrderDelivered(user.phone, data);
             if (user.email) await emailService.sendOrderDeliveredEmail(user.email, data.customerName, data);
             notificationsSent = true;
@@ -361,7 +359,7 @@ exports.updateOrderStatus = async (req, res) => {
           case 'Cancelled':
             console.log('Sending Cancelled notifications...');
             data.reason = order.cancelReason || 'Cancelled by admin';
-            data.cancelledAt = order.cancelledAt.toLocaleDateString('en-IN');
+            data.cancelledAt = order.cancelledAt.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' });
             data.totalAmount = order.pricing.total;
             data.refundInfo = ['Paid', 'Refunded'].includes(order.paymentStatus);
             if (user.phone) await whatsappService.sendOrderCancelled(user.phone, data);

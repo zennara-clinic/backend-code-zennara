@@ -631,7 +631,7 @@ exports.getPatientAcquisitionTrend = async (req, res) => {
       }).length;
       
       monthlyData.push({
-        month: startOfMonth.toLocaleDateString('en-US', { month: 'short', year: 'numeric' }),
+        month: startOfMonth.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', year: 'numeric' }),
         count
       });
     }

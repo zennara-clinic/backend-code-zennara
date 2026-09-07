@@ -1017,7 +1017,7 @@ async function handleRefundProcessed(refundEntity) {
           orderNumber: populated.orderNumber,
           refundAmount: Number(refundEntity.amount) / 100,
           refundMethod: 'Razorpay',
-          refundDate: new Date().toLocaleDateString('en-IN'),
+          refundDate: new Date().toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' }),
           transactionId: refundEntity.id,
           estimatedDays: '5-7',
         };
@@ -1164,7 +1164,7 @@ async function activateMembership(userId, payment) {
     await payment.save();
   }
 
-  console.log('👑 Zen membership activated for', user.email, '→', user.zenMembershipExpiryDate.toLocaleDateString());
+  console.log('👑 Zen membership activated for', user.email, '→', user.zenMembershipExpiryDate.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' }));
   return user;
 }
 
@@ -1679,9 +1679,7 @@ exports.verifyConsultationPayment = async (req, res) => {
             {
               referenceNumber: booking.referenceNumber,
               treatment: consultation.name,
-              confirmedDate: booking.confirmedDate.toLocaleDateString('en-US', {
-                weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
-              }),
+              confirmedDate: booking.confirmedDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
               confirmedTime: booking.confirmedTime,
               location: booking.preferredLocation
             },
@@ -1695,9 +1693,7 @@ exports.verifyConsultationPayment = async (req, res) => {
               referenceNumber: booking.referenceNumber,
               treatment: consultation.name,
               category: consultation.category,
-              preferredDate: booking.preferredDate.toLocaleDateString('en-US', {
-                weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
-              }),
+              preferredDate: booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
               timeSlots: booking.preferredTimeSlots.join(', '),
               location: booking.preferredLocation
             },
@@ -1715,9 +1711,7 @@ exports.verifyConsultationPayment = async (req, res) => {
             patientName: booking.fullName,
             referenceNumber: booking.referenceNumber,
             treatment: consultation.name,
-            date: booking.preferredDate.toLocaleDateString('en-US', {
-              weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
-            }),
+            date: booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
             timeSlots: booking.preferredTimeSlots.join(', '),
             location: booking.preferredLocation
           }
@@ -1733,9 +1727,7 @@ exports.verifyConsultationPayment = async (req, res) => {
             patientName: booking.fullName,
             referenceNumber: booking.referenceNumber,
             treatment: consultation.name,
-            date: booking.preferredDate.toLocaleDateString('en-US', {
-              weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
-            }),
+            date: booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
             timeSlots: booking.preferredTimeSlots.join(', '),
             branchName: branch.name,
             branchAddress: `${branch.address.line1}, ${branch.address.city}`

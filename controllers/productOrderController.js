@@ -220,7 +220,7 @@ exports.createOrderLegacyUnpaid = async (req, res) => {
       const orderData = {
         customerName: populatedOrder.shippingAddress.fullName,
         orderNumber: populatedOrder.orderNumber,
-        orderDate: populatedOrder.createdAt.toLocaleDateString('en-IN'),
+        orderDate: populatedOrder.createdAt.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' }),
         items: populatedOrder.items.map(item => ({
           name: item.productName,
           quantity: item.quantity,
@@ -563,10 +563,8 @@ exports.updateOrderStatus = async (req, res) => {
           break;
         case 'Delivered':
           console.log('>>> Matched status: Delivered');
-          data.deliveredAt = order.deliveredAt.toLocaleString('en-IN', {
-            dateStyle: 'medium',
-            timeStyle: 'short'
-          });
+          data.deliveredAt = order.deliveredAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium',
+            timeStyle: 'short' });
           try {
             if (user.phone) {
               console.log('Attempting WhatsApp Delivered to:', user.phone);
@@ -689,7 +687,7 @@ exports.cancelOrder = async (req, res) => {
         customerName: populatedOrder.shippingAddress.fullName,
         orderNumber: populatedOrder.orderNumber,
         reason: reason || 'As per your request',
-        cancelledAt: order.cancelledAt.toLocaleDateString('en-IN'),
+        cancelledAt: order.cancelledAt.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' }),
         totalAmount: populatedOrder.pricing.total,
         refundInfo: ['Paid', 'Refunded'].includes(populatedOrder.paymentStatus),
         refundStatus: populatedOrder.refundDetails?.status
@@ -827,7 +825,7 @@ exports.returnOrder = async (req, res) => {
         customerName: populatedOrder.shippingAddress.fullName,
         orderNumber: populatedOrder.orderNumber,
         reason: reason || 'No reason provided',
-        returnDate: order.returnRequestedAt.toLocaleDateString('en-IN')
+        returnDate: order.returnRequestedAt.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' })
       };
       
       if (user) {
