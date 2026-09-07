@@ -335,6 +335,29 @@ async function syncDoctorShiftsFromZenoti({ trigger = 'schedule' } = {}) {
       const rows = await zenoti.getCenterEmployeeSchedules(centerId, { from, to }).catch(() => null);
       if (rows) perCenter.set(centerId, { center: c, rows: new Map(rows.map((r) => [r.employeeId, r])) });
     }
+    /*
+     * Which DAYS the roster is actually published for, at each centre.
+     *
+     * A doctor with no shift on a given day is ambiguous on its own: Zenoti may
+     * not have published that day at all, or it may have published it and this
+     * doctor is simply off. Treating both as "silent" left five dermatologists
+     * showing as available on days Zenoti had them off, so the app offered
+     * their slots and every booking into one failed at Zenoti with "no slots".
+     * If ANYONE is rostered at a centre on a date, that date is published, and
+     * a doctor absent from it is off.
+     */
+    const publishedDays = new Set(); // `${day}|${branchId}`
+    for (const [, { center, rows }] of perCenter) {
+      const branch = branchByName.get(center.branchName);
+      if (!branch) continue;
+      for (const [, row] of rows) {
+        for (const sft of row.shifts || []) {
+          if (Number(sft.status) !== 0) continue;
+          publishedDays.add(`${dayKey(sft.date)}|${branch._id}`);
+        }
+      }
+    }
+
     for (const practitioner of linked) {
       summary.doctors += 1;
       const schedule = await DermatologistSchedule.findOne({ doctorId: practitioner.onboardedDoctorId });
@@ -363,9 +386,30 @@ async function syncDoctorShiftsFromZenoti({ trigger = 'schedule' } = {}) {
       const publishedBranches = new Set([...working.keys()].map((k) => k.split('|')[1]));
       const manual = (schedule.overrides || []).filter((o) => o.source !== 'zenoti');
       if (!anyWorking) {
-        // Roster not published for this doctor: drop stale zenoti overrides, keep panel hours.
+        /*
+         * Zenoti never rosters this doctor anywhere in the window.
+         *
+         * That used to mean "leave the panel hours alone", which is right only
+         * while Zenoti has published nothing. Once a centre's roster IS
+         * published and this doctor never appears on it, they do not work
+         * there — and leaving them open sold their hours in the app for
+         * bookings Zenoti would always refuse. Their days at PUBLISHED centres
+         * are closed; centres Zenoti is silent about keep the panel's hours.
+         */
         summary.skippedUnpublished += 1;
-        if (manual.length !== (schedule.overrides || []).length) { schedule.overrides = manual; await schedule.save(); }
+        const manualKeys = new Set(manual.map((o) => `${o.date}|${o.branchId || ''}`));
+        const closures = [];
+        for (let i = 0; i <= SHIFT_WINDOW_DAYS; i += 1) {
+          const day = istDay(Date.now() + i * 864e5);
+          for (const branch of branches) {
+            if (!publishedDays.has(`${day}|${branch._id}`)) continue;
+            if (manualKeys.has(`${day}|${branch._id}`) || manualKeys.has(`${day}|`)) continue;
+            closures.push({ date: day, branchId: branch._id, unavailable: true, ranges: [], note: 'Not rostered in Zenoti', source: 'zenoti' });
+          }
+        }
+        schedule.overrides = [...manual, ...closures];
+        summary.clippedDays += closures.length;
+        await schedule.save();
         continue;
       }
       /*
@@ -385,8 +429,20 @@ async function syncDoctorShiftsFromZenoti({ trigger = 'schedule' } = {}) {
           zenotiWeekly.set(wk, { day: weekday, branchId, ranges: shifts.map((r) => ({ start: r.start, end: r.end })), firstDate: date, source: 'zenoti' });
         }
       }
+      /*
+       * A panel row with no branch was being kept even when Zenoti HAD
+       * published a roster for this doctor, so the two stacked: the panel's
+       * "10:00-13:00 + 14:00-19:00" sat alongside Zenoti's "10:00-19:00" and
+       * the union was offered to guests. That is how the app came to advertise
+       * hours Zenoti has no roster for — and a booking into one of them fails
+       * at Zenoti with "no slots", which is exactly what the desk kept seeing.
+       *
+       * Once Zenoti has published anything for a doctor, Zenoti is the schedule
+       * of record for them. Panel rows survive only for a NAMED branch Zenoti
+       * has said nothing about.
+       */
       const keptPanelWeekly = (schedule.weekly || []).filter((w) => w.source !== 'zenoti'
-        && (!w.branchId || !publishedBranches.has(String(w.branchId))));
+        && w.branchId && !publishedBranches.has(String(w.branchId)));
       schedule.weekly = [
         ...keptPanelWeekly,
         ...[...zenotiWeekly.values()].map(({ day, branchId, ranges, source }) => ({ day, branchId, ranges, source })),
@@ -405,7 +461,16 @@ async function syncDoctorShiftsFromZenoti({ trigger = 'schedule' } = {}) {
           const rowsForBranch = weeklyRows.filter((w) => !w.branchId || String(w.branchId) === String(branch._id));
           const panelRanges = rowsForBranch.flatMap((w) => (w.ranges || []).map((r) => ({ start: r.start, end: r.end })));
           if (!panelRanges.length) continue; // the panel never opened this day/centre; nothing to restrict
-          if (!shifts.length) continue; // Zenoti is silent about this day: panel hours stand
+          if (!shifts.length) {
+            // Published day, no shift for this doctor: they are off. Closing the
+            // day is the whole point — otherwise the app sells an hour Zenoti
+            // will refuse to book.
+            if (publishedDays.has(`${day}|${branch._id}`)) {
+              generated.push({ date: day, branchId: branch._id, unavailable: true, ranges: [], note: 'Not rostered in Zenoti on this day', source: 'zenoti' });
+              summary.clippedDays += 1;
+            }
+            continue; // otherwise Zenoti is silent about the day: panel hours stand
+          }
           const clipped = clip(panelRanges, shifts);
           const same = clipped.length === panelRanges.length && clipped.every((r, idx) => r.start === panelRanges[idx].start && r.end === panelRanges[idx].end);
           if (!same) {
