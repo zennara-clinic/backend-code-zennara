@@ -21,11 +21,23 @@ const validationError = (res, error) => {
 // Get all branches
 exports.getAllBranches = async (req, res) => {
   try {
-    const { activeOnly = 'true' } = req.query;
-    
+    const { activeOnly = 'true', kind } = req.query;
+
     const filter = {};
     if (activeOnly === 'true') {
       filter.isActive = true;
+    }
+    /*
+     * Only the clinics — Jubilee Hills, Kondapur and Financial District — are
+     * centres a guest attends. The pharmacies and the training centre exist in
+     * Zenoti and hold stock, but nothing is booked, sold or assigned at them,
+     * so they must never reach a centre picker. `kind=clinic` asks for those
+     * three; the stock pages pass nothing and get everything.
+     */
+    if (kind === 'clinic') {
+      filter.$or = [{ centreType: 'clinic' }, { centreType: { $exists: false } }, { centreType: null }];
+    } else if (kind) {
+      filter.centreType = kind;
     }
 
     const branches = await Branch.find(filter)
