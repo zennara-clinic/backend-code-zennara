@@ -120,7 +120,17 @@ const INTERNAL = /\b(staff|internal|test|demo|trial|training)\b|[-/]\s*dr\.?\s*\
       const have = tokens(z.name);
       let hit = 0;
       want.forEach((t) => { if (have.has(t)) hit += 1; });
-      return { z, score: hit / want.size, len: String(z.name).length };
+      return {
+        z,
+        score: hit / want.size,
+        // How much of ZENOTI's name we account for. A short Zenoti name fully
+        // contained in ours is a strong signal the other way round: "Derma Pen
+        // / Micro Needling" only covers 50% of its own words with "Derma Pen
+        // Treatment", but that Zenoti line is 100% accounted for by ours.
+        covers: have.size ? hit / have.size : 0,
+        zTokens: have.size,
+        len: String(z.name).length,
+      };
     }).filter((x) => x.score > 0)
       // Best coverage first; then the SHORTEST name, which is the base variant
       // rather than a body-part or dose-specific line.
@@ -152,8 +162,16 @@ const INTERNAL = /\b(staff|internal|test|demo|trial|training)\b|[-/]\s*dr\.?\s*\
      */
     const single = want.size === 1;
     const distinctive = single && first && first.length >= 6 && best.score === 1;
+    /*
+     * A Zenoti line whose every distinctive word appears in ours is the same
+     * thing said shorter — provided it has at least two such words. One word
+     * is not enough: "ZO Facials" reduces to {facials}, which "Medifacials &
+     * Signature Facials" contains, yet ZO is a particular brand of facial.
+     */
+    const containedInOurs = best.covers === 1 && best.zTokens >= 2;
     const confident = (want.size >= 2 && best.score >= 0.6)
       || (want.size <= 2 && startsWithOurs)
+      || containedInOurs
       || distinctive;
     if (!confident) {
       stuck.push({ c, why: `closest is "${best.z.name}" at only ${Math.round(best.score * 100)}% — too weak to book against` });

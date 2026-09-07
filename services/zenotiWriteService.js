@@ -620,6 +620,47 @@ async function syncBooking(bookingId) {
     // Prefer the confirmed date/time, else the requested one.
     const date = clinicDay(booking.confirmedDate || booking.preferredDate || new Date());
 
+    /*
+     * A visit booked at the desk with several services is ONE visit.
+     *
+     * The panel writes a booking per service, tied together by visitGroupId.
+     * Pushing them one at a time gave Zenoti three unrelated appointments for
+     * the same guest at the same hour, which the desk then has to reconcile by
+     * hand — and if the second service had no mapping, half the visit silently
+     * went missing. Zenoti takes several services in one booking, so the whole
+     * group goes together and every line comes back with its own appointment
+     * id under one group id.
+     */
+    const siblings = booking.visitGroupId
+      ? await Booking.find({
+        visitGroupId: booking.visitGroupId,
+        zenotiAppointmentId: null,
+        status: { $nin: ['Cancelled', 'No Show'] },
+      }).sort({ createdAt: 1 })
+      : [];
+    // The first sibling to run pushes the whole group; the others are marked
+    // synced from its result, so two of them cannot open two Zenoti bookings.
+    if (siblings.length > 1 && String(siblings[0]._id) !== String(booking._id)) {
+      logger.info('Skipping: another line of this visit group is pushing it', { bookingId: booking._id, visitGroupId: booking.visitGroupId });
+      return;
+    }
+
+    const groupItems = [];
+    const groupLines = [];
+    if (siblings.length > 1) {
+      for (const sib of siblings) {
+        const sibConsultation = sib.consultationId ? await Consultation.findById(sib.consultationId).lean().catch(() => null) : null;
+        const sibServiceId = await resolveServiceId(centerId, sibConsultation);
+        if (!sibServiceId) {
+          // One unmapped line must not silently drop out of a visit.
+          throw new Error(`"${sibConsultation?.name || 'a service in this visit'}" has no Zenoti service mapped, so the whole visit was not booked. Map it, then push again.`);
+        }
+        const sibTherapist = await resolveTherapistId(sib);
+        groupItems.push({ item: { id: sibServiceId }, ...(sibTherapist ? { therapist: { id: sibTherapist, gender: 3 } } : {}) });
+        groupLines.push({ booking: sib, serviceId: sibServiceId });
+      }
+    }
+
     const payload = {
       center_id: centerId,
       date,
@@ -628,7 +669,9 @@ async function syncBooking(bookingId) {
         {
           id: guestId,
           // Booking therapist gender enum: 0 any, 3 = this specific employee.
-          items: [{ item: { id: serviceId }, ...(therapistId ? { therapist: { id: therapistId, gender: 3 } } : {}) }],
+          items: groupItems.length
+            ? groupItems
+            : [{ item: { id: serviceId }, ...(therapistId ? { therapist: { id: therapistId, gender: 3 } } : {}) }],
         },
       ],
       notes: `Zennara ${booking.source === 'reception' ? 'reception' : 'app'} booking ${booking.referenceNumber || booking._id}`,
@@ -703,6 +746,30 @@ async function syncBooking(bookingId) {
     booking.zenotiSyncedAt = new Date();
     booking.zenotiSyncError = null;
     await booking.save({ validateModifiedOnly: true });
+
+    // Each line of a multi-service visit gets its own appointment id from the
+    // same confirm, matched back by the service it was booked for.
+    if (groupLines.length > 1) {
+      const items = invoice.items || invoice.Items || [];
+      for (const { booking: sib, serviceId: sibServiceId } of groupLines) {
+        if (String(sib._id) === String(booking._id)) continue;
+        const match = items.find((it) => String(it.service_id || it.ServiceId || '').toLowerCase() === String(sibServiceId).toLowerCase())
+          || items.find((it) => !(it._claimed) && (it._claimed = true));
+        sib.zenotiBookingId = zBookingId;
+        sib.zenotiGuestId = guestId;
+        sib.zenotiAppointmentId = match?.appointment_id || match?.AppointmentId || booking.zenotiAppointmentId;
+        sib.zenotiInvoiceId = booking.zenotiInvoiceId;
+        sib.zenotiInvoiceItemId = match?.invoice_item_id || match?.InvoiceItemId || null;
+        sib.zenotiAppointmentGroupId = booking.zenotiAppointmentGroupId;
+        sib.zenotiServiceId = sibServiceId;
+        sib.zenotiSyncStatus = 'synced';
+        sib.zenotiSyncedAt = new Date();
+        sib.zenotiSyncError = null;
+        sib.$locals.skipZenotiWrite = true;
+        await sib.save({ validateModifiedOnly: true }).catch(() => {});
+      }
+      logger.info('Pushed a multi-service visit to Zenoti as one booking', { visitGroupId: booking.visitGroupId, lines: groupLines.length });
+    }
     logger.info('Pushed booking to Zenoti', { bookingId: booking._id });
   } catch (err) {
     booking.zenotiSyncStatus = 'failed';
