@@ -150,10 +150,18 @@ exports.updateOrderStatus = async (req, res) => {
         message: 'Assign a delivery partner so the delivery attempt is recorded',
       });
     }
-    if (['Return Requested', 'Returned'].includes(status)) {
+    if (status === 'Returned') {
       return res.status(400).json({
         success: false,
-        message: 'Use the return workflow to update this status',
+        message: 'Complete the return from the return workflow so the refund and stock are handled together',
+      });
+    }
+    // Guests phone the clinic to return things. The desk raises the request on
+    // their behalf here; completing it still goes through the return workflow.
+    if (status === 'Return Requested' && order.orderStatus !== 'Delivered') {
+      return res.status(400).json({
+        success: false,
+        message: 'Only a delivered order can be returned',
       });
     }
     if (['Delivered', 'Return Requested', 'Returned', 'Cancelled'].includes(order.orderStatus)) {
@@ -595,17 +603,25 @@ exports.deleteOrder = async (req, res) => {
       });
     }
     
-    // Restore stock if order is not delivered
-    if (!['Delivered', 'Cancelled'].includes(order.orderStatus)) {
-      for (const item of order.items) {
-        const product = await Product.findById(item.productId);
-        if (product) {
-          product.stock += item.quantity;
-          await product.save();
-        }
-      }
+    /*
+     * Deleting an order used to add every item's quantity back to stock with no
+     * regard for whether it had already been restored (a return or cancellation
+     * restores it once, and the guard for that lives on the order). Doing it
+     * again invented stock. It also hard-deleted paid orders, destroying the
+     * Razorpay trail for money the guest had actually handed over.
+     */
+    if (order.paymentStatus === 'Paid' || order.paymentStatus === 'Partially Refunded') {
+      return res.status(409).json({
+        success: false,
+        code: 'ORDER_PAID',
+        message: 'This order has money against it. Refund it first, then delete — deleting now would destroy the payment trail.',
+      });
     }
-    
+
+    // Idempotent: does nothing if a cancellation or return already restored it.
+    const { restoreStockOnce } = require('../services/orderLifecycleService');
+    await restoreStockOnce(order._id, 'Order deleted by admin').catch(() => {});
+
     await order.deleteOne();
     
     res.json({

@@ -453,11 +453,12 @@ exports.verifyProductPayment = async (req, res) => {
       
       if (!updated) {
         // Rollback previously processed items
+        // Untracked products were never decremented, so they must not be
+        // credited back here — that invented stock out of a failed order.
         for (const processed of processedItems) {
-          await Product.findByIdAndUpdate(
-            processed.productId,
+          await Product.updateOne(
+            { _id: processed.productId, trackStock: { $ne: false } },
             { $inc: { stock: processed.quantity } },
-            // (no-op for untracked products: the filter below excludes them)
           );
         }
 

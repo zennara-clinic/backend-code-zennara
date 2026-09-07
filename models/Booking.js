@@ -278,7 +278,16 @@ const bookingSchema = new mongoose.Schema({
   cancelledAt: Date,
   rescheduledFrom: {
     date: Date,
-    time: String
+    time: String,
+    /**
+     * Why the clinic moved it, in the guest's words. Shown in the app — a
+     * guest who opens the booking and finds a different time deserves the
+     * reason without having to phone. Distinct from `adminNotes`, which is
+     * internal and never leaves the panel.
+     */
+    reason: String,
+    /** 'clinic' when staff moved it; 'guest' for legacy guest-requested moves. */
+    by: { type: String, enum: ['clinic', 'guest', null], default: null },
   },
   rescheduledAt: Date,
   // True after the clinic declines a reschedule request (the booking is put

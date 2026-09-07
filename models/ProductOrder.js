@@ -109,7 +109,13 @@ const productOrderSchema = new mongoose.Schema({
   source: { type: String, enum: ['app', 'zenoti'], default: 'app', index: true },
   paymentStatus: {
     type: String,
-    enum: ['Pending', 'Paid', 'Failed', 'Refunded'],
+    /**
+     * 'Partially Refunded' exists because the panel offers an editable refund
+     * amount. Without it a part refund left the order 'Paid' and its
+     * refundDetails 'Completed', which read as fully settled and blocked the
+     * balance from ever being returned.
+     */
+    enum: ['Pending', 'Paid', 'Failed', 'Refunded', 'Partially Refunded'],
     default: 'Pending'
   },
   orderStatus: {
@@ -190,15 +196,35 @@ const productOrderSchema = new mongoose.Schema({
       enum: ['Razorpay', 'Bank Transfer', 'UPI', 'Store Credit', 'Cash'],
       default: null
     },
+    /** The most recent refund's amount. `amountRefunded` is the running total. */
     amount: {
       type: Number,
       default: 0
+    },
+    /**
+     * Everything returned to the guest so far, across every part refund. This
+     * is what decides whether more can be returned, never `amount`.
+     */
+    amountRefunded: {
+      type: Number,
+      default: 0,
+      min: 0,
     },
     status: {
       type: String,
       enum: ['Pending', 'Processing', 'Completed', 'Failed'],
       default: 'Pending'
     },
+    /** One row per refund attempt, so a part-refunded order can be audited. */
+    history: [{
+      amount: Number,
+      razorpayRefundId: String,
+      status: { type: String, enum: ['Processing', 'Completed', 'Failed'] },
+      at: { type: Date, default: Date.now },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+      note: String,
+      _id: false,
+    }],
     bankDetails: {
       accountHolderName: String,
       bankName: String,

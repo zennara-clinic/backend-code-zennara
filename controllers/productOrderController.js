@@ -635,7 +635,13 @@ exports.cancelOrder = async (req, res) => {
       });
     }
     
-    const customerCancellable = ['Order Placed', 'Confirmed', 'Processing', 'Packed'];
+    /*
+     * 'Delivery Failed' is included deliberately: the courier could not hand the
+     * parcel over, so it is on its way back to us. Without this the guest was
+     * stuck — unable to cancel, unable to return (never delivered), with their
+     * money held. Cancelling here refunds them and restores the stock.
+     */
+    const customerCancellable = ['Order Placed', 'Confirmed', 'Processing', 'Packed', 'Delivery Failed'];
     if (order.orderStatus !== 'Cancelled' && !customerCancellable.includes(order.orderStatus)) {
       return res.status(400).json({
         success: false,

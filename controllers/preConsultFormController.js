@@ -130,6 +130,37 @@ exports.getMyFormStatus = async (req, res) => {
       status: { $in: ['Submitted', 'Approved', 'Reviewed'] },
     }).select('_id status updatedAt').sort({ updatedAt: -1 }).lean();
 
+    /*
+     * Guests the clinic already knows filled this intake on paper, at the
+     * desk, years before the app existed. Blocking them behind a form they
+     * have physically signed would stop long-standing customers from booking,
+     * so an existing clinic record counts as the intake being done: a
+     * completed visit, an owned package, or a dermatologist's prescription.
+     * The desk still holds the paper, and the panel shows this as waived
+     * rather than submitted so nobody mistakes it for an app submission.
+     */
+    if (!done) {
+      const { getGuestEligibility } = require('../utils/guestEligibility');
+      const eligibility = await getGuestEligibility(req.user._id).catch(() => null);
+      if (eligibility && !eligibility.isNewGuest) {
+        const held = eligibility.completedVisits > 0
+          ? 'an earlier visit'
+          : eligibility.canRedeemPackages ? 'a package bought at the clinic' : 'a clinic prescription';
+        return res.status(200).json({
+          success: true,
+          data: {
+            hasSubmitted: true,
+            waived: true,
+            waivedReason: `Completed at the clinic — we have your form on file from ${held}.`,
+            formId: null,
+            status: 'Completed at the clinic',
+            draftId: null,
+            submittedAt: null,
+          },
+        });
+      }
+    }
+
     // A half-finished form lets the app reopen the draft instead of a blank one.
     const draft = done ? null : await PreConsultForm.findOne({ userId: req.user._id, status: 'Draft' })
       .select('_id').sort({ updatedAt: -1 }).lean();
@@ -138,6 +169,8 @@ exports.getMyFormStatus = async (req, res) => {
       success: true,
       data: {
         hasSubmitted: !!done,
+        waived: false,
+        waivedReason: null,
         formId: done?._id || null,
         status: done?.status || (draft ? 'Draft' : null),
         draftId: draft?._id || null,

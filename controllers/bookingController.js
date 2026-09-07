@@ -489,145 +489,38 @@ exports.cancelBooking = async (req, res) => {
 // @route   PUT /api/bookings/:id/reschedule
 // @access  Private
 exports.rescheduleBooking = async (req, res) => {
+  /*
+   * Guests no longer reschedule from the app.
+   *
+   * A dermatologist's diary is the clinic's to arrange: a guest moving their
+   * own slot could take a time the desk had held, and a consultation that has
+   * already been paid for must not drift without someone at the desk seeing
+   * it. Reception reschedules from the panel instead, with a reason the guest
+   * then sees on the booking.
+   *
+   * The route stays (rather than being deleted) so app builds that still show
+   * the old button get this explanation instead of a 404.
+   */
   try {
-    const { newDate, newTimeSlots } = req.body;
-
-    const booking = await Booking.findOne({
-      _id: req.params.id,
-      userId: req.user._id
-    });
-
-    if (!booking) {
-      return res.status(404).json({
-        success: false,
-        message: 'Booking not found'
-      });
-    }
-
-    // An appointment booked in Zenoti is changed in Zenoti, always: a change
-    // made only here would leave the clinic's diary expecting the guest (see
-    // ZENOTI-NO-SHOW-INCIDENT).
-    if (booking.source === 'zenoti') {
-      return res.status(409).json({
-        success: false,
-        code: 'CLINIC_BOOKING_CHANGE_AT_CLINIC',
-        message: 'This appointment was booked at the clinic. Please call the clinic to change or cancel it — changes made there appear here within a few minutes.'
-      });
-    }
-    const reschedulableStatuses = ['Confirmed', 'Rescheduled'];
-    if (!reschedulableStatuses.includes(booking.status)) {
-      return res.status(400).json({
-        success: false,
-        code: 'BOOKING_NOT_RESCHEDULABLE',
-        message: 'Booking cannot be rescheduled at this stage'
-      });
-    }
-
-    if (!booking.canBeRescheduled()) {
-      return res.status(409).json({
-        success: false,
-        code: 'RESCHEDULING_WINDOW_CLOSED',
-        message: "Appointments can't be rescheduled within 24 hours of the scheduled check-in time. Please contact the clinic for help."
-      });
-    }
-
-    // Remember the ORIGINAL confirmed slot, so the clinic can revert to it if it
-    // declines the request.
-    const originalDate = booking.confirmedDate || booking.preferredDate;
-    const originalTime = booking.confirmedTime || booking.preferredTimeSlots[0];
-    const oldDate = originalDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
-    const oldTime = originalTime;
-
-    booking.rescheduledFrom = { date: originalDate, time: originalTime };
-
-    // This is a REQUEST: put the new times in as preferred and drop the
-    // confirmed slot so the appointment goes back to "awaiting confirmation of
-    // the new time" (status Rescheduled). The clinic then accepts or declines.
-    booking.preferredDate = new Date(newDate);
-    booking.preferredTimeSlots = newTimeSlots;
-    booking.confirmedDate = undefined;
-    booking.confirmedTime = undefined;
-    // The diary reads slotTime against preferredDate — left as the OLD time it
-    // would block the wrong slot on the NEW date. While the request is pending
-    // the new preferred times hold the diary; declining restores the original
-    // hold through confirmedTime.
-    if (booking.slotTime) booking.slotTime = null;
-    booking.status = 'Rescheduled';
-    booking.rescheduleRejected = false;
-    booking.rescheduledAt = new Date();
-
-    await booking.save();
-
-    // Populate consultation details for email
-    await booking.populate('consultationId', 'name');
-
-    // Create notification for reschedule
-    try {
-      await NotificationHelper.bookingRescheduled({
-        _id: booking._id,
-        userId: booking.userId,
-        patientName: booking.fullName,
-        consultation: { name: booking.consultationId.name },
-        confirmedDate: booking.preferredDate,
-        confirmedTime: booking.preferredTimeSlots[0]
-      });
-      console.log('🔔 Booking reschedule request notification created');
-    } catch (notifError) {
-      console.error('⚠️ Failed to create notification:', notifError.message);
-    }
-
-    // Send rescheduled email
-    try {
-      await emailService.sendAppointmentRescheduled(
-        booking.email,
-        booking.fullName,
-        {
-          referenceNumber: booking.referenceNumber,
-          treatment: booking.consultationId.name,
-          oldDate: oldDate,
-          oldTime: oldTime,
-          newDate: booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
-          newTime: booking.preferredTimeSlots[0],
-          location: booking.preferredLocation
-        },
-        booking.preferredLocation
-      );
-      console.log('📧 Reschedule email sent');
-    } catch (emailError) {
-      console.error('⚠️ Email sending failed:', emailError.message);
-    }
-
-    // Send WhatsApp rescheduled notification
-    try {
-      if (!(await guestMessaging.shouldSendBookingWhatsApp(booking, 'rescheduled')).ok) throw Object.assign(new Error('suppressed: Zenoti sends guest messages for this centre'), { suppressed: true });
-      await whatsappService.sendAppointmentRescheduled(
-        booking.mobileNumber,
-        {
-          patientName: booking.fullName,
-          referenceNumber: booking.referenceNumber,
-          treatment: booking.consultationId.name,
-          oldDate: oldDate,
-          oldTime: oldTime,
-          newDate: booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
-          newTime: booking.preferredTimeSlots[0],
-          location: booking.preferredLocation
-        }
-      );
-      console.log('WhatsApp reschedule notification sent');
-    } catch (whatsappError) {
-      console.error('WhatsApp sending failed:', whatsappError.message);
-    }
-
-    res.status(200).json({
-      success: true,
-      message: 'Reschedule requested — the clinic will confirm one of your new times shortly.',
-      data: booking
+    const booking = await Booking.findOne({ _id: req.params.id, userId: req.user._id })
+      .select('branchId')
+      .populate('branchId', 'name contact');
+    const phone = booking?.branchId?.contact?.phone?.[0]?.number
+      || booking?.branchId?.contact?.phone?.[0]
+      || null;
+    return res.status(409).json({
+      success: false,
+      code: 'RESCHEDULE_AT_CLINIC',
+      message: phone
+        ? `To move this appointment, please call the clinic on ${phone} and we will find you a new time.`
+        : 'To move this appointment, please call the clinic and we will find you a new time.',
+      data: { clinicPhone: phone, branchName: booking?.branchId?.name || null },
     });
   } catch (error) {
-    console.error('❌ Reschedule booking error:', error);
-    res.status(500).json({
+    return res.status(409).json({
       success: false,
-      message: 'Failed to reschedule booking'
+      code: 'RESCHEDULE_AT_CLINIC',
+      message: 'To move this appointment, please call the clinic and we will find you a new time.',
     });
   }
 };
@@ -2415,6 +2308,10 @@ exports.rescheduleBookingAdmin = async (req, res) => {
     booking.rescheduledFrom = {
       date: booking.confirmedDate || booking.preferredDate,
       time: booking.confirmedTime || booking.preferredTimeSlots?.[0],
+      // The guest sees this in the app, so it travels on the booking rather
+      // than only in the internal notes.
+      reason: reason || undefined,
+      by: 'clinic',
     };
     booking.rescheduledAt = new Date();
     booking.preferredDate = clinicDayStart(preferredDate);

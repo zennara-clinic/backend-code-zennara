@@ -1,4 +1,5 @@
 const ProductOrder = require('../models/ProductOrder');
+const Payment = require('../models/Payment');
 const User = require('../models/User');
 const { initiateOnlineRefund } = require('../services/orderLifecycleService');
 const whatsappService = require('../services/whatsappService');
@@ -85,33 +86,43 @@ exports.initiateRefund = async (req, res) => {
       });
     }
 
-    if (order.refundDetails?.status === 'Completed') {
+    // A settled refund no longer blocks the balance: a part refund leaves money
+    // still owed, and that must remain refundable.
+    const alreadyRefunded = Number(order.refundDetails?.amountRefunded || 0);
+    const refundable = Math.round((Number(order.pricing.total) - alreadyRefunded) * 100) / 100;
+    if (refundable <= 0) {
       return res.status(400).json({
         success: false,
-        message: 'A refund has already been completed for this order'
+        message: `This order has been refunded in full (Rs.${alreadyRefunded.toFixed(2)}).`,
       });
     }
     
     // Determine refund amount
     const amountToRefund = refundAmount === undefined || refundAmount === null
-      ? Number(order.pricing.total)
+      ? refundable
       : Number(refundAmount);
-    
-    // Validate refund amount
-    if (!validateRefundAmount(amountToRefund, order.pricing.total)) {
+
+    // Against the BALANCE, not the order total — otherwise two part refunds
+    // could together exceed what the guest paid.
+    if (!validateRefundAmount(amountToRefund, refundable)) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid refund amount. Must be between 0 and order total.'
+        message: alreadyRefunded > 0
+          ? `Only Rs.${refundable.toFixed(2)} is still refundable on this order (Rs.${alreadyRefunded.toFixed(2)} already returned).`
+          : 'Invalid refund amount. Must be between 0 and the order total.',
       });
     }
     
     // Check payment method and process accordingly
     let refundOrder = order;
     
-    if (order.paymentMethod === 'COD') {
-      console.log('Processing COD refund manually');
-      
-      // COD Order - Manual refund process
+    /*
+     * The clinic takes only online payments, so this branch is not COD: it is
+     * the handful of orders paid at the clinic counter (mirrored from Zenoti),
+     * which Razorpay cannot refund. Staff return the money and record it here.
+     */
+    const isManualRefund = !['Razorpay', 'Online'].includes(order.paymentMethod);
+    if (isManualRefund) {
       if (!refundMethod || !['Bank Transfer', 'UPI', 'Cash', 'Store Credit'].includes(refundMethod)) {
         return res.status(400).json({
           success: false,
@@ -199,7 +210,11 @@ exports.initiateRefund = async (req, res) => {
       }
     }
 
-    if (order.paymentMethod === 'COD') {
+    if (isManualRefund) {
+      order.refundDetails.amountRefunded = alreadyRefunded + amountToRefund;
+      order.paymentStatus = order.refundDetails.amountRefunded >= Number(order.pricing.total)
+        ? 'Refunded'
+        : 'Partially Refunded';
       await order.save();
       refundOrder = order;
     }
@@ -324,9 +339,21 @@ exports.completeRefund = async (req, res) => {
       order.refundDetails.notes = (order.refundDetails.notes || '') + '\n' + notes;
     }
     
-    // Update payment status
-    order.paymentStatus = 'Refunded';
-    
+    /*
+     * Cumulative, and mirrored onto the Payment record. These used to disagree:
+     * the order read 'Refunded' while its payment still read 'captured', and a
+     * part refund was marked as though the whole order had been returned.
+     */
+    const settledNow = Number(order.refundDetails.amountRefunded || 0) + Number(order.refundDetails.amount || 0);
+    order.refundDetails.amountRefunded = settledNow;
+    order.paymentStatus = settledNow >= Number(order.pricing.total) ? 'Refunded' : 'Partially Refunded';
+    if (order.razorpayPaymentId) {
+      await Payment.findOneAndUpdate(
+        { razorpayPaymentId: order.razorpayPaymentId },
+        { status: order.paymentStatus === 'Refunded' ? 'refunded' : 'partially_refunded' },
+      ).catch(() => {});
+    }
+
     // Add to status history with admin info
     order.statusHistory.push({
       status: 'Refund Completed',
