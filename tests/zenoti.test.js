@@ -3,6 +3,8 @@ const assert = require('node:assert/strict');
 
 const zenoti = require('../services/zenotiService');
 const { isMembershipCurrentlyActive } = require('../services/zenotiSyncService');
+const { isZenMembership } = require('../config/zenoti');
+const { statusOf } = require('../services/zenotiMembershipMirror');
 const User = require('../models/User');
 const Booking = require('../models/Booking');
 const { appointmentLocalParts, localStatus } = require('../services/zenotiAppointmentSyncService');
@@ -57,6 +59,46 @@ test('membership normalizer retains Zen benefits and active status is correct', 
   assert.equal(membership.guestPassBalance, 1);
   assert.equal(isMembershipCurrentlyActive(membership), true);
   assert.equal(isMembershipCurrentlyActive({ status: 5, expiryDate: '2099-01-01' }), false);
+});
+
+/*
+ * The clinic sells ONE membership, but Zenoti carries it under every name it
+ * has ever had. Matching only on "zen" left the 26 guests on MVP-2026 / MVP Jh
+ * out of the Zen Member tier entirely, and their memberships out of the panel.
+ */
+test('every Zenoti name the one membership is sold under counts as Zen', () => {
+  for (const name of ['Zen Membership', 'Zen Membership Programme', 'MVP', 'MVP-2026', 'MVP Jh', 'NEW MVP']) {
+    assert.equal(isZenMembership(name), true, `${name} should be the Zen membership`);
+  }
+  // Codes carry it too — a guest's row is coded MVPJH / Zen member123.
+  for (const code of ['MVPJH', 'Zen member123', 'Zenmember02']) {
+    assert.equal(isZenMembership(code), true, `${code} should be the Zen membership`);
+  }
+  // The discount tiers in Zenoti that were never sold are NOT the membership.
+  for (const other of ['Zennara Essential – 20% OFF', 'Zennara Prime – 30% OFF', 'Platinum Membership – 40% off']) {
+    assert.equal(isZenMembership(other), false, `${other} is not the Zen membership`);
+  }
+});
+
+test('mirrored membership status follows Zenoti, then the expiry, then refunds', () => {
+  const future = '2099-01-01', past = '2020-01-01';
+  assert.equal(statusOf({ status: 1, expiryDate: future }), 'Active');
+  assert.equal(statusOf({ status: 5, expiryDate: past }), 'Expired');
+  // Zenoti says expired but the date has not passed — Zenoti wins.
+  assert.equal(statusOf({ status: 5, expiryDate: future }), 'Expired');
+  // Zenoti says active but the date has passed — the date wins.
+  assert.equal(statusOf({ status: 1, expiryDate: past }), 'Expired');
+  // A refund cancels it whatever the dates say.
+  assert.equal(statusOf({ status: 1, expiryDate: future, isRefunded: true }), 'Cancelled');
+});
+
+test('normalized membership carries the Zenoti product id for price lookup', () => {
+  const m = zenoti.normalizeMembership({
+    user_membership_id: 'um-1', status: 1, expiry_date: '2099-01-01',
+    membership: { id: 'prod-1', name: 'MVP Jh', code: 'MVPJH' },
+  });
+  assert.equal(m.membershipId, 'prod-1');
+  assert.equal(m.id, 'um-1');
 });
 
 test('note and form normalizers return stable admin-panel shapes', () => {

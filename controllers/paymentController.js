@@ -595,7 +595,7 @@ exports.createMembershipPayment = async (req, res) => {
      */
     const AppCustomization = require('../models/AppCustomization');
     const settings = await AppCustomization.getSettings();
-    const amount = Number(settings?.membership?.priceInr) > 0 ? Number(settings.membership.priceInr) : 110000;
+    const amount = Number(settings?.membership?.priceInr) > 0 ? Number(settings.membership.priceInr) : 135000;
 
     if (settings?.membership?.isActive === false) {
       return res.status(409).json({
@@ -1162,6 +1162,40 @@ async function activateMembership(userId, payment) {
     };
     payment.markModified('metadata');
     await payment.save();
+  }
+
+  /*
+   * Put the sale in the panel's member register too.
+   *
+   * The summary fields above are what the app reads, but the desk reads
+   * MembershipAssignment — so without this an app purchase was invisible in
+   * Memberships → Members and never counted towards the plan. One row per sale,
+   * against the single app-default plan, with that plan's credits and discounts
+   * frozen onto it. Guarded by membershipActivated above, so a retried verify or
+   * a late webhook cannot double-enrol.
+   */
+  try {
+    const MembershipM = require('../models/Membership');
+    const { createMemberAssignment } = require('./membershipController');
+    const plan = await MembershipM.findOne({ isAppDefault: true, isActive: true });
+    if (plan) {
+      await createMemberAssignment(plan, user, {
+        paymentMethod: 'Razorpay',
+        amount: payment ? payment.amount : plan.price,
+        amountPaid: payment ? payment.amount : plan.price,
+        balanceDue: 0,
+        paymentReceived: true,
+        transactionId: payment?.razorpayPaymentId || null,
+        extendFrom: stillActive ? user.zenMembershipExpiryDate : null,
+        source: 'app',
+        soldByName: 'App',
+      });
+    } else {
+      console.warn('⚠️  No app-default membership plan — app sale not added to the member register');
+    }
+  } catch (e) {
+    // Never fail a paid membership over a register hiccup; the summary is set.
+    console.error('❌ Could not add the app membership to the register:', e.message);
   }
 
   console.log('👑 Zen membership activated for', user.email, '→', user.zenMembershipExpiryDate.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' }));

@@ -16,3 +16,6 @@ WHATSAPP_SETUP_GUIDE.md
 QUICK_START_WHATSAPP.md
 AFTER_TEMPLATE_APPROVAL.md
 backups/
+
+# Throwaway one-off scripts run against the DB — never part of the repo.
+.zrun*.tmp.js

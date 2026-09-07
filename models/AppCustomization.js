@@ -245,7 +245,7 @@ const appCustomizationSchema = new mongoose.Schema({
     zenotiMembershipVersionId: { type: String, default: '', trim: true, lowercase: true },
     zenotiMembershipName: { type: String, default: '', trim: true },
     /** AUTHORITATIVE. What the member is actually charged, in rupees. */
-    priceInr: { type: Number, default: 110000, min: 0 },
+    priceInr: { type: Number, default: 135000, min: 0 },
     /** Struck-through "was" price. 0/absent = show nothing. */
     basePriceInr: { type: Number, default: 0, min: 0 },
     /** Displayed offer price. Presentation only; priceInr still charges. */

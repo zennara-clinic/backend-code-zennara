@@ -303,6 +303,23 @@ async function applyMembershipFromZenoti(user, prefetched) {
     const zenMemberships = memberships.filter(
       (m) => isZenMembership(m.name) || isZenMembership(m.code)
     );
+    // Mirror EVERY one of them into the panel's member register first — the
+    // desk needs the expired and cancelled rows too. The mirror ends by calling
+    // syncUserMembership(), which derives memberType / zenMembership* from
+    // those rows, so when it succeeds it OWNS the summary and the legacy
+    // field-by-field write below is skipped: it would otherwise relabel the
+    // plan with Zenoti's internal name ("MVP Jh") instead of Zen Membership,
+    // and could re-upgrade a guest the mirror had just expired.
+    if (zenMemberships.length) {
+      const { mirrorGuestMemberships } = require('./zenotiMembershipMirror');
+      const mirrored = await mirrorGuestMemberships(user._id, zenMemberships)
+        .catch((e) => {
+          logger.warn('Zen membership mirror failed (non-blocking)', { userId: user._id, error: e.message });
+          return null;
+        });
+      if (mirrored?.upserted) return true;
+    }
+    // Fallback path — the mirror could not write (plan missing, DB hiccup).
     // Prefer an active one; among actives, the one that expires latest.
     const active = zenMemberships
       .filter(isMembershipCurrentlyActive)

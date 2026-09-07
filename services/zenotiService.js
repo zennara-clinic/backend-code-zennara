@@ -505,6 +505,8 @@ function normalizeMembership(m) {
   const invoice = m.invoice || {};
   return {
     id: pick(m, 'user_membership_id', 'id'),
+    /** The Zenoti membership PRODUCT this guest holds (not their own row). */
+    membershipId: pick(m.membership || {}, 'id', 'Id') || null,
     name: pick(m.membership || {}, 'name', 'Name'),
     code: pick(m.membership || {}, 'code') || pick(m, 'member_code'),
     status: m.status ?? null, // numeric Zenoti code

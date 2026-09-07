@@ -284,36 +284,91 @@ async function syncPackages(stats) {
 }
 
 /**
- * Membership plans from Zenoti's centre lists → Membership rows (source
- * 'zenoti'). The API gives name, price, type and images; discount rules and
- * credits are NOT exposed, so they stay editable here and are never
- * overwritten. Nothing is written back to Zenoti.
+ * Zenoti prices come back as an object — { sales, tax, final } — not a number,
+ * so a bare Number() on it is NaN. Read the amount the guest actually pays.
  */
+function zenotiAmount(price) {
+  if (price === null || price === undefined) return 0;
+  if (typeof price === 'number') return price > 0 ? price : 0;
+  const n = Number(price.final ?? price.Final ?? price.sales ?? price.Sales ?? 0);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+/**
+ * The Zen membership from Zenoti → the ONE Membership row the panel and app
+ * sell.
+ *
+ * Zennara sells a single membership. Zenoti still carries the historical rows
+ * it has been sold under (Zen Membership, MVP, MVP-2026, MVP Jh, NEW MVP) plus
+ * discount tiers that were never sold (Zennara Essential / Prime / Platinum).
+ * Mirroring all of them gave the panel eight plans where the clinic has one,
+ * so this now keeps exactly one plan — the app-default "Zen Membership" — and
+ * retires every other mirrored row.
+ *
+ * Price, name, discounts and credits belong to the panel (App Studio → the
+ * membership card, and the plan editor). Zenoti's own list price is recorded
+ * in zenotiRaw for reference but never overwrites ours: the live selling price
+ * is a clinic decision, and Zenoti's rows disagree with each other.
+ */
+const ZEN_PLAN_CODE = 'ZEN-MEMBERSHIP';
+
 async function syncMemberships(stats) {
   const Membership = require('../models/Membership');
+  const { isZenMembership } = require('../config/zenoti');
   const { rows } = await collect((c) => zenoti.getCenterMemberships(c));
+
+  const zenRows = [];
   const seen = new Set();
   for (const m of rows) {
     if (!m.id || seen.has(m.id)) continue;
     seen.add(m.id);
-    try {
-      let doc = await Membership.findOne({ zenotiMembershipId: m.id });
-      if (!doc) {
-        const code = String(m.name || m.id).toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || m.id.slice(0, 8).toUpperCase();
-        const clash = await Membership.findOne({ code }).select('_id').lean();
-        doc = new Membership({ name: m.name || 'Membership', code: clash ? `${code}-${m.id.slice(0, 4).toUpperCase()}` : code, prefix: code.replace(/-/g, '').slice(0, 8), source: 'zenoti', zenotiMembershipId: m.id, isActive: m.canBook !== false, description: m.description || '' });
-        stats.memberships.created += 1;
-      } else stats.memberships.updated += 1;
-      doc.zenotiVersionId = m.versionId || doc.zenotiVersionId;
-      if (Number(m.price) > 0) doc.price = Number(m.discountedPrice) > 0 ? Number(m.discountedPrice) : Number(m.price);
-      if (m.isRecurring === true) doc.membershipType = 'recurring';
-      doc.zenotiRaw = { name: m.name, displayName: m.displayName, price: m.price, discountedPrice: m.discountedPrice, membershipType: m.membershipType, isRecurring: m.isRecurring, showPrice: m.showPrice, imagePaths: m.imagePaths };
-      doc.zenotiSyncedAt = new Date();
-      await doc.save();
-    } catch (error) {
-      stats.memberships.failed += 1;
-      logger.warn('Membership mirror failed', { zenotiMembershipId: m.id, name: m.name, error: error.message });
+    if (isZenMembership(m.name) || isZenMembership(m.code)) zenRows.push(m);
+  }
+  stats.memberships.zenotiRowsMatched = zenRows.map((m) => m.name);
+
+  try {
+    // The one plan. Found by app-default first so a rename in the panel sticks.
+    let doc = await Membership.findOne({ isAppDefault: true })
+      || await Membership.findOne({ code: ZEN_PLAN_CODE });
+    if (!doc) {
+      doc = new Membership({ name: 'Zen Membership', code: ZEN_PLAN_CODE, prefix: 'ZEN', source: 'zenoti', isAppDefault: true, isActive: true });
+      stats.memberships.created += 1;
+    } else stats.memberships.updated += 1;
+    doc.isAppDefault = true;
+    doc.isActive = true;
+    // Prefer the Zenoti row literally named "Zen Membership" as the link; fall
+    // back to whichever zen row the centres list first.
+    const anchor = zenRows.find((m) => /^zen membership$/i.test(String(m.name || '').trim())) || zenRows[0] || null;
+    if (anchor) {
+      doc.zenotiMembershipId = anchor.id;
+      doc.zenotiVersionId = anchor.versionId || doc.zenotiVersionId;
+      doc.zenotiRaw = {
+        name: anchor.name,
+        displayName: anchor.displayName,
+        zenotiListPrice: zenotiAmount(anchor.price),
+        price: anchor.price,
+        discountedPrice: anchor.discountedPrice,
+        membershipType: anchor.membershipType,
+        isRecurring: anchor.isRecurring,
+        showPrice: anchor.showPrice,
+        imagePaths: anchor.imagePaths,
+        // Every Zenoti row that counts as this one membership, with its list price.
+        variants: zenRows.map((m) => ({ id: m.id, name: m.name, listPrice: zenotiAmount(m.price) })),
+      };
     }
+    doc.zenotiSyncedAt = new Date();
+    await doc.save();
+
+    // Everything else Zenoti ever gave us leaves the sellable list. Nothing is
+    // deleted — member rows and history stay intact behind "include inactive".
+    const retired = await Membership.updateMany(
+      { _id: { $ne: doc._id }, source: 'zenoti', isActive: true },
+      { $set: { isActive: false, isAppDefault: false } },
+    );
+    stats.memberships.retired = retired.modifiedCount || 0;
+  } catch (error) {
+    stats.memberships.failed += 1;
+    logger.warn('Zen membership mirror failed', { error: error.message });
   }
 }
 
@@ -353,7 +408,7 @@ async function syncCatalog({ trigger = 'schedule', adminId = null } = {}) {
   const stats = {
     services: { created: 0, updated: 0, unchanged: 0, failed: 0, missingFromZenoti: [] },
     packages: { created: 0, updated: 0, unchanged: 0, failed: 0, missingFromZenoti: [] },
-    memberships: { created: 0, updated: 0, failed: 0 },
+    memberships: { created: 0, updated: 0, failed: 0, retired: 0, zenotiRowsMatched: [] },
     pricesSynced: syncPrices(),
   };
   try {
@@ -378,4 +433,4 @@ async function syncCatalog({ trigger = 'schedule', adminId = null } = {}) {
   return stats;
 }
 
-module.exports = { syncCatalog };
+module.exports = { syncCatalog, syncMemberships };

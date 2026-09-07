@@ -42,18 +42,24 @@ const DEFAULT_BRANCH_NAME = 'Jubilee Hills';
 /**
  * Which Zenoti membership products count as Zennara's "Zen Member" tier.
  *
- * A guest holding a matching ACTIVE membership in Zenoti is treated as a Zen
- * Member in the app. Matching is case-insensitive substring on the membership
- * name. Set the exact product name(s) once known:
- *   ZENOTI_ZEN_MEMBERSHIP_NAMES="Zen Membership,Zen Wellness"
- * Default 'zen' matches any membership whose name contains "zen".
+ * Zennara sells ONE membership. Zenoti carries it under several rows built up
+ * over the years — "Zen Membership" (the original), then "MVP", "MVP-2026",
+ * "MVP Jh" and "NEW MVP" — and every guest holding any of them is a Zen
+ * Member here. Matching is case-insensitive substring on the membership name
+ * OR its code, so "MVPJH" and "Zen member123" both land.
+ *
+ * The named-but-unsold discount tiers in Zenoti (Zennara Essential / Prime /
+ * Platinum) are deliberately NOT matched — they are not the Zen membership.
+ *
+ * Override with ZENOTI_ZEN_MEMBERSHIP_NAMES="Zen Membership,MVP" if the
+ * clinic renames the product in Zenoti.
  */
-const ZEN_MEMBERSHIP_MATCHERS = (process.env.ZENOTI_ZEN_MEMBERSHIP_NAMES || 'zen')
+const ZEN_MEMBERSHIP_MATCHERS = (process.env.ZENOTI_ZEN_MEMBERSHIP_NAMES || 'zen membership,zenmember,zen member,mvp')
   .split(',')
   .map((s) => s.trim().toLowerCase())
   .filter(Boolean);
 
-/** Does this Zenoti membership name map to the app's Zen Member tier? */
+/** Does this Zenoti membership name (or code) map to the app's Zen Member tier? */
 function isZenMembership(name) {
   if (!name) return false;
   const lower = String(name).toLowerCase();
