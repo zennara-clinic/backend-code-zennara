@@ -146,6 +146,28 @@ const looseKey = (s) => norm(s)
  * → code → exact name → loose name → for a consultation-type entry, Zenoti's
  * generic "Consultation". Bookable (catalog) services are preferred.
  */
+/**
+ * A date of birth in the only shape Zenoti accepts: yyyy-mm-dd.
+ *
+ * `User.dateOfBirth` is free text, and the app and the panel have written it
+ * both ways. Zenoti rejects anything else with "date_of_birth is mandatory" —
+ * which reads as a missing field, so the real cause (a dd/mm/yyyy string) hid
+ * behind a misleading message. The guest is then never created, and every
+ * booking for them dies with "Guest is not in Zenoti yet".
+ */
+function zenotiDob(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return undefined;
+  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10);
+  const dmy = raw.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
+  if (dmy) {
+    const [, d, m, y] = dmy;
+    return `${y}-${m.padStart(2, '0')}-${d.padStart(2, '0')}`;
+  }
+  const parsed = new Date(raw);
+  return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString().slice(0, 10);
+}
+
 async function resolveServiceId(centerId, consultation) {
   if (!consultation) return null;
   if (consultation.zenotiServiceId) return String(consultation.zenotiServiceId).toLowerCase();
@@ -281,7 +303,7 @@ async function ensureGuest(user) {
       // +91 dialing code — that goes in phone_code. Verified against live guests.
       mobile_phone: phone ? { country_code: 95, phone_code: 91, number: phone } : undefined,
       gender: toZenotiGender(user.gender), // 0=Female, 1=Male, -1=None (2 is invalid)
-      date_of_birth: user.dateOfBirth || undefined,
+      date_of_birth: zenotiDob(user.dateOfBirth),
     },
   };
 
@@ -343,7 +365,8 @@ async function syncGuestProfile(userId) {
     const phone = normalizeIndianMobile(user.phone);
     if (phone) payload.personal_info.mobile_phone = { country_code: 95, phone_code: 91, number: phone };
     if (user.gender) payload.personal_info.gender = toZenotiGender(user.gender);
-    if (user.dateOfBirth) payload.personal_info.date_of_birth = user.dateOfBirth;
+    const dob = zenotiDob(user.dateOfBirth);
+    if (dob) payload.personal_info.date_of_birth = dob;
 
     logWrite('updateGuest', { guestId: user.zenotiGuestId, changedBy: 'Zennara' }, { userId: user._id });
     if (!isLive()) {
