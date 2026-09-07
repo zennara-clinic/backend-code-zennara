@@ -104,9 +104,11 @@ exports.getSchedule = async (req, res) => {
         dermatologist: doctor,
         // A dermatologist nobody has configured yet gets a blank week rather
         // than a 404, so the panel can render the editor instead of an error.
-        schedule: schedule
-          ? { ...schedule, slotMinutes: SESSION_SLOT_MINUTES, configured: true }
-          : DermatologistSchedule.blank(doctorId),
+        schedule: linked
+          ? { ...DermatologistSchedule.blank(doctorId), configured: true, source: 'zenoti-live' }
+          : schedule
+            ? { ...schedule, slotMinutes: SESSION_SLOT_MINUTES, configured: true }
+            : DermatologistSchedule.blank(doctorId),
         canEdit: linked ? false : await canEdit(req, doctorId),
         scheduleAuthority: linked ? 'zenoti' : 'local',
         authorityMessage: linked

@@ -1,5 +1,5 @@
 /**
- * Zenoti write-back service (Phase 2).
+ * Zenoti write-back service.
  *
  * Pushes app-side activity INTO Zenoti so the CRM stays the source of truth:
  *   • a fresh app signup  → a Zenoti guest
@@ -7,8 +7,8 @@
  *   • a product order → a Zenoti product invoice
  *
  * Design principles:
- *   • Best-effort & non-blocking — a CRM failure must NEVER break a user's
- *     signup, booking or order. Every entry point catches its own errors.
+ *   • Confirmed appointment state is blocking — the app cannot say Confirmed
+ *     until Zenoti has created, reserved, and confirmed the appointment.
  *   • Idempotent — each record stores its Zenoti id; a second push is a no-op.
  *   • Gated by ZENOTI_WRITE_MODE:
  *        off     → do nothing
@@ -56,8 +56,12 @@ function isLive() {
  * app bookings/orders; hundreds of writes in minutes is a bug, not business —
  * exactly the shape of the 2026-09-03 no-show incident.
  * ------------------------------------------------------------------------- */
-const LIMIT_15_MIN = Math.max(1, Number(process.env.ZENOTI_WRITE_LIMIT_15MIN) || 15);
-const LIMIT_1_HOUR = Math.max(LIMIT_15_MIN, Number(process.env.ZENOTI_WRITE_LIMIT_HOUR) || 40);
+// One appointment consumes three Zenoti writes (create, reserve, confirm), and
+// a new guest consumes a fourth. The old 15/15-minute default tripped after
+// only three or four legitimate bookings. These limits still stop a runaway
+// bulk job long before the historical hundreds-of-writes incident.
+const LIMIT_15_MIN = Math.max(1, Number(process.env.ZENOTI_WRITE_LIMIT_15MIN) || 120);
+const LIMIT_1_HOUR = Math.max(LIMIT_15_MIN, Number(process.env.ZENOTI_WRITE_LIMIT_HOUR) || 300);
 const writeTimes = [];
 const breaker = { tripped: false, at: null, reason: null, lastAction: null };
 
@@ -646,7 +650,7 @@ async function syncBooking(bookingId) {
   const Consultation = require('../models/Consultation');
   const User = require('../models/User');
 
-  const booking = await Booking.findById(bookingId);
+  let booking = await Booking.findById(bookingId);
   if (!booking) return { status: 'not_found', error: 'Booking not found.' };
   if (booking.zenotiAppointmentId) return { status: 'synced', error: null, appointmentId: booking.zenotiAppointmentId };
   if (booking.zenotiBookingId) {
@@ -657,9 +661,30 @@ async function syncBooking(bookingId) {
   }
   if (isOff()) return { status: 'off', error: 'Zenoti write mode is off or credentials are unavailable.' };
 
+  const writeToken = require('crypto').randomUUID();
+  const staleBefore = new Date(Date.now() - 2 * 60 * 1000);
+  booking = await Booking.findOneAndUpdate(
+    {
+      _id: bookingId,
+      zenotiAppointmentId: null,
+      zenotiBookingId: null,
+      $or: [
+        { 'zenotiWriteLock.token': null },
+        { 'zenotiWriteLock.token': { $exists: false } },
+        { 'zenotiWriteLock.at': { $lt: staleBefore } },
+      ],
+    },
+    { $set: { zenotiWriteLock: { token: writeToken, at: new Date() } } },
+    { new: true },
+  );
+  if (!booking) return { status: 'in_progress', error: 'This booking is already being written to Zenoti. Refresh before retrying.' };
+
   try {
     const user = await User.findById(booking.userId);
     const guestId = await ensureGuest(user);
+    if (user?.zenotiSyncStatus === 'review') {
+      throw new Error(user.zenotiSyncError || 'The phone matches a different-looking Zenoti guest. Reception must verify the identity before confirming this appointment.');
+    }
     const centerId = strictClinicCenterIdForBranch(booking.preferredLocation);
     const consultation = booking.consultationId
       ? await Consultation.findById(booking.consultationId).lean()
@@ -698,7 +723,18 @@ async function syncBooking(bookingId) {
     const groupItems = [];
     const groupLines = [];
     if (siblings.length > 1) {
+      const primaryTime = require('../utils/bookingTime').clock24(
+        booking.confirmedTime || booking.slotTime || booking.preferredTimeSlots?.[0],
+      );
       for (const sib of siblings) {
+        const siblingDate = clinicDay(sib.confirmedDate || sib.preferredDate);
+        const siblingTime = require('../utils/bookingTime').clock24(
+          sib.confirmedTime || sib.slotTime || sib.preferredTimeSlots?.[0],
+        );
+        if (strictClinicCenterIdForBranch(sib.preferredLocation) !== centerId
+          || siblingDate !== date || siblingTime !== primaryTime) {
+          throw new Error('Services in one visit must use the same Zenoti clinic, date, and start time. Split this group into separate visits before confirming.');
+        }
         const sibConsultation = sib.consultationId ? await Consultation.findById(sib.consultationId).lean().catch(() => null) : null;
         const sibServiceId = await resolveServiceId(centerId, sibConsultation);
         if (!sibServiceId) {
@@ -762,14 +798,17 @@ async function syncBooking(bookingId) {
 
     const slotsRes = await zenoti.request(`/v1/bookings/${zBookingId}/slots`, { method: 'GET' });
     const slots = slotsRes?.slots || slotsRes?.Slots || [];
-    const wantedTime = booking.confirmedTime || booking.slotTime || booking.preferredTimeSlots?.[0] || null;
+    const wantedTime = require('../utils/bookingTime').clock24(
+      booking.confirmedTime || booking.slotTime || booking.preferredTimeSlots?.[0] || null,
+    );
     const slotValue = (slot) => slot && (slot.Time || slot.time || slot.slot_time || slot.start_time);
+    const bookableSlots = slots.filter((slot) => (slot.Available ?? slot.available) !== false);
     const slotTime = wantedTime
-      ? slotValue(slots.find((slot) => String(slotValue(slot) || '').includes(`T${wantedTime}`)))
-      : slotValue(slots[0]);
+      ? slotValue(bookableSlots.find((slot) => String(slotValue(slot) || '').includes(`T${wantedTime}`)))
+      : slotValue(bookableSlots[0]);
     if (!slotTime) {
       throw new Error(slots.length
-        ? `Zenoti has no free slot at ${wantedTime || 'the requested time'} on ${date} (${slots.filter((x) => x.Available ?? x.available).length} other slots free).`
+        ? `Zenoti has no free slot at ${wantedTime || 'the requested time'} on ${date} (${bookableSlots.length} other slots free).`
         : `Zenoti offers no slots on ${date}: staff shifts are not published in Zenoti (NotScheduled). Publish schedules in Zenoti, then push again.`);
     }
 
@@ -834,6 +873,12 @@ async function syncBooking(bookingId) {
     await booking.save({ validateModifiedOnly: true }).catch(() => {});
     logger.error('Zenoti syncBooking failed', { bookingId, error: err.message });
     return { status: 'failed', error: err.message, bookingId: booking.zenotiBookingId || null };
+  } finally {
+    await Booking.updateOne(
+      { _id: bookingId, 'zenotiWriteLock.token': writeToken },
+      { $unset: { zenotiWriteLock: 1 } },
+      { timestamps: false },
+    ).catch(() => {});
   }
 }
 
@@ -841,11 +886,9 @@ async function syncBooking(bookingId) {
 /**
  * Retry bookings that were created here but never reached Zenoti.
  *
- * The push happens in a fire-and-forget post-save hook, so a transient CRM
- * outage, an unpublished staff shift or a momentary network failure leaves a
- * confirmed-looking appointment that exists only in Zennara. Without a retry
- * the only way it ever reaches the CRM is somebody noticing and pressing
- * "resync" in the panel.
+ * Legacy rows created before confirmation became Zenoti-first can still be
+ * confirmed locally without an appointment id. This repairs only those rows;
+ * current confirmation flows never expose Confirmed before Zenoti succeeds.
  *
  * Deliberately conservative:
  *   · only future appointments, and only CONFIRMED ones — a booking still
@@ -921,10 +964,12 @@ async function reserveExactSlot(bookingId, date, time) {
   const slotsRes = await zenoti.request(`/v1/bookings/${bookingId}/slots`, { method: 'GET' });
   const slots = slotsRes?.slots || slotsRes?.Slots || [];
   const valueOf = (slot) => slot && (slot.Time || slot.time || slot.slot_time || slot.start_time);
-  const chosen = time
-    ? valueOf(slots.find((slot) => String(valueOf(slot) || '').includes(`T${time}`)))
-    : valueOf(slots[0]);
-  if (!chosen) throw new Error(`Requested Zenoti slot ${time || ''} is unavailable on ${date}`.trim());
+  const bookable = slots.filter((slot) => (slot.Available ?? slot.available) !== false);
+  const canonicalTime = require('../utils/bookingTime').clock24(time);
+  const chosen = canonicalTime
+    ? valueOf(bookable.find((slot) => String(valueOf(slot) || '').includes(`T${canonicalTime}`)))
+    : valueOf(bookable[0]);
+  if (!chosen) throw new Error(`Requested Zenoti slot ${canonicalTime || time || ''} is unavailable on ${date}`.trim());
   await liveWrite('reserveSlot', () => zenoti.request(`/v1/bookings/${bookingId}/slots/reserve`, { method: 'POST', body: { slot_time: chosen } }));
   return liveWrite('confirmSlot', () => zenoti.request(`/v1/bookings/${bookingId}/slots/confirm`, { method: 'POST', body: {} }));
 }

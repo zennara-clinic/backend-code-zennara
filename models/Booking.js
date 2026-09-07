@@ -374,6 +374,15 @@ const bookingSchema = new mongoose.Schema({
     enum: ['pending', 'synced', 'failed', 'skipped', 'dryrun', null],
     default: null
   },
+  /** Short-lived compare-and-set locks prevent two panel clicks creating two Zenoti bookings. */
+  zenotiConfirmationLock: {
+    token: { type: String, default: null },
+    at: { type: Date, default: null },
+  },
+  zenotiWriteLock: {
+    token: { type: String, default: null },
+    at: { type: Date, default: null },
+  },
   zenotiSyncError: { type: String, default: null },
   zenotiSyncedAt: { type: Date, default: null },
 

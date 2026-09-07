@@ -6,8 +6,7 @@ const Address = require('../models/Address');
 const User = require('../models/User');
 const razorpayService = require('../services/razorpayService');
 const NotificationHelper = require('../utils/notificationHelper');
-const { validateBranchBooking, validateBranchSession } = require('../utils/branchSchedule');
-const { clinicDateKey } = require('../utils/bookingTime');
+const { clinicDateKey, clinicDayStart, clock24, parseClockMinutes } = require('../utils/bookingTime');
 const { computeOrderPricing } = require('../utils/orderPricing');
 
 class PaymentFlowError extends Error {
@@ -1244,7 +1243,8 @@ exports.createConsultationPayment = async (req, res) => {
     if (!(bookingData.slotTime && bookingData.specialistId)) {
       const day = clinicDateKey(bookingData.preferredDate);
       const live = await require('../services/zenotiAvailabilityService').branchSlots(branch._id, day);
-      const missing = requestedTimes.find((time) => !live.slots.includes(time));
+      const liveMinutes = new Set(live.slots.map(parseClockMinutes).filter((value) => value !== null));
+      const missing = requestedTimes.find((time) => parseClockMinutes(time) === null || !liveMinutes.has(parseClockMinutes(time)));
       if (missing) scheduleCheck = {
         ok: false,
         code: 'ZENOTI_SLOT_UNAVAILABLE',
@@ -1473,7 +1473,8 @@ exports.verifyConsultationPayment = async (req, res) => {
       try {
         const day = clinicDateKey(bookingData.preferredDate);
         const live = await require('../services/zenotiAvailabilityService').branchSlots(branch._id, day);
-        const missing = requestedTimes.find((time) => !live.slots.includes(time));
+        const liveMinutes = new Set(live.slots.map(parseClockMinutes).filter((value) => value !== null));
+        const missing = requestedTimes.find((time) => parseClockMinutes(time) === null || !liveMinutes.has(parseClockMinutes(time)));
         if (missing) scheduleCheck = {
           ok: false,
           code: 'ZENOTI_SLOT_UNAVAILABLE',
@@ -1518,7 +1519,7 @@ exports.verifyConsultationPayment = async (req, res) => {
      * consultations booked off a calendar; treatment bookings still carry
      * `preferredTimeSlots` and no hard slot, so they skip all of this.
      */
-    const slotTime = bookingData.slotTime || null;
+    const slotTime = bookingData.slotTime ? clock24(bookingData.slotTime) : null;
     if (slotTime && bookingData.specialistId) {
       const { isSlotBookable } = require('../utils/dermatologistSlots');
       const key = clinicDateKey(bookingData.preferredDate);
@@ -1567,7 +1568,7 @@ exports.verifyConsultationPayment = async (req, res) => {
       email: bookingData.email,
       branchId: branch._id,
       preferredLocation: branch.name,
-      preferredDate: new Date(bookingData.preferredDate),
+      preferredDate: clinicDayStart(bookingData.preferredDate),
       // Keep both: the single reserved slot, and the older preferred-times
       // list so reception screens written against it still render.
       preferredTimeSlots: slotTime ? [slotTime] : bookingData.preferredTimeSlots,

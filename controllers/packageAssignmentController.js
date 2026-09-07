@@ -1330,7 +1330,11 @@ exports.bookServiceAsUser = async (req, res) => {
     return await raiseSessionBooking(req, res, assignment, session);
   } catch (error) {
     console.error('bookServiceAsUser failed:', error);
-    return res.status(500).json({ success: false, message: 'Could not book the session' });
+    return res.status(error.status || 500).json({
+      success: false,
+      code: error.code || undefined,
+      message: error.message || 'Could not book the session',
+    });
   }
 };
 
@@ -1345,7 +1349,11 @@ exports.bookSessionAsUser = async (req, res) => {
     return await raiseSessionBooking(req, res, assignment, session);
   } catch (error) {
     console.error('bookSessionAsUser failed:', error);
-    return res.status(500).json({ success: false, message: 'Could not book the session' });
+    return res.status(error.status || 500).json({
+      success: false,
+      code: error.code || undefined,
+      message: error.message || 'Could not book the session',
+    });
   }
 };
 
@@ -1362,7 +1370,6 @@ async function raiseSessionBooking(req, res, assignment, session) {
     const Booking = require('../models/Booking');
     const Consultation = require('../models/Consultation');
     const Branch = require('../models/Branch');
-    const { validateBranchBooking } = require('../utils/branchSchedule');
 
     const redeem = assignment.redeemable({ branchId: assignment.branchId || null });
     if (!redeem.ok) {
@@ -1384,8 +1391,17 @@ async function raiseSessionBooking(req, res, assignment, session) {
       : await Branch.findOne({ name: assignment.preferredLocation, isActive: true });
     if (!branch) return res.status(409).json({ success: false, message: 'The clinic for this package is not set — please contact reception.' });
 
-    // Same hours and slot rules as every other treatment booking.
-    const check = validateBranchBooking(branch, preferredDate, slots);
+    // Same live Zenoti times as every other treatment booking.
+    const live = await require('../services/zenotiAvailabilityService').branchSlots(
+      branch._id,
+      require('../utils/bookingTime').clinicDateKey(preferredDate),
+    );
+    const { parseClockMinutes } = require('../utils/bookingTime');
+    const liveMinutes = new Set(live.slots.map(parseClockMinutes).filter((value) => value !== null));
+    const missing = slots.find((time) => parseClockMinutes(time) === null || !liveMinutes.has(parseClockMinutes(time)));
+    const check = missing
+      ? { ok: false, code: 'ZENOTI_SLOT_UNAVAILABLE', message: `${missing} is not available in Zenoti for this clinic.` }
+      : { ok: true };
     if (!check.ok) return res.status(409).json({ success: false, code: check.code, message: check.message });
 
     let consultation = await Consultation.findOne({ id: session.serviceId });
@@ -1404,7 +1420,7 @@ async function raiseSessionBooking(req, res, assignment, session) {
         || `walkin.${String(assignment.userDetails?.phone || req.user.phone || req.user._id).replace(/\D/g, '')}@zennara.local`,
       branchId: branch._id,
       preferredLocation: branch.name,
-      preferredDate: new Date(preferredDate),
+      preferredDate: require('../utils/bookingTime').clinicDayStart(preferredDate),
       preferredTimeSlots: slots,
       amount: 0,
       paymentStatus: 'paid',
@@ -1434,7 +1450,11 @@ async function raiseSessionBooking(req, res, assignment, session) {
     });
   } catch (error) {
     console.error('raiseSessionBooking failed:', error);
-    return res.status(500).json({ success: false, message: 'Could not book the session' });
+    return res.status(error.status || 500).json({
+      success: false,
+      code: error.code || undefined,
+      message: error.message || 'Could not book the session',
+    });
   }
 }
 

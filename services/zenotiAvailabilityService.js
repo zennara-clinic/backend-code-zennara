@@ -147,6 +147,22 @@ async function centerDiary(centerId, date) {
   return cached(`diary:${centerId}:${date}`, () => zenoti.getCenterDiary(centerId, { from: date, to: date, includeCancelled: true }));
 }
 
+/** Zenoti's diary endpoint accepts at most seven days; compose longer calendars safely. */
+async function centerDiaryRange(centerId, from, to) {
+  return cached(`diary-range:${centerId}:${from}:${to}`, async () => {
+    const appointments = [];
+    const blockouts = [];
+    for (let start = from; start && start <= to; start = addClinicDays(start, 7)) {
+      let end = addClinicDays(start, 6);
+      if (!end || end > to) end = to;
+      const page = await zenoti.getCenterDiary(centerId, { from: start, to: end, includeCancelled: true });
+      appointments.push(...(page.appointments || []));
+      blockouts.push(...(page.blockouts || []));
+    }
+    return { appointments, blockouts };
+  });
+}
+
 async function localHolds(doctorId, date, excludeBookingId = null) {
   const query = {
     specialistId: norm(doctorId),
@@ -165,6 +181,33 @@ async function localHolds(doctorId, date, excludeBookingId = null) {
     return values.map((time) => parseClockMinutes(time)).filter((value) => value !== null)
       .map((start) => ({ start, end: start + SESSION_SLOT_MINUTES }));
   });
+}
+
+/** Local-only awaiting/confirmed holds over a calendar span, grouped by day. */
+async function localHoldsRange(doctorId, from, to, excludeBookingId = null) {
+  const query = {
+    specialistId: norm(doctorId),
+    preferredDate: { $gte: clinicDayStart(from), $lte: clinicDayEnd(to) },
+    status: { $in: LIVE },
+  };
+  if (excludeBookingId) query._id = { $ne: excludeBookingId };
+  const rows = await Booking.find(query)
+    .select('preferredDate slotTime confirmedTime preferredTimeSlots zenotiAppointmentId')
+    .lean();
+  const byDate = new Map();
+  for (const booking of rows) {
+    if (booking.zenotiAppointmentId) continue;
+    const date = clinicDateKey(booking.preferredDate);
+    if (!date) continue;
+    const values = booking.slotTime || booking.confirmedTime
+      ? [booking.slotTime || booking.confirmedTime]
+      : (booking.preferredTimeSlots || []);
+    const intervals = values.map((time) => parseClockMinutes(time))
+      .filter((value) => value !== null)
+      .map((start) => ({ start, end: start + SESSION_SLOT_MINUTES }));
+    if (intervals.length) byDate.set(date, [...(byDate.get(date) || []), ...intervals]);
+  }
+  return byDate;
 }
 
 async function doctorSlotsAtBranch(doctor, branch, date, { now = new Date(), excludeBookingId = null } = {}) {
@@ -239,7 +282,8 @@ async function slotsForDate(doctorId, date, options = {}) {
 
 async function isSlotBookable(doctorId, date, time, options = {}) {
   const result = await slotsForDate(doctorId, date, options);
-  const slot = result.slots.find((item) => item.time === time);
+  const wanted = parseClockMinutes(time);
+  const slot = result.slots.find((item) => item.minutes === wanted);
   if (!slot) return { ok: false, reason: result.reason || 'no-such-slot' };
   if (slot.booked) return { ok: false, reason: 'already-booked' };
   if (slot.tooSoon) return { ok: false, reason: 'too-soon' };
@@ -251,19 +295,38 @@ async function availabilityRange(doctorId, from, to, options = {}) {
     .select('doctorId name availableCentres onlineBookingEnabled').lean();
   if (!doctor) return { configured: true, source: 'zenoti-live', slotMinutes: SESSION_SLOT_MINUTES, days: [] };
   const branches = await candidateBranches(doctor, options.branchId, options.branchName);
-  const scheduleSets = await Promise.all(branches.map(async (branch) => {
-    const centerId = centerForBranch(branch);
-    const practitioner = await practitionerFor(doctor.doctorId, centerId);
-    return { rows: await centerSchedule(centerId, from, to), employeeId: practitioner.zenotiEmployeeId };
-  }));
+  const [scheduleSets, holds] = await Promise.all([
+    Promise.all(branches.map(async (branch) => {
+      const centerId = centerForBranch(branch);
+      const practitioner = await practitionerFor(doctor.doctorId, centerId);
+      const [rows, diary] = await Promise.all([
+        centerSchedule(centerId, from, to),
+        centerDiaryRange(centerId, from, to),
+      ]);
+      return { rows, diary, employeeId: practitioner.zenotiEmployeeId };
+    })),
+    localHoldsRange(doctor.doctorId, from, to, options.excludeBookingId),
+  ]);
   const days = [];
   for (let date = from; date && date <= to; date = addClinicDays(date, 1)) {
-    let total = 0;
+    const allStarts = new Set();
+    const freeStarts = new Set();
     for (const set of scheduleSets) {
-      total += workingRanges(set.rows, set.employeeId, date).reduce((sum, range) =>
-        sum + Math.floor((parseClockMinutes(range.end) - parseClockMinutes(range.start)) / SESSION_SLOT_MINUTES), 0);
+      const employeeId = norm(set.employeeId);
+      const busy = [
+        ...(set.diary.appointments || []).filter((row) => writtenDate(row.startTime) === date && norm(row.therapistId) === employeeId && activeAppointment(row)).map(interval),
+        ...(set.diary.blockouts || []).filter((row) => writtenDate(row.startTime) === date && norm(row.therapistId) === employeeId).map(interval),
+        ...(holds.get(date) || []),
+      ].filter(Boolean);
+      for (const range of workingRanges(set.rows, set.employeeId, date)) {
+        for (let at = parseClockMinutes(range.start); at + SESSION_SLOT_MINUTES <= parseClockMinutes(range.end); at += SESSION_SLOT_MINUTES) {
+          allStarts.add(at);
+          if (!overlaps(busy, at, at + SESSION_SLOT_MINUTES)
+            && clinicDateTime(date, toHHMM(at)) >= (options.now || new Date())) freeStarts.add(at);
+        }
+      }
     }
-    days.push({ date, open: total > 0 && clinicDateTime(date, '23:59') >= (options.now || new Date()), total, free: total });
+    days.push({ date, open: freeStarts.size > 0, total: allStarts.size, free: freeStarts.size });
   }
   return { configured: true, source: 'zenoti-live', slotMinutes: SESSION_SLOT_MINUTES, days };
 }
@@ -278,7 +341,8 @@ async function whoIsFreeWithBranches(date, time, options = {}) {
   const matches = await Promise.all(doctors.map(async (doctor) => {
     try {
       const result = await slotsForDate(doctor.doctorId, date, options);
-      const slot = result.slots.find((item) => item.time === time && item.available);
+      const wanted = parseClockMinutes(time);
+      const slot = result.slots.find((item) => item.minutes === wanted && item.available);
       return (slot?.freeAt || []).map((branch) => ({ doctorId: doctor.doctorId, ...branch }));
     } catch (error) {
       // One broken employee link must remove that doctor, not every correctly
@@ -344,10 +408,17 @@ async function anyAvailabilityRange(from, to, options = {}) {
 async function branchSlots(branchId, date, options = {}) {
   const branch = await branchById(branchId);
   const centerId = centerForBranch(branch);
-  const [schedules, diary] = await Promise.all([centerSchedule(centerId, date, date), centerDiary(centerId, date)]);
+  const [schedules, diary, practitioners] = await Promise.all([
+    centerSchedule(centerId, date, date),
+    centerDiary(centerId, date),
+    ZenotiPractitioner.find({ active: true, centerIds: centerId, jobName: /^(doctor|therapist)$/i })
+      .select('zenotiEmployeeId').lean(),
+  ]);
+  const providerIds = new Set(practitioners.map((row) => norm(row.zenotiEmployeeId)));
   const freeStarts = new Set();
   for (const employee of schedules || []) {
     const employeeId = norm(employee.employeeId);
+    if (!providerIds.has(employeeId)) continue;
     const busy = [
       ...(diary.appointments || []).filter((row) => norm(row.therapistId) === employeeId && activeAppointment(row)).map(interval),
       ...(diary.blockouts || []).filter((row) => norm(row.therapistId) === employeeId).map(interval),
@@ -364,7 +435,7 @@ async function branchSlots(branchId, date, options = {}) {
   // service/provider-specific slots before it can become Confirmed.
   return {
     branchId: branch._id, branchName: branch.name, date,
-    slots: starts.filter((minutes) => clinicDateTime(date, toHHMM(minutes)) >= (options.now || new Date())).map(toHHMM),
+    slots: starts.filter((minutes) => clinicDateTime(date, toHHMM(minutes)) >= (options.now || new Date())).map((minutes) => label(toHHMM(minutes))),
     slotDuration: SESSION_SLOT_MINUTES,
     source: 'zenoti-live',
     blockoutsSeen: (diary.blockouts || []).length,
@@ -422,7 +493,7 @@ async function providerBlocks({ from, to = from, branchId = null, doctorId = nul
   const output = [];
   for (const branch of branches) {
     const centerId = centerForBranch(branch);
-    const diary = await cached(`diary:${centerId}:${from}:${to}`, () => zenoti.getCenterDiary(centerId, { from, to, includeCancelled: true }));
+    const diary = await centerDiaryRange(centerId, from, to);
     for (const row of diary.blockouts || []) {
       const linkedDoctorId = doctorByEmployee.get(norm(row.therapistId)) || null;
       if (doctorId && norm(linkedDoctorId) !== norm(doctorId)) continue;

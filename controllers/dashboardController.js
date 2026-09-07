@@ -29,12 +29,59 @@ const dayKey = clinicDateKey;
 const sum = (arr, f) => arr.reduce((n, x) => n + (Number(f(x)) || 0), 0);
 const round = (n) => Math.round((Number(n) || 0) * 100) / 100;
 
+/**
+ * The oldest day the clinic has any record for, as a clinic-local YYYY-MM-DD.
+ *
+ * Cached for an hour: it only moves when history is imported, and every
+ * dashboard load would otherwise pay for four scans.
+ */
+let earliestCache = { at: 0, key: null };
+async function earliestDataDay() {
+  if (earliestCache.key && Date.now() - earliestCache.at < 60 * 60 * 1000) return earliestCache.key;
+  const oldest = async (Model, field) => {
+    const row = await Model.findOne({ [field]: { $ne: null } }).sort({ [field]: 1 }).select(field).lean().catch(() => null);
+    return row?.[field] ? new Date(row[field]) : null;
+  };
+  const dates = (await Promise.all([
+    oldest(Booking, 'eventAt'),
+    oldest(Booking, 'createdAt'),
+    oldest(User, 'createdAt'),
+  ])).filter(Boolean);
+  const floor = dates.length ? new Date(Math.min(...dates.map((d) => d.getTime()))) : new Date('2020-01-01');
+  earliestCache = { at: Date.now(), key: clinicDateKey(floor) };
+  return earliestCache.key;
+}
+
+/*
+ * A short cache, because the shape of this endpoint is expensive.
+ *
+ * It loads the window's bookings into memory to shape them: 3.7 seconds for
+ * the whole history, against 290ms for the same figures by aggregation. The
+ * proper fix is to push that shaping into the database, which is a rewrite of
+ * a working controller and not something to do in passing. Meanwhile the desk
+ * opens this page constantly and the numbers move slowly, so every load inside
+ * a minute of the last one is instant.
+ */
+const dashCache = new Map(); // key -> { at, body }
+const DASH_TTL_MS = 60 * 1000;
+
 exports.getDashboard = async (req, res) => {
+  const cacheKey = JSON.stringify([req.query.startDate || '', req.query.endDate || '', req.query.branchId || '']);
+  const hit = dashCache.get(cacheKey);
+  if (hit && Date.now() - hit.at < DASH_TTL_MS) return res.json(hit.body);
   try {
     // ---- window + scope ---------------------------------------------------
     const today = clinicDateKey(new Date());
     const endKey = req.query.endDate || today;
-    const startKey = req.query.startDate || addClinicDays(endKey, -29);
+    /*
+     * Default to EVERYTHING, not the last 30 days.
+     *
+     * The clinic reads this page to answer "how are we doing", and a 30-day
+     * window silently hid four years of history behind a date picker nobody
+     * knew to move — the totals looked small and wrong. The floor is the oldest
+     * thing on record, computed once and cached, so "all time" costs nothing.
+     */
+    const startKey = req.query.startDate || await earliestDataDay();
     const end = clinicDayEnd(endKey);
     const start = clinicDayStart(startKey);
     const days = Math.max(1, Math.round((end - start + 1) / 86400000));
@@ -182,12 +229,46 @@ exports.getDashboard = async (req, res) => {
 
     // ---- counts -----------------------------------------------------------
     const by = (arr, f) => arr.reduce((m, x) => { const k = f(x) || 'Other'; m[k] = (m[k] || 0) + 1; return m; }, {});
-    const [newPatients, activeZen, zenExpiring, totalPatients] = await Promise.all([
+    /*
+     * Fixed reference points the desk asks for constantly, independent of the
+     * chosen window: how many guests we have, how many are new this month, what
+     * ran this week, and what is still to come. A window-relative number cannot
+     * answer "how many patients do we have" — that is always all of them.
+     */
+    const now = new Date();
+    const monthStart = clinicDayStart(`${clinicDateKey(now).slice(0, 7)}-01`);
+    const weekStart = clinicDayStart(addClinicDays(clinicDateKey(now), -6));
+    const [
+      newPatients, activeZen, zenExpiring, totalPatients,
+      newThisMonth, treatmentsThisWeek, upcomingAll, appointmentsAllTime, returningPatients,
+    ] = await Promise.all([
       User.countDocuments({ ...userBranch, createdAt: { $gte: start, $lte: end } }),
       User.countDocuments({ ...userBranch, memberType: 'Zen Member', $or: [{ zenMembershipExpiryDate: null }, { zenMembershipExpiryDate: { $gte: new Date() } }] }),
       User.countDocuments({ ...userBranch, memberType: 'Zen Member', zenMembershipExpiryDate: { $gte: new Date(), $lte: new Date(Date.now() + 30 * 86400000) } }),
       User.countDocuments(userBranch),
+      User.countDocuments({ ...userBranch, createdAt: { $gte: monthStart } }),
+      Booking.countDocuments({ ...bookingBranch, status: 'Completed', eventAt: { $gte: weekStart, $lte: end } }),
+      Booking.countDocuments({ ...bookingBranch, status: { $in: ['Confirmed', 'Awaiting Confirmation', 'Rescheduled', 'Checked In'] }, eventAt: { $gte: now } }),
+      Booking.countDocuments(bookingBranch),
+      // A guest who has been seen more than once — the clinic's repeat business.
+      Booking.aggregate([
+        { $match: { ...bookingBranch, status: 'Completed' } },
+        { $group: { _id: '$userId', n: { $sum: 1 } } },
+        { $match: { n: { $gt: 1 } } },
+        { $count: 'n' },
+      ]).then((r) => r[0]?.n || 0),
     ]);
+    /*
+     * "Existing" means seen BEFORE this window, not "registered outside it".
+     *
+     * Subtracting new-in-window from the total gives zero the moment the window
+     * covers all of history, which is now the default — every patient is new in
+     * a window that contains their signup. What the desk means is "had they
+     * been here before this period started".
+     */
+    const existingPatients = await Booking.distinct('userId', {
+      ...bookingBranch, status: 'Completed', eventAt: { $lt: start },
+    }).then((ids) => ids.length);
     const completed = bookings.filter((x) => x.status === 'Completed').length;
     const cancelled = bookings.filter((x) => x.status === 'Cancelled').length;
     const noShow = bookings.filter((x) => x.status === 'No Show').length;
@@ -206,6 +287,7 @@ exports.getDashboard = async (req, res) => {
       packagesAssigned: packages.length, packagesPaid: paidPackages.length,
       packagesUnpaid: packages.filter((p) => !(p.payment && p.payment.isReceived)).length,
       membershipsSold: membershipCount, membershipsUnpriced, activeZen, zenExpiring, newPatients, totalPatients,
+      existingPatients, newThisMonth, treatmentsThisWeek, upcomingAll, appointmentsAllTime, returningPatients,
       bookingsBySource: by(bookings, (x) => x.source || 'app'),
       outstanding: round(sum(bookings.filter((x) => x.paymentStatus === 'pending' && !['Cancelled', 'No Show'].includes(x.status)), (x) => x.amount)
         + sum(packages.filter((p) => !(p.payment && p.payment.isReceived) && p.status === 'Active'), (p) => p.pricing && p.pricing.finalAmount)),
@@ -330,16 +412,22 @@ exports.getDashboard = async (req, res) => {
     addClinic('packages', zPackageRows);
     bookings.forEach((bk) => { const row = series[dayKey(bk.confirmedDate || bk.preferredDate)]; if (row) row.bookings += 1; });
 
-    res.json({
+    const body = {
       success: true,
       data: {
-        period: { startDate: dayKey(start), endDate: dayKey(end), days, branch: branchName || 'All centres' },
+        period: {
+          startDate: dayKey(start), endDate: dayKey(end), days, branch: branchName || 'All centres',
+          // So the panel can say "all time" rather than printing a date nobody chose.
+          isAllTime: !req.query.startDate,
+        },
         revenue: { total: totalRevenue, previous: prevRevenue, previousHasData: prevHasData, growthPercent: growth, streams },
         counts, dermatologists, topServices, revenueByCentre,
         paymentMix: Object.entries(payMix).map(([method, amount]) => ({ method, amount })).sort((a, b) => b.amount - a.amount),
         daily: Object.values(series),
       },
-    });
+    };
+    dashCache.set(cacheKey, { at: Date.now(), body });
+    res.json(body);
   } catch (error) {
     console.error('❌ Dashboard analytics failed:', error);
     res.status(500).json({ success: false, message: 'Failed to build the dashboard' });

@@ -346,6 +346,7 @@ async function apply(bookingOrId, action, {
   // can only guess from the resulting status, which cannot express an undo).
   booking.$locals.skipZenotiWrite = true;
   await booking.save();
+  await applyPackageSessionSideEffect(booking, action, { now, admin });
   if (zenotiOutcome?.status === 'synced') {
     try {
       await require('./zenotiAppointmentSyncService').refreshAppointment(booking._id);
@@ -353,6 +354,52 @@ async function apply(bookingOrId, action, {
   }
   try { require('./socketService').emitBookingUpdate(booking._id, action); } catch (_) { /* optional live UI */ }
   return booking;
+}
+
+/** Keep the package ledger aligned with the appointment lifecycle. */
+async function applyPackageSessionSideEffect(booking, action, { now, admin }) {
+  if (!booking.packageAssignmentId || !booking.packageSessionId) return;
+  if (!['complete', 'undo_complete', 'cancel', 'no_show', 'undo_cancel', 'undo_no_show'].includes(action)) return;
+  const PackageAssignment = require('../models/PackageAssignment');
+  const assignment = await PackageAssignment.findById(booking.packageAssignmentId);
+  const session = assignment?.sessions?.id(booking.packageSessionId);
+  if (!assignment || !session) return;
+  const rules = require('../utils/packageRules');
+
+  if (action === 'complete') {
+    session.status = 'Completed';
+    session.completedAt = now;
+    const already = (assignment.redemptions || []).some((entry) =>
+      !entry.reversed && String(entry.sessionId) === String(session._id));
+    if (!already) rules.recordRedemption(assignment, {
+      serviceId: session.serviceId,
+      serviceName: session.serviceName,
+      sessionId: session._id,
+      bookingId: booking._id,
+      branchId: booking.branchId,
+      byName: admin?.name || 'Appointment completion',
+    });
+  } else if (action === 'undo_complete') {
+    session.status = 'Booked';
+    session.completedAt = null;
+    rules.reverseRedemption(assignment, { sessionId: session._id });
+    if (assignment.status === 'Completed') assignment.status = 'Active';
+  } else if (action === 'cancel' || action === 'no_show') {
+    session.status = 'Scheduled';
+    session.completedAt = null;
+    session.bookingId = null;
+  } else {
+    session.status = 'Booked';
+    session.bookingId = booking._id;
+  }
+
+  const balances = assignment.serviceBalances();
+  assignment.usageTracking.totalSessions = balances.reduce((sum, row) => sum + row.entitled, 0);
+  assignment.usageTracking.usedSessions = balances.reduce((sum, row) => sum + row.used, 0);
+  assignment.usageTracking.remainingSessions = balances.reduce((sum, row) => sum + row.balance, 0);
+  assignment.checkCompletion();
+  assignment.$locals.skipZenotiWrite = true;
+  await assignment.save();
 }
 
 /**

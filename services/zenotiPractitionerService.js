@@ -3,7 +3,7 @@ const Doctor = require('../models/Doctor');
 const ZenotiPractitioner = require('../models/ZenotiPractitioner');
 const zenoti = require('./zenotiService');
 const { CENTERS } = require('../config/zenoti');
-const { buildDoctorMatcher, canonicalName, tierTitle } = require('../utils/dermatologistMatch');
+const { buildDoctorMatcher, canonicalName, splitCombinedName, tierTitle } = require('../utils/dermatologistMatch');
 const logger = require('../utils/logger');
 
 let running = false;
@@ -159,7 +159,13 @@ async function syncPractitioners({ trigger = 'schedule', repair = true } = {}) {
     const matchDoctor = buildDoctorMatcher(doctors);
     const now = new Date();
     const ops = [...byId.values()].map((employee) => {
-      const onboarded = matchDoctor(employee.name);
+      // A combined Zenoti column ("Dr A - Dr B") is useful for appointment
+      // attribution, but it is not one person's bookable employee identity.
+      // Linking it to the first doctor creates two active employee ids for
+      // that doctor and makes schedule/write-back selection arbitrary.
+      const onboarded = splitCombinedName(employee.name).length === 1
+        ? matchDoctor(employee.name)
+        : null;
       return {
         updateOne: {
           filter: { zenotiEmployeeId: employee.id },
@@ -335,29 +341,6 @@ async function syncDoctorShiftsFromZenoti({ trigger = 'schedule' } = {}) {
       const rows = await zenoti.getCenterEmployeeSchedules(centerId, { from, to }).catch(() => null);
       if (rows) perCenter.set(centerId, { center: c, rows: new Map(rows.map((r) => [r.employeeId, r])) });
     }
-    /*
-     * Which DAYS the roster is actually published for, at each centre.
-     *
-     * A doctor with no shift on a given day is ambiguous on its own: Zenoti may
-     * not have published that day at all, or it may have published it and this
-     * doctor is simply off. Treating both as "silent" left five dermatologists
-     * showing as available on days Zenoti had them off, so the app offered
-     * their slots and every booking into one failed at Zenoti with "no slots".
-     * If ANYONE is rostered at a centre on a date, that date is published, and
-     * a doctor absent from it is off.
-     */
-    const publishedDays = new Set(); // `${day}|${branchId}`
-    for (const [, { center, rows }] of perCenter) {
-      const branch = branchByName.get(center.branchName);
-      if (!branch) continue;
-      for (const [, row] of rows) {
-        for (const sft of row.shifts || []) {
-          if (Number(sft.status) !== 0) continue;
-          publishedDays.add(`${dayKey(sft.date)}|${branch._id}`);
-        }
-      }
-    }
-
     for (const practitioner of linked) {
       summary.doctors += 1;
       const schedule = await DermatologistSchedule.findOne({ doctorId: practitioner.onboardedDoctorId });

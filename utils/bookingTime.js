@@ -106,6 +106,13 @@ const parseClockMinutes = (value) => {
   return hour * 60 + minute;
 };
 
+/** Canonical HH:mm accepted by Zenoti's slot timestamps. */
+const clock24 = (value) => {
+  const minutes = parseClockMinutes(value);
+  if (minutes === null) return null;
+  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+};
+
 const clinicDateTime = (dateValue, timeValue) => {
   const parts = clinicDateParts(dateValue);
   const minutes = parseClockMinutes(timeValue);
@@ -157,6 +164,7 @@ module.exports = {
   clinicDateKey,
   clinicDateParts,
   clinicDateTime,
+  clock24,
   formatClinicDate,
   formatClinicDateTime,
   parseClockMinutes,

@@ -30,10 +30,10 @@ const NotificationHelper = require('../utils/notificationHelper');
 const whatsappService = require('../services/whatsappService');
 const twilioVoiceService = require('../services/twilioVoiceService');
 const {
-  bookingScheduledAt, clinicDateKey, clinicDayEnd, clinicDayStart, formatClinicDate, formatClinicDateTime,
+  bookingScheduledAt, clinicDateKey, clinicDayEnd, clinicDayStart, clock24, formatClinicDate, formatClinicDateTime,
+  parseClockMinutes,
 } = require('../utils/bookingTime');
 const { UPCOMING: BOOKING_UPCOMING, PAST: BOOKING_PAST } = require('../utils/bookingStatuses');
-const { validateBranchBooking } = require('../utils/branchSchedule');
 const { SESSION_SLOT_MINUTES } = require('../config/scheduling');
 
 // @desc    Create new booking
@@ -81,6 +81,15 @@ exports.createBooking = async (req, res) => {
       preferredDate,
       preferredTimeSlots
     } = req.body;
+
+    if (!preferredDate || !Array.isArray(preferredTimeSlots) || !preferredTimeSlots.length
+      || preferredTimeSlots.some((time) => parseClockMinutes(time) === null)) {
+      return res.status(400).json({
+        success: false,
+        code: 'INVALID_BOOKING_TIME',
+        message: 'Choose a valid date and at least one valid appointment time.',
+      });
+    }
 
     // Validate consultation exists
     const consultation = await Consultation.findById(consultationId);
@@ -139,11 +148,15 @@ exports.createBooking = async (req, res) => {
       });
     }
 
-    const scheduleCheck = validateBranchBooking(
-      branch,
-      preferredDate,
-      preferredTimeSlots
+    const liveBranch = await require('../services/zenotiAvailabilityService').branchSlots(
+      branch._id,
+      clinicDateKey(preferredDate),
     );
+    const liveMinutes = new Set(liveBranch.slots.map(parseClockMinutes).filter((value) => value !== null));
+    const unavailableTime = preferredTimeSlots.find((time) => !liveMinutes.has(parseClockMinutes(time)));
+    const scheduleCheck = unavailableTime
+      ? { ok: false, code: 'ZENOTI_SLOT_UNAVAILABLE', message: `${unavailableTime} is not available in Zenoti for this clinic.` }
+      : { ok: true };
     if (!scheduleCheck.ok) {
       return res.status(409).json({
         success: false,
@@ -272,8 +285,9 @@ exports.createBooking = async (req, res) => {
       });
     }
     
-    res.status(500).json({
+    res.status(error.status || 500).json({
       success: false,
+      code: error.code || undefined,
       message: error.message || 'Failed to create booking'
     });
   }
@@ -809,6 +823,7 @@ exports.exportBookingsAdmin = async (req, res) => {
 // @route   PUT /api/bookings/admin/:id/confirm
 // @access  Private (Admin)
 exports.confirmBooking = async (req, res) => {
+  let confirmationLockToken = null;
   try {
     const { confirmedDate, confirmedTime } = req.body;
 
@@ -829,7 +844,8 @@ exports.confirmBooking = async (req, res) => {
     }
 
     const finalDate = clinicDayStart(confirmedDate || booking.preferredDate);
-    if (!finalDate || !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(confirmedTime || ''))) {
+    const finalTime = clock24(confirmedTime);
+    if (!finalDate || !finalTime) {
       return res.status(400).json({
         success: false,
         code: 'CONFIRMED_SLOT_REQUIRED',
@@ -861,7 +877,7 @@ exports.confirmBooking = async (req, res) => {
       const { isSlotBookable } = require('../utils/dermatologistSlots');
       const key = clinicDateKey(confirmedDate || booking.preferredDate);
       const check = key
-        ? await isSlotBookable(booking.specialistId, key, confirmedTime, {
+        ? await isSlotBookable(booking.specialistId, key, finalTime, {
             branchId: booking.branchId || null,
             excludeBookingId: booking._id,
           })
@@ -875,6 +891,27 @@ exports.confirmBooking = async (req, res) => {
       }
     }
 
+    confirmationLockToken = require('crypto').randomUUID();
+    const lock = await Booking.updateOne(
+      {
+        _id: booking._id,
+        status: { $in: ['Awaiting Confirmation', 'Rescheduled'] },
+        $or: [
+          { 'zenotiConfirmationLock.token': null },
+          { 'zenotiConfirmationLock.token': { $exists: false } },
+          { 'zenotiConfirmationLock.at': { $lt: new Date(Date.now() - 2 * 60 * 1000) } },
+        ],
+      },
+      { $set: { zenotiConfirmationLock: { token: confirmationLockToken, at: new Date() } } },
+    );
+    if (!lock.modifiedCount) {
+      return res.status(409).json({
+        success: false,
+        code: 'ZENOTI_CONFIRM_IN_PROGRESS',
+        message: 'This booking is already being confirmed in Zenoti. Refresh before trying again.',
+      });
+    }
+
     const from = booking.status;
     const previous = {
       confirmedDate: booking.confirmedDate,
@@ -885,8 +922,8 @@ exports.confirmBooking = async (req, res) => {
     // deliberately remains Awaiting Confirmation. "Confirmed" is committed
     // only after Zenoti returns an appointment id.
     booking.confirmedDate = finalDate;
-    booking.confirmedTime = confirmedTime;
-    if (booking.slotTime) booking.slotTime = confirmedTime || booking.slotTime;
+    booking.confirmedTime = finalTime;
+    if (booking.slotTime) booking.slotTime = finalTime;
     booking.$locals.skipZenotiWrite = true;
     await booking.save();
 
@@ -897,6 +934,8 @@ exports.confirmBooking = async (req, res) => {
       booking.slotTime = previous.slotTime;
       booking.$locals.skipZenotiWrite = true;
       await booking.save({ validateModifiedOnly: true });
+      await Booking.updateOne({ _id: booking._id, 'zenotiConfirmationLock.token': confirmationLockToken }, { $unset: { zenotiConfirmationLock: 1 } }, { timestamps: false });
+      confirmationLockToken = null;
       return res.status(outcome.status === 'reconciliation_required' ? 409 : 502).json({
         success: false,
         code: outcome.status === 'reconciliation_required' ? 'ZENOTI_RECONCILIATION_REQUIRED' : 'ZENOTI_CONFIRM_FAILED',
@@ -912,6 +951,8 @@ exports.confirmBooking = async (req, res) => {
     booking.statusLog[booking.statusLog.length - 1].zenoti = 'synced';
     booking.$locals.skipZenotiWrite = true;
     await booking.save();
+    await Booking.updateOne({ _id: booking._id, 'zenotiConfirmationLock.token': confirmationLockToken }, { $unset: { zenotiConfirmationLock: 1 } }, { timestamps: false });
+    confirmationLockToken = null;
 
     // Populate consultation details for email
     await booking.populate('consultationId', 'name');
@@ -977,10 +1018,18 @@ exports.confirmBooking = async (req, res) => {
       data: booking
     });
   } catch (error) {
+    if (confirmationLockToken) {
+      await Booking.updateOne(
+        { _id: req.params.id, 'zenotiConfirmationLock.token': confirmationLockToken },
+        { $unset: { zenotiConfirmationLock: 1 } },
+        { timestamps: false },
+      ).catch(() => {});
+    }
     console.error('❌ Confirm booking error:', error);
-    res.status(500).json({
+    res.status(error.status || 500).json({
       success: false,
-      message: 'Failed to confirm booking'
+      code: error.code || 'BOOKING_CONFIRM_FAILED',
+      message: error.message || 'Failed to confirm booking'
     });
   }
 };
@@ -1532,7 +1581,9 @@ exports.getAvailableTimeSlots = async (req, res) => {
       name: { $regex: `^${escaped}$`, $options: 'i' },
       isActive: true,
     });
-    const allSlots = branch ? branch.getAvailableSlots(clinicDayStart(date)) : [];
+    const allSlots = branch
+      ? (await require('../services/zenotiAvailabilityService').branchSlots(branch._id, date)).slots
+      : [];
 
     // Get bookings for the date and location
     const startDate = clinicDayStart(date);
@@ -1553,7 +1604,8 @@ exports.getAvailableTimeSlots = async (req, res) => {
     });
 
     // Filter available slots
-    const availableSlots = allSlots.filter(slot => !bookedSlots.includes(slot));
+    const heldMinutes = new Set(bookedSlots.map((slot) => require('../utils/bookingTime').parseClockMinutes(slot)).filter((value) => value !== null));
+    const availableSlots = allSlots.filter((slot) => !heldMinutes.has(require('../utils/bookingTime').parseClockMinutes(slot)));
 
     res.status(200).json({
       success: true,
@@ -1567,9 +1619,10 @@ exports.getAvailableTimeSlots = async (req, res) => {
     });
   } catch (error) {
     console.error('❌ Get available slots error:', error);
-    res.status(500).json({
+    res.status(error.status || 503).json({
       success: false,
-      message: 'Failed to fetch available slots'
+      code: error.code || 'ZENOTI_AVAILABILITY_UNAVAILABLE',
+      message: error.message || 'Failed to fetch live Zenoti slots'
     });
   }
 };
@@ -1686,8 +1739,8 @@ exports.createBookingAdmin = async (req, res) => {
       const consultation = consultations.get(String(line.consultationId));
       const slots = line.time ? [line.time]
         : (Array.isArray(preferredTimeSlots) && preferredTimeSlots.length ? preferredTimeSlots : [req.body.confirmedTime].filter(Boolean));
-      if (!slots.length) {
-        return res.status(400).json({ success: false, message: 'At least one preferred time slot is required' });
+      if (!slots.length || slots.some((time) => parseClockMinutes(time) === null)) {
+        return res.status(400).json({ success: false, code: 'INVALID_BOOKING_TIME', message: 'At least one valid preferred time slot is required' });
       }
       const lineSpecialistId = line.specialistId || null;
       if (lineSpecialistId && confirmNow && slots[0] && key) {
@@ -1725,6 +1778,16 @@ exports.createBookingAdmin = async (req, res) => {
       prepared.push({ line, consultation, slots, assignment, session, lineAmount, lineSpecialistId });
     }
 
+    // One Zenoti booking reserves one start time for every service item in the
+    // visit. Different line times cannot be represented truthfully there.
+    if (confirmNow && new Set(prepared.map(({ slots }) => clock24(slots[0]))).size > 1) {
+      return res.status(400).json({
+        success: false,
+        code: 'ZENOTI_VISIT_TIME_MISMATCH',
+        message: 'All services in one confirmed visit must start at the same Zenoti time. Create separate visits for different times.',
+      });
+    }
+
     const created = [];
     for (const { line, consultation, slots, assignment, session, lineAmount, lineSpecialistId } of prepared) {
       const booking = new Booking({
@@ -1738,7 +1801,7 @@ exports.createBookingAdmin = async (req, res) => {
         preferredLocation,
         preferredDate: clinicDayStart(preferredDate),
         preferredTimeSlots: slots,
-        slotTime: lineSpecialistId && confirmNow ? slots[0] : undefined,
+        slotTime: lineSpecialistId && confirmNow ? clock24(slots[0]) : undefined,
         specialistId: lineSpecialistId || undefined,
         specialistName: line.specialistName || (lineSpecialistId ? specialistName : undefined) || undefined,
         specialistTier: line.specialistTier || (lineSpecialistId ? specialistTier : undefined) || undefined,
@@ -1755,7 +1818,7 @@ exports.createBookingAdmin = async (req, res) => {
       });
       if (confirmNow) {
         booking.confirmedDate = clinicDayStart(preferredDate);
-        booking.confirmedTime = slots[0];
+        booking.confirmedTime = clock24(slots[0]);
       }
       booking.$locals.skipZenotiWrite = true;
       await booking.save();
@@ -1764,7 +1827,7 @@ exports.createBookingAdmin = async (req, res) => {
         session.bookingCreatedAt = new Date();
         session.status = 'Booked';
         session.scheduledDate = clinicDayStart(preferredDate);
-        session.scheduledTime = slots[0];
+        session.scheduledTime = clock24(slots[0]) || slots[0];
         if (lineSpecialistId) { session.specialistId = lineSpecialistId; session.specialistName = line.specialistName || null; }
         await assignment.save();
       }
@@ -1863,8 +1926,9 @@ exports.createBookingAdmin = async (req, res) => {
         message: Object.values(error.errors).map((e) => e.message).join(', '),
       });
     }
-    return res.status(500).json({
+    return res.status(error.status || 500).json({
       success: false,
+      code: error.code || undefined,
       message: error.message || 'Failed to create booking',
     });
   }
@@ -1874,6 +1938,7 @@ exports.createBookingAdmin = async (req, res) => {
 // @route   PUT /api/bookings/admin/:id/reschedule
 // @access  Private (Admin)
 exports.rescheduleBookingAdmin = async (req, res) => {
+  let rescheduleLockToken = null;
   try {
     const { preferredDate, confirmedTime, preferredTimeSlots, reason } = req.body;
 
@@ -1901,6 +1966,10 @@ exports.rescheduleBookingAdmin = async (req, res) => {
     if (!preferredDate) {
       return res.status(400).json({ success: false, message: 'A new date is required' });
     }
+    const rescheduledTime = confirmedTime ? clock24(confirmedTime) : null;
+    if (confirmedTime && !rescheduledTime) {
+      return res.status(400).json({ success: false, code: 'INVALID_TIME', message: 'confirmedTime must be a valid clinic time.' });
+    }
     const prior = {
       status: booking.status,
       preferredDate: booking.preferredDate,
@@ -1917,11 +1986,11 @@ exports.rescheduleBookingAdmin = async (req, res) => {
     // guest already holds. Excluding this booking lets it keep (or reclaim)
     // its own time; other diary problems (leave, outside hours) stay a staff
     // judgement call rather than a hard block.
-    if (booking.specialistId && confirmedTime) {
+    if (booking.specialistId && rescheduledTime) {
       const { isSlotBookable } = require('../utils/dermatologistSlots');
       const key = clinicDateKey(preferredDate);
       const check = key
-        ? await isSlotBookable(booking.specialistId, key, confirmedTime, {
+        ? await isSlotBookable(booking.specialistId, key, rescheduledTime, {
             branchId: booking.branchId || null,
             excludeBookingId: booking._id,
           })
@@ -1932,6 +2001,24 @@ exports.rescheduleBookingAdmin = async (req, res) => {
           code: 'DERMATOLOGIST_SLOT_UNAVAILABLE',
           message: `Zenoti does not allow that doctor at the requested clinic and time (${check.reason}).`,
         });
+      }
+    }
+
+    if (booking.zenotiAppointmentId || booking.zenotiInvoiceId) {
+      rescheduleLockToken = require('crypto').randomUUID();
+      const lock = await Booking.updateOne(
+        {
+          _id: booking._id,
+          $or: [
+            { 'zenotiConfirmationLock.token': null },
+            { 'zenotiConfirmationLock.token': { $exists: false } },
+            { 'zenotiConfirmationLock.at': { $lt: new Date(Date.now() - 2 * 60 * 1000) } },
+          ],
+        },
+        { $set: { zenotiConfirmationLock: { token: rescheduleLockToken, at: new Date() } } },
+      );
+      if (!lock.modifiedCount) {
+        return res.status(409).json({ success: false, code: 'ZENOTI_RESCHEDULE_IN_PROGRESS', message: 'This appointment is already being changed in Zenoti. Refresh before retrying.' });
       }
     }
 
@@ -1948,9 +2035,9 @@ exports.rescheduleBookingAdmin = async (req, res) => {
     if (Array.isArray(preferredTimeSlots) && preferredTimeSlots.length) {
       booking.preferredTimeSlots = preferredTimeSlots;
     }
-    if (confirmedTime) {
+    if (rescheduledTime) {
       booking.confirmedDate = clinicDayStart(preferredDate);
-      booking.confirmedTime = confirmedTime;
+      booking.confirmedTime = rescheduledTime;
       booking.status = 'Confirmed';
     } else {
       booking.status = 'Rescheduled';
@@ -1959,19 +2046,23 @@ exports.rescheduleBookingAdmin = async (req, res) => {
     }
     // The diary reads slotTime first — a stale value would keep holding the
     // old time while leaving the new one visibly free.
-    if (booking.slotTime) booking.slotTime = confirmedTime || null;
+    if (booking.slotTime) booking.slotTime = rescheduledTime || null;
     if (reason) {
       booking.adminNotes = `${booking.adminNotes ? `${booking.adminNotes}\n` : ''}Rescheduled: ${reason}`;
     }
 
     const targetStatus = booking.status;
     if (booking.zenotiAppointmentId || booking.zenotiInvoiceId) {
-      if (!confirmedTime) {
+      if (!rescheduledTime) {
         Object.assign(booking, prior);
+        await Booking.updateOne({ _id: booking._id, 'zenotiConfirmationLock.token': rescheduleLockToken }, { $unset: { zenotiConfirmationLock: 1 } }, { timestamps: false });
+        rescheduleLockToken = null;
         return res.status(400).json({ success: false, code: 'CONFIRMED_SLOT_REQUIRED', message: 'A linked Zenoti appointment must be moved to one exact time.' });
       }
       if (!zenotiWrite.isLive()) {
         Object.assign(booking, prior);
+        await Booking.updateOne({ _id: booking._id, 'zenotiConfirmationLock.token': rescheduleLockToken }, { $unset: { zenotiConfirmationLock: 1 } }, { timestamps: false });
+        rescheduleLockToken = null;
         return res.status(503).json({ success: false, code: 'ZENOTI_WRITE_NOT_LIVE', message: 'Rescheduling is paused because Zenoti live write-back is not enabled.' });
       }
       // Persist the requested coordinates with the old local status so the
@@ -1985,6 +2076,8 @@ exports.rescheduleBookingAdmin = async (req, res) => {
         Object.assign(booking, prior);
         booking.$locals.skipZenotiWrite = true;
         await booking.save({ validateModifiedOnly: true });
+        await Booking.updateOne({ _id: booking._id, 'zenotiConfirmationLock.token': rescheduleLockToken }, { $unset: { zenotiConfirmationLock: 1 } }, { timestamps: false });
+        rescheduleLockToken = null;
         return res.status(502).json({ success: false, code: 'ZENOTI_RESCHEDULE_FAILED', message: outcome.error || 'Zenoti did not accept the new time.' });
       }
       booking.status = targetStatus;
@@ -1993,6 +2086,10 @@ exports.rescheduleBookingAdmin = async (req, res) => {
     }
     booking.$locals.skipZenotiWrite = true;
     await booking.save();
+    if (rescheduleLockToken) {
+      await Booking.updateOne({ _id: booking._id, 'zenotiConfirmationLock.token': rescheduleLockToken }, { $unset: { zenotiConfirmationLock: 1 } }, { timestamps: false });
+      rescheduleLockToken = null;
+    }
     await booking.populate('consultationId', 'name category price image');
     await booking.populate('userId', 'fullName email phone patientId');
 
@@ -2002,8 +2099,15 @@ exports.rescheduleBookingAdmin = async (req, res) => {
       data: booking,
     });
   } catch (error) {
+    if (rescheduleLockToken) {
+      await Booking.updateOne(
+        { _id: req.params.id, 'zenotiConfirmationLock.token': rescheduleLockToken },
+        { $unset: { zenotiConfirmationLock: 1 } },
+        { timestamps: false },
+      ).catch(() => {});
+    }
     console.error('❌ Admin reschedule error:', error);
-    return res.status(500).json({ success: false, message: 'Failed to reschedule booking' });
+    return res.status(error.status || 500).json({ success: false, code: error.code || 'BOOKING_RESCHEDULE_FAILED', message: error.message || 'Failed to reschedule booking' });
   }
 };
 
