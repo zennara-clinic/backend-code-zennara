@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Booking = require('../models/Booking');
 const zenotiWrite = require('../services/zenotiWriteService');
 
@@ -1130,6 +1131,21 @@ exports.bookingLifecycleAdmin = async (req, res) => {
     const booking = await Booking.findById(req.params.id);
     if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
 
+    // A booking cannot leave the desk confirmed with nobody assigned to it.
+    // Answered with a code so the panel can open the picker rather than just
+    // showing an error; a Zenoti-owned visit is Zenoti's to staff.
+    if (action === 'confirm' && booking.source !== 'zenoti') {
+      const willHave = req.body?.specialistId || req.body?.specialistName
+        || booking.specialistName || booking.specialistId || booking.therapistName;
+      if (!willHave) {
+        return res.status(400).json({
+          success: false,
+          code: 'DERMATOLOGIST_REQUIRED',
+          message: 'Choose who is running this appointment before confirming it.',
+        });
+      }
+    }
+
     await lifecycle.apply(booking, action, {
       admin: req.admin,
       reason: req.body?.reason,
@@ -1139,7 +1155,18 @@ exports.bookingLifecycleAdmin = async (req, res) => {
       // carries them: who ran it (set at check-in / start) and what was used
       // (recorded at completion).
       mutate: async (doc) => {
-        if (['check_in', 'start'].includes(action)) await applyDermatologist(doc, req.body);
+        /*
+         * Confirming is where a treatment gets its dermatologist.
+         *
+         * A consultation carries one from the moment it is booked — the guest
+         * picks the specialist in the app. A TREATMENT does not: the app asks
+         * for a service, a date and a time, and nothing else. So a confirmed
+         * treatment used to sit in the diary with nobody assigned to it, and
+         * the gap was only noticed at check-in. The desk decides who is running
+         * it at the moment it says yes to the slot, so that is where it is
+         * asked for.
+         */
+        if (['confirm', 'check_in', 'start'].includes(action)) await applyDermatologist(doc, req.body);
         if (action === 'complete') applySessionFromBody(doc, req);
       },
     });
