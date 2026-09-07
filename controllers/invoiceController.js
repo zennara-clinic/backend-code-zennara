@@ -819,6 +819,43 @@ exports.refreshFromZenoti = async (req, res) => {
 };
 
 /**
+ * POST /api/invoices/guest/:userId/hydrate — pull the line items for every one
+ * of this guest's Zenoti bills that has never been expanded.
+ *
+ * The register lists hundreds of bills, so it mirrors headers only and fetches
+ * a bill's items when someone opens it. A patient page shows a handful, and
+ * there "open the bill to see what was on it" is a wasted click on every row —
+ * so the whole guest is expanded in one go, capped, and only ever once each.
+ */
+exports.hydrateGuest = async (req, res) => {
+  try {
+    const pending = await Invoice.find({
+      userId: req.params.userId,
+      source: 'zenoti',
+      zenotiInvoiceId: { $ne: null },
+      'zenotiSource.detailFetchedAt': null,
+    }).select('zenotiInvoiceId').sort({ issuedAt: -1 }).limit(25).lean();
+
+    if (!pending.length) return send(res, { fetched: 0, pending: 0 });
+
+    const { mirrorInvoice } = require('../services/zenotiInvoiceSyncService');
+    let fetched = 0;
+    for (const inv of pending) {
+      // Sequential on purpose: Zenoti rate-limits, and a patient page opening
+      // must never be the thing that trips it for the rest of the panel.
+      try { await mirrorInvoice(inv.zenotiInvoiceId, { detail: true }); fetched += 1; }
+      catch (_) { /* one unreadable bill must not lose the others */ }
+    }
+    const stillPending = await Invoice.countDocuments({
+      userId: req.params.userId, source: 'zenoti', 'zenotiSource.detailFetchedAt': null,
+    });
+    return send(res, { fetched, pending: stillPending });
+  } catch (e) {
+    return fail(res, e.status || 502, e.message || 'Could not read these bills from Zenoti');
+  }
+};
+
+/**
  * GET /api/invoices/for-booking/:bookingId — the bill behind a visit. A
  * Zenoti visit is mirrored (with its lines and payments) on first open.
  */

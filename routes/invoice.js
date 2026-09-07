@@ -16,6 +16,7 @@ router.post('/', MANAGE, auditLog('INVOICE_CREATED', 'INVOICE'), ctrl.create);
 router.get('/summary', VIEW, ctrl.summary);
 router.get('/for-booking/:bookingId', VIEW, ctrl.forBooking);
 router.get('/:id', VIEW, ctrl.get);
+router.post('/guest/:userId/hydrate', VIEW, ctrl.hydrateGuest);
 router.post('/:id/zenoti-refresh', VIEW, ctrl.refreshFromZenoti);
 router.put('/:id', MANAGE, auditLog('INVOICE_UPDATED', 'INVOICE'), ctrl.update);
 router.get('/:id/receipt', VIEW, ctrl.receipt);
