@@ -640,7 +640,7 @@ exports.getAllBookingsAdmin = async (req, res) => {
     const { page, limit } = req.query;
 
     // Filters + sort are shared with the export endpoint (utils/listFilters).
-    const { query, sort } = await buildBookingQuery(req.query);
+    const { query, sort, due } = await buildBookingQuery(req.query);
     await scopeToOwnDiary(req, query);
 
     // Pagination is opt-in (`limit`) so existing callers keep the full list.
@@ -681,6 +681,14 @@ exports.getAllBookingsAdmin = async (req, res) => {
         u.email = publicEmail(u.email);
       }
       if (isPlaceholderEmail(o.email)) o.email = '';
+      /*
+       * What this visit still owes, resolved against its invoice rather than
+       * the booking's own paymentStatus — that field goes stale the moment a
+       * bill is raised, so a row can read "pending" long after the guest paid.
+       * Only sent when the caller asked for the outstanding list, so the
+       * ordinary list costs nothing extra.
+       */
+      if (due) o.amountDue = due.dueById.get(String(o._id)) ?? 0;
       return o;
     });
 
@@ -689,6 +697,8 @@ exports.getAllBookingsAdmin = async (req, res) => {
       count: rows.length,
       total,
       statusCounts: Object.fromEntries(statusCounts.map((r) => [r._id, r.n])),
+      // The money behind the current filter, so the page can lead with it.
+      totals: due ? { dueCount: due.ids.length, due: Math.round(due.total) } : undefined,
       pagination: perPage ? { currentPage: pageNo, totalPages: Math.ceil(total / perPage), total } : undefined,
       data: rows
     });

@@ -75,10 +75,68 @@ const BOOKING_SORTS = {
   createdAt: 'createdAt',
   date: 'eventAt', // the appointment's own instant — see Booking.eventAt
   amount: 'amount',
+  // What is still owed. There is no stored `due` column — the figure is the
+  // invoice's when a bill exists and the booking's amount when it does not —
+  // so this orders on `amount`, which is the same ordering for an untouched
+  // bill and close enough for a part-paid one. The row still SHOWS the true
+  // outstanding figure (see `attachAmountDue`), so nobody reads a wrong number.
+  due: 'amount',
   status: 'status',
   name: 'fullName',
   checkIn: 'checkInTime',
 };
+
+/**
+ * Bookings that genuinely still owe money.
+ *
+ * `Booking.paymentStatus` cannot answer this on its own. Once a visit is billed
+ * the money moves to the Invoice, and the booking row is left saying "pending"
+ * for ever: of 79 bookings flagged unpaid in production, 16 were fully settled
+ * on their invoice. Filtering on the booking alone would have the desk chasing
+ * guests who had already paid.
+ *
+ * So the candidates are narrowed on the booking, then each one's invoice is
+ * consulted: a closed or voided bill with nothing outstanding drops out, and
+ * what remains carries its real figure.
+ *
+ * @returns {{ ids: ObjectId[], dueById: Map<string, number>, total: number }}
+ */
+async function outstandingBookings(baseQuery = {}) {
+  const Booking = require('../models/Booking');
+  const Invoice = require('../models/Invoice');
+
+  const candidates = await Booking.find({
+    ...baseQuery,
+    paymentStatus: { $ne: 'paid' },
+    amount: { $gt: 0 },
+    // A cancelled visit is not a debt.
+    status: { $nin: ['Cancelled'] },
+  }).select('_id amount invoiceId').lean();
+  if (!candidates.length) return { ids: [], dueById: new Map(), total: 0 };
+
+  const invoiceIds = candidates.map((b) => b.invoiceId).filter(Boolean);
+  const invoices = invoiceIds.length
+    ? await Invoice.find({ _id: { $in: invoiceIds } }).select('_id status totals.due').lean()
+    : [];
+  const byInvoice = new Map(invoices.map((i) => [String(i._id), i]));
+
+  const ids = [];
+  const dueById = new Map();
+  let total = 0;
+  for (const b of candidates) {
+    const invoice = b.invoiceId ? byInvoice.get(String(b.invoiceId)) : null;
+    // A dangling invoice id (the bill was removed, or it is a Zenoti id we do
+    // not mirror) leaves the booking's own amount as the best answer.
+    const owed = invoice
+      ? (invoice.status === 'void' ? 0 : Number(invoice.totals?.due) || 0)
+      : Number(b.amount) || 0;
+    if (owed <= 0) continue;
+    ids.push(b._id);
+    dueById.set(String(b._id), owed);
+    total += owed;
+  }
+  return { ids, dueById, total };
+}
 
 /**
  * @returns {{ query: object, sort: object, meta: object }}
@@ -134,6 +192,20 @@ async function buildBookingQuery(q) {
       if (q.category) or.push({ consultationId: null, externalServiceCategory: { $in: list(q.category) } });
     }
     and.push({ $or: or });
+  }
+
+  /*
+   * "Who still owes us money." Resolved against the invoice, not the booking's
+   * own paymentStatus — see outstandingBookings. Applied last of the
+   * pre-queries so it narrows what the other filters already selected.
+   */
+  let dueMeta = null;
+  if (q.dueOnly === 'true') {
+    dueMeta = await outstandingBookings({
+      ...(query.branchId ? { branchId: query.branchId } : {}),
+      ...(query.preferredLocation ? { preferredLocation: query.preferredLocation } : {}),
+    });
+    and.push({ _id: { $in: dueMeta.ids } });
   }
 
   // Guest attributes (membership) → pre-query users.
@@ -193,7 +265,7 @@ async function buildBookingQuery(q) {
   let sort = { eventAt: -1, _id: -1 };
   if (BOOKING_SORTS[q.sortBy]) sort = { [BOOKING_SORTS[q.sortBy]]: dir, _id: dir };
 
-  return { query, sort };
+  return { query, sort, due: dueMeta };
 }
 
 /* ------------------------------------------------------------------------ *
@@ -317,4 +389,4 @@ async function buildUserFilter(q) {
   return { filter, sort };
 }
 
-module.exports = { buildBookingQuery, buildUserFilter, consultationIdsByKind, practitionerBookingMatch, list };
+module.exports = { buildBookingQuery, buildUserFilter, consultationIdsByKind, practitionerBookingMatch, outstandingBookings, list };
