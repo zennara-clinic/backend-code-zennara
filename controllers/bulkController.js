@@ -19,6 +19,7 @@ const mongoose = require('mongoose');
 const Consultation = require('../models/Consultation');
 const Category = require('../models/Category');
 const Product = require('../models/Product');
+const Package = require('../models/Package');
 const AdminAuditLog = require('../models/AdminAuditLog');
 const { toCsv, readWorkbook } = require('../utils/bulkCsv');
 
@@ -170,6 +171,98 @@ const ENTITIES = {
     }),
     /** Archived rows are history; they must not come back out of an export. */
     exportFilter: { isArchived: { $ne: true } },
+  },
+
+  /**
+   * Packages — the one way to fill in what Zenoti will not tell us.
+   *
+   * Zenoti's API publishes a package's name, code and validity but NEVER its
+   * price or the services inside it (proven exhaustively; the detail endpoints
+   * are refused for this key). We recover both from real sales, but 799 of the
+   * 1,268 catalogue packages have never been sold here — there is no sale to
+   * learn from, and no API that will answer. Someone at the clinic has to
+   * supply them, and doing that 799 times in a form is not a plan.
+   *
+   * `Services` is a semicolon-separated list of "Service name x sessions":
+   *     Exosome Therapy x3; GFC Hair x2
+   * Each name is resolved against the live service catalogue; a name that
+   * matches nothing is reported per row rather than silently dropped.
+   */
+  packages: {
+    model: () => Package,
+    label: 'packages',
+    columns: ['Code', 'PackageName', 'Category', 'Price', 'ValidityDays', 'Services', 'AppCatalogue'],
+    required: ['PackageName'],
+    keyOf: (row) => slugify(row.PackageName),
+    /** Resolve the service list during preview so unknown names are visible first. */
+    previewPrepare: true,
+    async find(key, row) {
+      const code = String(row.Code || '').trim();
+      if (code) {
+        const hit = await Package.findOne({ code: code.toUpperCase() });
+        if (hit) return hit;
+      }
+      return Package.findOne({ id: key }) || Package.findOne({ name: new RegExp(`^${String(row.PackageName).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') });
+    },
+    validate(row) {
+      const errors = [];
+      if (!String(row.PackageName || '').trim()) errors.push('PackageName is required');
+      if (row.Price !== '' && row.Price !== undefined && num(row.Price) === null) errors.push(`Price "${row.Price}" is not a number`);
+      if (row.ValidityDays !== '' && row.ValidityDays !== undefined && num(row.ValidityDays) === null) errors.push(`ValidityDays "${row.ValidityDays}" is not a number`);
+      return errors;
+    },
+    /** Resolve the "name x sessions" list against the real service catalogue. */
+    async prepare(row) {
+      const raw = String(row.Services || '').trim();
+      if (!raw) return { services: null, unknown: [] };
+      const Consultation = require('../models/Consultation');
+      const parts = raw.split(/[;\n]+/).map((x) => x.trim()).filter(Boolean);
+      const services = []; const unknown = [];
+      for (const part of parts) {
+        const m = part.match(/^(.*?)(?:\s*[x×]\s*(\d+))?$/i);
+        const name = String(m?.[1] || part).trim();
+        const sessions = Math.max(1, Number(m?.[2]) || 1);
+        const hit = await Consultation.findOne({
+          isArchived: { $ne: true },
+          name: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i'),
+        }).select('id name price').lean();
+        if (!hit) { unknown.push(name); continue; }
+        services.push({ serviceId: hit.id, serviceName: hit.name, servicePrice: hit.price ?? 0, sessions });
+      }
+      return { services, unknown };
+    },
+    apply(doc, row, { creating, prepared }) {
+      const name = String(row.PackageName).trim();
+      if (creating) {
+        doc.id = slugify(name);
+        doc.name = name;
+        doc.origin = 'panel';
+      }
+      doc.name = name;
+      if (row.Code !== '') doc.code = String(row.Code).trim().toUpperCase();
+      if (row.Category !== '') doc.category = String(row.Category).trim();
+      const price = num(row.Price);
+      if (price !== null) { doc.price = price; if (!doc.originalPrice) doc.originalPrice = price; }
+      const days = num(row.ValidityDays);
+      if (days !== null && days > 0) { doc.validityDays = days; doc.validityMonths = Math.max(1, Math.round(days / 30)); }
+      if (prepared?.services?.length) {
+        doc.services = prepared.services;
+        // The flag the panel reads to stop saying "contents not published".
+        doc.contentsKnown = true;
+      }
+      const app = bool(row.AppCatalogue);
+      if (app !== null) doc.inCatalogue = app;
+      return doc;
+    },
+    exportRow: (d) => ({
+      Code: d.code || '',
+      PackageName: d.name || '',
+      Category: d.category || '',
+      Price: d.price ?? '',
+      ValidityDays: d.validityDays ?? (d.validityMonths ? d.validityMonths * 30 : ''),
+      Services: (d.services || []).map((s) => `${s.serviceName}${(s.sessions ?? 1) > 1 ? ` x${s.sessions}` : ''}`).join('; '),
+      AppCatalogue: d.inCatalogue ? 'yes' : 'no',
+    }),
   },
 
   categories: {
@@ -340,6 +433,17 @@ async function analyse(entity, file) {
     let existing = null;
     if (!errors.length) existing = await entity.find(key, data);
 
+    // Some rows reference other records by name (a package lists its services).
+    // Resolving that at preview time is the difference between "3 rows will
+    // import with missing contents" and finding out afterwards.
+    let warnings = [];
+    if (!errors.length && entity.previewPrepare && entity.prepare) {
+      const prepared = await entity.prepare(data).catch(() => null);
+      if (prepared?.unknown?.length) {
+        warnings = [`not in the service catalogue, will be skipped: ${prepared.unknown.join(', ')}`];
+      }
+    }
+
     rows.push({
       row,
       key,
@@ -348,6 +452,7 @@ async function analyse(entity, file) {
       existingId: existing?._id || null,
       existingName: existing?.name || null,
       errors,
+      warnings,
     });
   }
 
@@ -356,6 +461,7 @@ async function analyse(entity, file) {
     creates: rows.filter((r) => r.action === 'create').length,
     updates: rows.filter((r) => r.action === 'update').length,
     errors: rows.filter((r) => r.action === 'error').length,
+    warnings: rows.filter((r) => r.warnings?.length).length,
     taxonomy: await taxonomyReport(entity, rows),
     rows,
   };
