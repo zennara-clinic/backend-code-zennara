@@ -37,7 +37,21 @@ const branchSchema = new mongoose.Schema({
   contact: {
     phone: [{
       type: String,
-      required: true
+      required: true,
+      /*
+       * Refuse the stringified-object text outright.
+       *
+       * Zenoti models a phone as an object ({ country_id, number,
+       * display_number }); a sync that String()-d one stored "[object Object]"
+       * on six of the seven branches, and the app printed it on the "call the
+       * clinic" line and offered to dial it. The sync is fixed, but a number
+       * that reaches a customer's screen should not depend on every future
+       * caller remembering — anything that is not number-like is rejected here.
+       */
+      validate: {
+        validator: (v) => typeof v === 'string' && v !== '[object Object]' && /\d/.test(v),
+        message: (p) => `"${p.value}" is not a phone number — pass the number, not the object Zenoti sends.`,
+      },
     }],
     email: {
       type: String,

@@ -30,6 +30,27 @@ function addressLinePath() {
   return paths.find((p) => !known.has(p)) || null;
 }
 
+/**
+ * A callable number out of whatever Zenoti sends for a phone field.
+ *
+ * Never returns "[object Object]": anything that is not a string or a
+ * recognisable phone object yields null, so a bad shape drops the value rather
+ * than storing nonsense that reaches a customer's screen.
+ */
+function phoneText(value) {
+  if (!value) return null;
+  if (typeof value === 'string' || typeof value === 'number') {
+    const s = String(value).trim();
+    return s && s !== '[object Object]' ? s : null;
+  }
+  if (typeof value === 'object') {
+    const raw = value.display_number ?? value.number ?? value.Number ?? value.DisplayNumber;
+    const s = String(raw ?? '').trim();
+    return s && s !== '[object Object]' ? s : null;
+  }
+  return null;
+}
+
 async function syncCenters({ trigger = 'schedule', adminId = null } = {}) {
   if (!zenoti.isConfigured()) return { skipped: true };
   const run = await ZenotiSyncRun.create({ type: 'centers', trigger: trigger === 'schedule' ? 'schedule' : 'manual', startedBy: adminId }).catch(() => null);
@@ -89,7 +110,18 @@ async function syncCenters({ trigger = 'schedule', adminId = null } = {}) {
         if (c.state?.name || c.state?.short_name) branch.set('address.state', c.state.name || c.state.short_name);
         if (addr.zip_code) branch.set('address.pincode', String(addr.zip_code));
 
-        const phones = [c.contact_info?.phone_1, c.contact_info?.phone_2].filter((x) => x && String(x).trim()).map(String);
+        /*
+         * Zenoti sends a phone as an OBJECT:
+         *   phone_1: { country_id: 95, number: "7070701099", display_number: "…" }
+         *
+         * String()-ing that stores the literal text "[object Object]", which is
+         * what the app then printed on the "call the clinic" line and dialled.
+         * Six of seven branches were saved that way. Read the number out of the
+         * object, and still accept a bare string in case the shape varies.
+         */
+        const phones = [c.contact_info?.phone_1, c.contact_info?.phone_2]
+          .map(phoneText)
+          .filter(Boolean);
         if (phones.length) branch.set('contact.phone', phones);
         if (c.contact_info?.email) branch.set('contact.email', String(c.contact_info.email).toLowerCase());
 
@@ -118,4 +150,4 @@ async function syncCenters({ trigger = 'schedule', adminId = null } = {}) {
   return stats;
 }
 
-module.exports = { syncCenters };
+module.exports = { syncCenters, phoneText };
