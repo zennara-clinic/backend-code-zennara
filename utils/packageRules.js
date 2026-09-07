@@ -24,16 +24,54 @@ function buildAssignment(pkg, user, { branchId = null, preferredLocation = '', s
     pricing: { originalAmount: listPrice ?? pkg.price, discountPercentage: discountPercentage || 0, isZenMemberDiscount: !!isZenMemberDiscount },
     payment: { isReceived: !!payment.isReceived, receivedDate: payment.isReceived ? (payment.receivedDate || now) : null, paymentMethod: payment.paymentMethod || null, transactionId: payment.transactionId || null, amountPaid: payment.amountPaid ?? null, balanceDue: payment.balanceDue ?? null },
     notes, terms, validFrom: now, validUntil: until, preferredLocation: preferredLocation || '', branchId: branchId || null,
-    sessions: sessions.map((s) => ({
-      serviceId: s.serviceId,
-      serviceName: (pkg.services || []).find((ps) => String(ps.serviceId) === String(s.serviceId))?.serviceName || s.serviceName || '',
-      scheduledDate: s.scheduledDate ? new Date(s.scheduledDate) : new Date(), scheduledTime: s.scheduledTime || '',
-      specialistId: s.specialistId || null, specialistName: s.specialistName || null, specialistTier: s.specialistTier || null, status: 'Scheduled',
-    })),
+    sessions: buildSessionRows(pkg, sessions),
     assignedBy, assignedByName,
   });
   if (pricePaid !== null && pricePaid !== undefined) { pa.pricing.originalAmount = listPrice ?? pkg.price; pa.$locals.forceFinal = r2(pricePaid); }
   return pa;
+}
+
+/**
+ * One session row per entitled session — "Exosome × 3" is three rows, not one.
+ *
+ * Rows used to be built only from what the panel sent, so a three-session
+ * course arrived as a single row while serviceBalances() reported three
+ * entitlements: the customer could book once and then had no row left to book
+ * against. Any dates the clinic did supply are applied in order; the rest stay
+ * undated, which is now the normal case — the customer picks the date in the
+ * app whenever they like, up to the package's expiry.
+ */
+function buildSessionRows(pkg, supplied = []) {
+  const byService = new Map();
+  (supplied || []).forEach((s) => {
+    const id = String(s?.serviceId || '');
+    if (!id) return;
+    if (!byService.has(id)) byService.set(id, []);
+    byService.get(id).push(s);
+  });
+
+  const rows = [];
+  (pkg.services || []).forEach((ps) => {
+    const id = String(ps.serviceId || '');
+    if (!id) return;
+    const count = Math.max(1, Number(ps.sessions) || 1);
+    const given = byService.get(id) || [];
+    for (let i = 0; i < count; i += 1) {
+      const s = given[i] || {};
+      rows.push({
+        serviceId: ps.serviceId,
+        serviceName: ps.serviceName || s.serviceName || '',
+        // Undated is deliberate: a suggested date is a nudge, not a booking.
+        scheduledDate: s.scheduledDate ? new Date(s.scheduledDate) : null,
+        scheduledTime: s.scheduledTime || '',
+        specialistId: s.specialistId || null,
+        specialistName: s.specialistName || null,
+        specialistTier: s.specialistTier || null,
+        status: 'Scheduled',
+      });
+    }
+  });
+  return rows;
 }
 
 function freeze(pa, { by = 'Admin', reason = '', resumeOn = null } = {}) {
@@ -137,4 +175,4 @@ function reverseRedemption(pa, { sessionId = null, invoiceId = null }) {
   }
 }
 
-module.exports = { buildAssignment, freeze, unfreeze, transfer, refund, refundSuggestion, recordRedemption, reverseRedemption };
+module.exports = { buildAssignment, buildSessionRows, freeze, unfreeze, transfer, refund, refundSuggestion, recordRedemption, reverseRedemption };

@@ -539,6 +539,58 @@ async function syncPackageAssignment(assignmentId) {
   }
 }
 
+/**
+ * Push a package's new expiry date back to Zenoti.
+ *
+ * Only ever called for an assignment that mirrors a real Zenoti user-package
+ * (`zenotiUserPackageId`); a package sold in the app has nothing to update
+ * there. Like every other edit to a record Zenoti owns it is behind
+ * ZENOTI_EDIT_EXISTING_WRITEBACK, so it stays inert until that is switched on.
+ *
+ * Returns { status, error } and never throws — the extension itself has already
+ * been applied on our side, and a Zenoti failure must not undo it. The status is
+ * recorded on the extension entry so the panel can show that the clinic's own
+ * system is still on the old date.
+ */
+async function syncPackageExpiry(assignmentId) {
+  const PackageAssignment = require('../models/PackageAssignment');
+  const assignment = await PackageAssignment.findById(assignmentId);
+  if (!assignment) return { status: 'skipped', error: 'Assignment not found.' };
+  if (!assignment.zenotiUserPackageId) {
+    return { status: 'skipped', error: 'Sold in the app — Zenoti has no copy of this package.' };
+  }
+  if (isOff()) return { status: 'skipped', error: 'Zenoti write mode is off.' };
+  if (!existingRecordWritebackEnabled()) {
+    return { status: 'skipped', error: 'Zenoti write-back for existing records is disabled (ZENOTI_EDIT_EXISTING_WRITEBACK).' };
+  }
+
+  const User = require('../models/User');
+  const user = await User.findById(assignment.userId).select('zenotiGuestId').lean();
+  if (!user?.zenotiGuestId) {
+    return { status: 'skipped', error: 'This guest is not linked to Zenoti yet.' };
+  }
+
+  const payload = {
+    expiry_date: clinicDay(assignment.validUntil),
+    // Zenoti names this field differently across its package endpoints; both
+    // are sent so whichever the tenant's API honours takes effect.
+    end_date: clinicDay(assignment.validUntil),
+  };
+  const path = `/v1/guests/${user.zenotiGuestId}/packages/${assignment.zenotiUserPackageId}`;
+
+  if (!isLive()) {
+    logWrite('updatePackageExpiry', { path, payload }, { assignmentId });
+    return { status: 'dryrun', error: null };
+  }
+  try {
+    await liveWrite('updatePackageExpiry', () => zenoti.request(path, { method: 'PUT', body: payload }));
+    return { status: 'synced', error: null };
+  } catch (error) {
+    logger.warn('Zenoti package expiry write-back failed', { assignmentId, error: error.message });
+    return { status: 'failed', error: error.message };
+  }
+}
+
 /* ---------------------------- Appointment push ----------------------------- */
 /**
  * Push a booking to Zenoti as an appointment. Idempotent via booking.zenotiAppointmentId.
@@ -997,6 +1049,7 @@ module.exports = {
   syncConsultationNote,
   syncMembership,
   syncPackageAssignment,
+  syncPackageExpiry,
   syncBooking,
   syncBookingState,
   syncOrder,

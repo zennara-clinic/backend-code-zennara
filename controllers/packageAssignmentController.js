@@ -152,28 +152,13 @@ exports.createAssignment = async (req, res) => {
       });
     }
 
-    // Every service in the package must have a scheduled date — a package can't
-    // be assigned without deciding when each session happens.
+    // Suggested dates are optional. Sessions are not auto-booked any more — the
+    // customer picks the date in the app, any time up to the package's expiry —
+    // so demanding a date per service before assigning only blocked the desk.
+    // Whatever dates the clinic does set are kept as nudges on those rows.
     const datedSessions = Array.isArray(sessions)
-      ? sessions.filter(s => s && s.serviceId && s.scheduledDate)
+      ? sessions.filter(s => s && s.serviceId)
       : [];
-    const scheduledServiceIds = new Set(datedSessions.map(s => String(s.serviceId)));
-    const missingSessions = (packageData.services || []).filter(
-      ps => !scheduledServiceIds.has(String(ps.serviceId))
-    );
-    if (missingSessions.length > 0) {
-      return res.status(400).json({
-        success: false,
-        message: `Please set a date for every session before assigning. Missing: ${missingSessions
-          .map(m => m.serviceName)
-          .join(', ')}`,
-        requiresSessionDates: true,
-        missingServices: missingSessions.map(m => ({
-          serviceId: m.serviceId,
-          serviceName: m.serviceName
-        }))
-      });
-    }
 
     // Build from the package's current terms (validity, grace, redeem-at, version) — see utils/packageRules.
     const { buildAssignment } = require('../utils/packageRules');
@@ -1290,22 +1275,100 @@ exports.pushToZenoti = async (req, res) => {
  * already booked / completed — a package can never yield more appointments
  * than it contains.
  */
+/**
+ * Book the next session of one treatment in a package.
+ *
+ * The old route needed a session id the clinic had already dated, so a package
+ * assigned without suggested dates could never be booked from the app. The
+ * customer picks a treatment that still has a balance; we claim the first free
+ * row for it (creating one if an older assignment is short of rows) and raise
+ * the appointment. No payment is taken — the package already covers it.
+ */
+exports.bookServiceAsUser = async (req, res) => {
+  try {
+    const assignment = await PackageAssignment.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!assignment) return res.status(404).json({ success: false, message: 'Package not found' });
+
+    const { serviceId } = req.body || {};
+    if (!serviceId) return res.status(400).json({ success: false, message: 'Choose a treatment to book.' });
+
+    const balances = assignment.serviceBalances();
+    const row = balances.find((b) => String(b.serviceId) === String(serviceId));
+    if (!row) return res.status(404).json({ success: false, message: 'That treatment is not in this package.' });
+
+    // A session already awaiting the clinic holds a place against the balance,
+    // so a customer cannot book the same entitlement twice.
+    const openForService = (assignment.sessions || []).filter(
+      (x) => String(x.serviceId) === String(serviceId) && x.status === 'Booked',
+    ).length;
+    if (row.balance - openForService <= 0) {
+      return res.status(409).json({
+        success: false,
+        code: 'NO_SESSIONS_LEFT',
+        message: openForService > 0
+          ? 'Every remaining session of this treatment is already booked.'
+          : 'No sessions of this treatment are left in the package.',
+      });
+    }
+
+    let session = (assignment.sessions || []).find(
+      (x) => String(x.serviceId) === String(serviceId) && !x.bookingId && x.status === 'Scheduled',
+    );
+    if (!session) {
+      // Assignments created before rows were expanded per entitlement can be
+      // short of rows while the balance still says sessions are owed.
+      assignment.sessions.push({
+        serviceId: String(serviceId),
+        serviceName: row.serviceName || '',
+        scheduledDate: null,
+        scheduledTime: '',
+        status: 'Scheduled',
+      });
+      session = assignment.sessions[assignment.sessions.length - 1];
+    }
+
+    return await raiseSessionBooking(req, res, assignment, session);
+  } catch (error) {
+    console.error('bookServiceAsUser failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not book the session' });
+  }
+};
+
 exports.bookSessionAsUser = async (req, res) => {
+  try {
+    const assignment = await PackageAssignment.findOne({ _id: req.params.id, userId: req.user._id });
+    if (!assignment) return res.status(404).json({ success: false, message: 'Package not found' });
+
+    const session = assignment.sessions.id(req.params.sessionId);
+    if (!session) return res.status(404).json({ success: false, message: 'Session not found' });
+
+    return await raiseSessionBooking(req, res, assignment, session);
+  } catch (error) {
+    console.error('bookSessionAsUser failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not book the session' });
+  }
+};
+
+/**
+ * Turn one package session into an appointment request.
+ *
+ * Shared by the two entry points (book a named treatment, or book a specific
+ * dated session). The appointment is raised at zero cost — the package was paid
+ * for at purchase — and lands at the desk as "Awaiting Confirmation"; it is the
+ * desk's confirm that creates the Zenoti appointment.
+ */
+async function raiseSessionBooking(req, res, assignment, session) {
   try {
     const Booking = require('../models/Booking');
     const Consultation = require('../models/Consultation');
     const Branch = require('../models/Branch');
     const { validateBranchBooking } = require('../utils/branchSchedule');
 
-    const assignment = await PackageAssignment.findOne({ _id: req.params.id, userId: req.user._id });
-    if (!assignment) return res.status(404).json({ success: false, message: 'Package not found' });
     const redeem = assignment.redeemable({ branchId: assignment.branchId || null });
     if (!redeem.ok) {
-      return res.status(409).json({ success: false, code: redeem.code, message: redeem.code === 'PACKAGE_EXPIRED' ? 'This package has expired. Please speak to the clinic.' : redeem.message });
+      return res.status(409).json({ success: false, code: redeem.code, message: redeem.code === 'PACKAGE_EXPIRED' ? 'This package has expired. Please speak to the clinic to extend it.' : redeem.message });
     }
 
-    const session = assignment.sessions.id(req.params.sessionId);
-    if (!session) return res.status(404).json({ success: false, message: 'Session not found' });
     if (session.bookingId || ['Booked', 'Completed', 'Cancelled'].includes(session.status)) {
       return res.status(409).json({ success: false, message: 'This session already has an appointment.' });
     }
@@ -1370,10 +1433,10 @@ exports.bookSessionAsUser = async (req, res) => {
       data: booking,
     });
   } catch (error) {
-    console.error('bookSessionAsUser failed:', error);
+    console.error('raiseSessionBooking failed:', error);
     return res.status(500).json({ success: false, message: 'Could not book the session' });
   }
-};
+}
 
 
 /* ------------------------------------------------------------------------ */
@@ -1440,6 +1503,99 @@ exports.refundAssignment = async (req, res) => {
 };
 
 /** Balances + redemptions + freeze/transfer history — the guest-profile package detail. */
+/**
+ * Push a package's expiry out, and tell Zenoti.
+ *
+ * The customer cannot do this from the app — the app tells them to ask the
+ * clinic — so this is the one place it happens, and it is recorded: who, when,
+ * from what date to what date, and why. An expired package with sessions still
+ * owed comes back to Active, which is the whole point of the action.
+ */
+exports.extendAssignmentExpiry = async (req, res) => {
+  try {
+    const assignment = await PackageAssignment.findById(req.params.id);
+    if (!assignment) return res.status(404).json({ success: false, message: 'Package assignment not found' });
+
+    const { validUntil, days, reason } = req.body || {};
+    if (!reason || !String(reason).trim()) {
+      return res.status(400).json({ success: false, message: 'Give a reason for the extension — it goes on the package record.' });
+    }
+    if (assignment.status === 'Cancelled') {
+      return res.status(409).json({ success: false, message: 'A cancelled package cannot be extended.' });
+    }
+    if (assignment.terms?.neverExpires) {
+      return res.status(409).json({ success: false, message: 'This package never expires — there is nothing to extend.' });
+    }
+
+    const from = assignment.validUntil ? new Date(assignment.validUntil) : null;
+    let to;
+    if (validUntil) {
+      to = new Date(validUntil);
+    } else if (Number(days) > 0) {
+      // Extending an already-expired package counts from today, not from the
+      // date it lapsed — otherwise "+30 days" on a package that expired two
+      // months ago lands in the past and changes nothing.
+      const base = from && from > new Date() ? from : new Date();
+      to = new Date(base);
+      to.setDate(to.getDate() + Number(days));
+    } else {
+      return res.status(400).json({ success: false, message: 'Choose a new expiry date, or how many days to add.' });
+    }
+
+    if (Number.isNaN(to.getTime())) return res.status(400).json({ success: false, message: 'That date could not be read.' });
+    if (to <= new Date()) return res.status(400).json({ success: false, message: 'The new expiry has to be in the future.' });
+    if (from && to <= from) {
+      return res.status(400).json({ success: false, message: 'The new expiry has to be later than the current one. Use Edit to shorten a package.' });
+    }
+
+    assignment.validUntil = to;
+    if (assignment.status === 'Expired') assignment.status = 'Active';
+
+    const entry = {
+      at: new Date(),
+      from,
+      to,
+      days: from ? Math.round((to - from) / 86400000) : null,
+      reason: String(reason).trim(),
+      byName: req.admin?.name || req.admin?.email || 'Admin',
+      zenotiStatus: null,
+      zenotiError: null,
+    };
+
+    // The extension is ours to grant; Zenoti agreeing is a separate, best-effort
+    // step. Save first so a Zenoti outage can never lose the change.
+    assignment.expiryExtensions = [...(assignment.expiryExtensions || []), entry];
+    assignment.$locals.skipZenotiWrite = true;
+    await assignment.save();
+
+    let zenoti = { status: 'skipped', error: null };
+    try {
+      zenoti = await require('../services/zenotiWriteService').syncPackageExpiry(assignment._id);
+    } catch (e) {
+      zenoti = { status: 'failed', error: e.message };
+    }
+    const last = assignment.expiryExtensions.length - 1;
+    assignment.expiryExtensions[last].zenotiStatus = zenoti.status;
+    assignment.expiryExtensions[last].zenotiError = zenoti.error;
+    assignment.$locals.skipZenotiWrite = true;
+    await assignment.save({ validateModifiedOnly: true });
+
+    return res.json({
+      success: true,
+      message: zenoti.status === 'synced'
+        ? 'Expiry extended here and in Zenoti.'
+        : zenoti.status === 'failed'
+          ? `Expiry extended. Zenoti was not updated: ${zenoti.error}`
+          : 'Expiry extended.',
+      zenoti,
+      data: assignment,
+    });
+  } catch (error) {
+    console.error('Extend assignment expiry error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to extend the package', error: error.message });
+  }
+};
+
 exports.assignmentLedger = async (req, res) => {
   const pa = await PackageAssignment.findById(req.params.id).populate('invoiceId', 'invoiceNumber receiptNumber totals status').lean({ virtuals: false });
   if (!pa) return res.status(404).json({ success: false, message: 'Assignment not found' });

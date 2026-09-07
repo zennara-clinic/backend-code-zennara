@@ -218,6 +218,23 @@ const packageAssignmentSchema = new mongoose.Schema({
   }],
   /** When the "your package expires soon" nudge went out. */
   expiryReminderSentAt: { type: Date, default: null },
+  /**
+   * Every time the desk pushed the expiry out, and why. The customer can only
+   * ask for this at the clinic — the app tells them to — so the audit trail
+   * matters: it is the only record of who granted the extra time.
+   */
+  expiryExtensions: [{
+    _id: false,
+    at: { type: Date, default: Date.now },
+    from: { type: Date, default: null },
+    to: { type: Date, default: null },
+    days: { type: Number, default: 0 },
+    reason: { type: String, default: '' },
+    byName: { type: String, default: '' },
+    /** Whether the matching change reached Zenoti. */
+    zenotiStatus: { type: String, default: null },
+    zenotiError: { type: String, default: null },
+  }],
   usageTracking: {
     totalSessions: {
       type: Number,

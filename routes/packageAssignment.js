@@ -27,6 +27,9 @@ router.get('/user/my-packages', protect, packageAssignmentController.getUserPack
 router.get('/user/my-packages/:id', protect, packageAssignmentController.getUserPackageById);
 router.get('/user/my-packages/:id/service-cards', protect, packageAssignmentController.getUserServiceCards);
 // The customer books one of their package sessions (arrives at the desk as Awaiting Confirmation).
+// By treatment is the route the app uses — a package needs no pre-set dates for
+// the customer to book. The by-session route stays for a clinic-suggested date.
+router.post('/user/my-packages/:id/book', protect, packageAssignmentController.bookServiceAsUser);
 router.post('/user/my-packages/:id/sessions/:sessionId/book', protect, packageAssignmentController.bookSessionAsUser);
 
 // Service consent routes (user submits before service)
@@ -82,5 +85,7 @@ router.post('/:id/unfreeze', protectAdmin, MANAGE, packageAssignmentController.u
 router.post('/:id/transfer', protectAdmin, REFUND, packageAssignmentController.transferAssignment);
 router.get('/:id/refund-preview', protectAdmin, MANAGE, packageAssignmentController.refundPreview);
 router.post('/:id/refund', protectAdmin, REFUND, packageAssignmentController.refundAssignment);
+// Push the expiry out for a guest who still has sessions owed; mirrored to Zenoti.
+router.post('/:id/extend-expiry', protectAdmin, MANAGE, packageAssignmentController.extendAssignmentExpiry);
 
 module.exports = router;

@@ -92,17 +92,38 @@ async function packageFor(zp) {
 }
 
 /** Rebuild a session list from Zenoti's per-service totals, keeping our booked ones. */
-function sessionsFrom(zp, existing = []) {
+/**
+ * Turn one Zenoti purchase's per-service totals into our session rows.
+ *
+ * `pkgServices` is the assignment's own service list (our catalogue ids). Rows
+ * MUST be keyed by those ids: serviceBalances() counts entitlements from
+ * packageDetails.services and usage from these rows, so a row carrying Zenoti's
+ * id instead matched nothing and every mirrored package reported "0 used",
+ * however many sessions the guest had actually had.
+ */
+function sessionsFrom(zp, existing = [], pkgServices = []) {
   const keep = existing.filter((s) => s.bookingId); // booked here — never lose the link
   const out = [...keep];
+
+  const byName = new Map(
+    (pkgServices || [])
+      .filter((s) => s.serviceName)
+      .map((s) => [String(s.serviceName).trim().toLowerCase(), s]),
+  );
+
   for (const svc of zp.services || []) {
     const total = Math.max(0, Number(svc.total) || 0);
     const used = Math.max(0, Number(svc.used) || 0);
-    const already = keep.filter((s) => String(s.serviceName || '').toLowerCase() === String(svc.name || '').toLowerCase()).length;
+    // Match the purchase line back to our catalogue the same way the
+    // entitlement snapshot does — by name, which is all Zenoti gives here.
+    const mine = byName.get(String(svc.name || '').trim().toLowerCase());
+    const serviceId = mine?.serviceId || svc.serviceId || '';
+    const serviceName = mine?.serviceName || svc.name || '';
+    const already = keep.filter((s) => String(s.serviceId || '') === String(serviceId)).length;
     for (let i = already; i < total; i += 1) {
       out.push({
-        serviceId: svc.serviceId || '',  // Zenoti's id when the history carried one
-        serviceName: svc.name || '',
+        serviceId,
+        serviceName,
         status: i < used ? 'Completed' : 'Scheduled',
         completedAt: i < used ? (zp.purchaseDate ? new Date(zp.purchaseDate) : null) : null,
       });
@@ -159,7 +180,7 @@ async function mirrorGuestPackages(user, packages) {
       a.validUntil = zp.neverExpires ? null : (zp.endDate ? new Date(zp.endDate) : a.validUntil);
       a.preferredLocation = branch?.name || zp.centerName || a.preferredLocation || '';
       a.branchId = branch?._id || a.branchId || null;
-      a.sessions = sessionsFrom(zp, a.sessions || []);
+      a.sessions = sessionsFrom(zp, a.sessions || [], a.packageDetails.services || []);
       const remaining = a.sessions.filter((s) => s.status === 'Scheduled').length;
       const expired = a.validUntil && new Date(a.validUntil) < new Date();
       a.status = a.status === 'Cancelled' ? 'Cancelled' : remaining === 0 && a.sessions.length ? 'Completed' : expired ? 'Expired' : 'Active';

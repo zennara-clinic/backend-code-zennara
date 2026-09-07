@@ -14,7 +14,7 @@ const {
 // @access  Private/Admin
 exports.getAllOrders = async (req, res) => {
   try {
-    const { status, paymentStatus, userId, search, startDate, endDate, limit, page = 1 } = req.query;
+    const { status, paymentStatus, userId, search, source, startDate, endDate, limit, page = 1 } = req.query;
     
     const query = {};
     
@@ -25,6 +25,13 @@ exports.getAllOrders = async (req, res) => {
     if (paymentStatus) {
       query.paymentStatus = paymentStatus;
     }
+
+    // App orders and counter sales mirrored from Zenoti live in one collection.
+    // Without this the fulfilment screen mixes them, and staff see hundreds of
+    // already-delivered clinic sales they can never act on. Legacy app rows
+    // predate the field, so 'app' has to include the ones with no source.
+    if (source === 'app') query.$and = [{ $or: [{ source: 'app' }, { source: { $exists: false } }, { source: null }] }];
+    else if (source === 'zenoti') query.source = 'zenoti';
 
     if (userId) query.userId = userId;
 
@@ -38,12 +45,16 @@ exports.getAllOrders = async (req, res) => {
       const rx = new RegExp(String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
       const User = require('../models/User');
       const users = await User.find({ $or: [{ fullName: rx }, { email: rx }, { phone: rx }] }).select('_id').lean();
-      query.$or = [
-        { orderNumber: rx },
-        { 'shippingAddress.fullName': rx },
-        { 'shippingAddress.phone': rx },
-        { userId: { $in: users.map((u) => u._id) } },
-      ];
+      // $and already carries the source clause when one is set; searching adds
+      // a second $or, and two bare $or keys would overwrite each other.
+      query.$and = [...(query.$and || []), {
+        $or: [
+          { orderNumber: rx },
+          { 'shippingAddress.fullName': rx },
+          { 'shippingAddress.phone': rx },
+          { userId: { $in: users.map((u) => u._id) } },
+        ],
+      }];
     }
     
     const pageSize = limit ? parseInt(limit) : 50;
@@ -543,23 +554,33 @@ exports.assignDelivery = async (req, res) => {
 // @access  Private/Admin
 exports.getOrderStats = async (req, res) => {
   try {
-    const totalOrders = await ProductOrder.countDocuments();
-    const newOrders = await ProductOrder.countDocuments({ orderStatus: 'Order Placed' });
-    const confirmedOrders = await ProductOrder.countDocuments({ orderStatus: 'Confirmed' });
-    const processingOrders = await ProductOrder.countDocuments({ 
+    // The tiles describe the same slice the list is showing. Counting every row
+    // regardless of source made "Total orders 311 / Delivered 301" on a screen
+    // whose list held a handful of app orders.
+    const { source } = req.query;
+    const APP_ONLY = { $or: [{ source: 'app' }, { source: { $exists: false } }, { source: null }] };
+    const scope = source === 'app' ? APP_ONLY : source === 'zenoti' ? { source: 'zenoti' } : {};
+    const within = (extra) => ({ ...scope, ...extra });
+
+    const totalOrders = await ProductOrder.countDocuments(scope);
+    const newOrders = await ProductOrder.countDocuments(within({ orderStatus: 'Order Placed' }));
+    const confirmedOrders = await ProductOrder.countDocuments(within({ orderStatus: 'Confirmed' }));
+    const processingOrders = await ProductOrder.countDocuments(within({ 
       orderStatus: { $in: ['Processing', 'Packed'] } 
-    });
-    const shippedOrders = await ProductOrder.countDocuments({ 
+    }));
+    const shippedOrders = await ProductOrder.countDocuments(within({ 
       orderStatus: { $in: ['Shipped', 'Out for Delivery'] } 
-    });
-    const deliveredOrders = await ProductOrder.countDocuments({ orderStatus: 'Delivered' });
-    const cancelledOrders = await ProductOrder.countDocuments({ orderStatus: 'Cancelled' });
-    const failedDeliveryOrders = await ProductOrder.countDocuments({ orderStatus: 'Delivery Failed' });
-    const returnRequestedOrders = await ProductOrder.countDocuments({ orderStatus: 'Return Requested' });
+    }));
+    const deliveredOrders = await ProductOrder.countDocuments(within({ orderStatus: 'Delivered' }));
+    const cancelledOrders = await ProductOrder.countDocuments(within({ orderStatus: 'Cancelled' }));
+    const failedDeliveryOrders = await ProductOrder.countDocuments(within({ orderStatus: 'Delivery Failed' }));
+    const returnRequestedOrders = await ProductOrder.countDocuments(within({ orderStatus: 'Return Requested' }));
+    const appOrders = await ProductOrder.countDocuments(APP_ONLY);
+    const clinicOrders = await ProductOrder.countDocuments({ source: 'zenoti' });
     
     // Calculate total revenue
     const revenueResult = await ProductOrder.aggregate([
-      { $match: { orderStatus: { $nin: ['Cancelled', 'Returned'] } } },
+      { $match: within({ orderStatus: { $nin: ['Cancelled', 'Returned'] } }) },
       { $group: { _id: null, total: { $sum: '$pricing.total' } } }
     ]);
     const totalRevenue = revenueResult.length > 0 ? revenueResult[0].total : 0;
@@ -576,6 +597,8 @@ exports.getOrderStats = async (req, res) => {
         cancelledOrders,
         failedDeliveryOrders,
         returnRequestedOrders,
+        appOrders,
+        clinicOrders,
         totalRevenue
       }
     });
