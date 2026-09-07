@@ -639,14 +639,16 @@ module.exports = {
   rangesFor,
   clampToBranch,
   clampToBookingWindow,
-  anySlotsForDate,
-  anyAvailabilityRange,
-  whoIsFree,
-  whoIsFreeWithBranches,
+  // Booking decisions are always live Zenoti reads. The local functions above
+  // remain only for schedule-migration/reporting helpers that need rangesFor.
+  anySlotsForDate: (...args) => require('../services/zenotiAvailabilityService').anySlotsForDate(...args),
+  anyAvailabilityRange: (...args) => require('../services/zenotiAvailabilityService').anyAvailabilityRange(...args),
+  whoIsFree: (...args) => require('../services/zenotiAvailabilityService').whoIsFree(...args),
+  whoIsFreeWithBranches: (...args) => require('../services/zenotiAvailabilityService').whoIsFreeWithBranches(...args),
   dateKey,
   fromKey,
   label,
-  slotsForDate,
-  availabilityRange,
-  isSlotBookable,
+  slotsForDate: (...args) => require('../services/zenotiAvailabilityService').slotsForDate(...args),
+  availabilityRange: (...args) => require('../services/zenotiAvailabilityService').availabilityRange(...args),
+  isSlotBookable: (...args) => require('../services/zenotiAvailabilityService').isSlotBookable(...args),
 };

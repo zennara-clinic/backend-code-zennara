@@ -158,6 +158,7 @@ function availableActions(booking) {
     const spec = ACTIONS[name];
     if (!spec.from.includes(booking.status)) return false;
     if (booking.source === 'zenoti' && ZENOTI_OWNED_BLOCKED.has(name)) return false;
+    if (spec.zenoti === null && (booking.zenotiAppointmentId || booking.zenotiInvoiceId)) return false;
     return true;
   });
 }
@@ -255,6 +256,13 @@ async function apply(bookingOrId, action, {
     );
   }
 
+  if (spec.zenoti === null && (booking.zenotiAppointmentId || booking.zenotiInvoiceId)) {
+    throw new LifecycleError(
+      `${spec.label} has no supported Zenoti API operation. Make this correction in Zenoti so the two systems cannot diverge.`,
+      { status: 409, code: 'ZENOTI_ACTION_UNSUPPORTED' },
+    );
+  }
+
   const trimmedReason = String(reason || '').trim();
   let overrode = false;
 
@@ -295,6 +303,29 @@ async function apply(bookingOrId, action, {
     ? (booking.confirmedDate && booking.confirmedTime ? 'Confirmed' : 'Awaiting Confirmation')
     : spec.to;
 
+  // Zenoti first: a panel action is not successful until the primary system
+  // accepts it. Awaiting requests with no Zenoti record may still be cancelled
+  // or no-showed locally because there is nothing external to update.
+  let zenotiOutcome = null;
+  const needsZenoti = Boolean(spec.zenoti) && (
+    booking.zenotiAppointmentId || booking.zenotiInvoiceId
+    || (!['Awaiting Confirmation', 'Rescheduled'].includes(from) && booking.source !== 'zenoti')
+  );
+  if (needsZenoti) {
+    const write = require('./zenotiWriteService');
+    zenotiOutcome = await write.pushLifecycleAction(booking._id, spec.zenoti);
+    if (zenotiOutcome.status !== 'synced') {
+      throw new LifecycleError(
+        zenotiOutcome.error || `Zenoti did not accept ${spec.label.toLowerCase()}. Nothing was changed locally.`,
+        {
+          status: zenotiOutcome.status === 'off' || zenotiOutcome.status === 'dryrun' ? 503 : 502,
+          code: 'ZENOTI_LIFECYCLE_FAILED',
+          meta: { zenotiStatus: zenotiOutcome.status },
+        },
+      );
+    }
+  }
+
   applySideEffects(booking, action, { to, now, admin, reason: trimmedReason });
   if (typeof mutate === 'function') await mutate(booking);
 
@@ -307,7 +338,7 @@ async function apply(bookingOrId, action, {
     reason: trimmedReason || undefined,
     overrode,
     via,
-    zenoti: null,
+    zenoti: zenotiOutcome?.status || (spec.zenoti ? 'not-required' : null),
   };
   booking.statusLog.push(entry);
 
@@ -315,8 +346,12 @@ async function apply(bookingOrId, action, {
   // can only guess from the resulting status, which cannot express an undo).
   booking.$locals.skipZenotiWrite = true;
   await booking.save();
-
-  pushToZenoti(booking._id, action, spec.zenoti).catch(() => {});
+  if (zenotiOutcome?.status === 'synced') {
+    try {
+      await require('./zenotiAppointmentSyncService').refreshAppointment(booking._id);
+    } catch (_) { /* the frequent inbound poll remains the recovery path */ }
+  }
+  try { require('./socketService').emitBookingUpdate(booking._id, action); } catch (_) { /* optional live UI */ }
   return booking;
 }
 

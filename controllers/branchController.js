@@ -126,7 +126,7 @@ exports.getBranchSlots = async (req, res) => {
     if (!selectedDate) {
       return res.status(400).json({ success: false, message: 'Date must be a valid YYYY-MM-DD clinic date' });
     }
-    const slots = branch.getAvailableSlots(selectedDate);
+    const live = await require('../services/zenotiAvailabilityService').branchSlots(branch._id, date);
 
     res.status(200).json({
       success: true,
@@ -134,15 +134,17 @@ exports.getBranchSlots = async (req, res) => {
         branchId: branch._id,
         branchName: branch.name,
         date,
-        slots: slots,
-        slotDuration: SESSION_SLOT_MINUTES
+        slots: live.slots,
+        slotDuration: SESSION_SLOT_MINUTES,
+        source: 'zenoti-live',
       }
     });
   } catch (error) {
     console.error('Error fetching branch slots:', error);
-    res.status(500).json({
+    res.status(error.status || 503).json({
       success: false,
-      message: 'Failed to fetch branch slots',
+      code: error.code || 'ZENOTI_AVAILABILITY_UNAVAILABLE',
+      message: error.message || 'Failed to fetch live Zenoti slots',
       error: error.message
     });
   }

@@ -386,30 +386,10 @@ async function syncDoctorShiftsFromZenoti({ trigger = 'schedule' } = {}) {
       const publishedBranches = new Set([...working.keys()].map((k) => k.split('|')[1]));
       const manual = (schedule.overrides || []).filter((o) => o.source !== 'zenoti');
       if (!anyWorking) {
-        /*
-         * Zenoti never rosters this doctor anywhere in the window.
-         *
-         * That used to mean "leave the panel hours alone", which is right only
-         * while Zenoti has published nothing. Once a centre's roster IS
-         * published and this doctor never appears on it, they do not work
-         * there — and leaving them open sold their hours in the app for
-         * bookings Zenoti would always refuse. Their days at PUBLISHED centres
-         * are closed; centres Zenoti is silent about keep the panel's hours.
-         */
+        // Absence is ambiguous (off shift vs. an incomplete Zenoti roster).
+        // Live availability handles it directly; never manufacture leave in
+        // the legacy local mirror.
         summary.skippedUnpublished += 1;
-        const manualKeys = new Set(manual.map((o) => `${o.date}|${o.branchId || ''}`));
-        const closures = [];
-        for (let i = 0; i <= SHIFT_WINDOW_DAYS; i += 1) {
-          const day = istDay(Date.now() + i * 864e5);
-          for (const branch of branches) {
-            if (!publishedDays.has(`${day}|${branch._id}`)) continue;
-            if (manualKeys.has(`${day}|${branch._id}`) || manualKeys.has(`${day}|`)) continue;
-            closures.push({ date: day, branchId: branch._id, unavailable: true, ranges: [], note: 'Not rostered in Zenoti', source: 'zenoti' });
-          }
-        }
-        schedule.overrides = [...manual, ...closures];
-        summary.clippedDays += closures.length;
-        await schedule.save();
         continue;
       }
       /*
@@ -462,14 +442,7 @@ async function syncDoctorShiftsFromZenoti({ trigger = 'schedule' } = {}) {
           const panelRanges = rowsForBranch.flatMap((w) => (w.ranges || []).map((r) => ({ start: r.start, end: r.end })));
           if (!panelRanges.length) continue; // the panel never opened this day/centre; nothing to restrict
           if (!shifts.length) {
-            // Published day, no shift for this doctor: they are off. Closing the
-            // day is the whole point — otherwise the app sells an hour Zenoti
-            // will refuse to book.
-            if (publishedDays.has(`${day}|${branch._id}`)) {
-              generated.push({ date: day, branchId: branch._id, unavailable: true, ranges: [], note: 'Not rostered in Zenoti on this day', source: 'zenoti' });
-              summary.clippedDays += 1;
-            }
-            continue; // otherwise Zenoti is silent about the day: panel hours stand
+            continue;
           }
           const clipped = clip(panelRanges, shifts);
           const same = clipped.length === panelRanges.length && clipped.every((r, idx) => r.start === panelRanges[idx].start && r.end === panelRanges[idx].end);

@@ -22,6 +22,7 @@
 
 const zenoti = require('./zenotiService');
 const {
+  CENTERS,
   clinicCenterIdForBranch,
   normalizeIndianMobile,
   toZenotiGender,
@@ -213,8 +214,28 @@ async function resolveTherapistId(booking) {
   if (booking.zenotiTherapistId) return booking.zenotiTherapistId;
   if (!booking.specialistId) return null;
   const ZenotiPractitioner = require('../models/ZenotiPractitioner');
-  const row = await ZenotiPractitioner.findOne({ onboardedDoctorId: String(booking.specialistId).toLowerCase(), active: true }).select('zenotiEmployeeId').lean();
-  return row?.zenotiEmployeeId || null;
+  const centerId = strictClinicCenterIdForBranch(booking.preferredLocation);
+  const rows = await ZenotiPractitioner.find({
+    onboardedDoctorId: String(booking.specialistId).toLowerCase(),
+    active: true,
+    centerIds: centerId,
+  }).select('zenotiEmployeeId name').limit(3).lean();
+  if (rows.length > 1) {
+    throw new Error(`Doctor ${booking.specialistId} has multiple active Zenoti employee links at ${booking.preferredLocation}. Resolve the duplicate before booking.`);
+  }
+  if (!rows.length) {
+    throw new Error(`Doctor ${booking.specialistId} is not linked to a Zenoti employee at ${booking.preferredLocation}.`);
+  }
+  return rows[0].zenotiEmployeeId;
+}
+
+/** Booking writes may never fall back to a different clinic. */
+function strictClinicCenterIdForBranch(branchName) {
+  const wanted = String(branchName || '').trim().toLowerCase();
+  const match = Object.entries(CENTERS).find(([, center]) =>
+    center.isClinic && String(center.branchName).trim().toLowerCase() === wanted);
+  if (!match) throw new Error(`"${branchName || 'Unknown clinic'}" is not mapped to a Zenoti clinic.`);
+  return match[0];
 }
 
 /** Who Zenoti records as the updater: env, else the visit's own provider. */
@@ -626,14 +647,20 @@ async function syncBooking(bookingId) {
   const User = require('../models/User');
 
   const booking = await Booking.findById(bookingId);
-  if (!booking) return;
-  if (booking.zenotiAppointmentId) return; // already synced
-  if (isOff()) return;
+  if (!booking) return { status: 'not_found', error: 'Booking not found.' };
+  if (booking.zenotiAppointmentId) return { status: 'synced', error: null, appointmentId: booking.zenotiAppointmentId };
+  if (booking.zenotiBookingId) {
+    return {
+      status: 'reconciliation_required',
+      error: `Zenoti booking ${booking.zenotiBookingId} was created but not confirmed. Reconcile it in Zenoti before retrying; a second create is blocked to prevent duplicates.`,
+    };
+  }
+  if (isOff()) return { status: 'off', error: 'Zenoti write mode is off or credentials are unavailable.' };
 
   try {
     const user = await User.findById(booking.userId);
     const guestId = await ensureGuest(user);
-    const centerId = clinicCenterIdForBranch(booking.preferredLocation);
+    const centerId = strictClinicCenterIdForBranch(booking.preferredLocation);
     const consultation = booking.consultationId
       ? await Consultation.findById(booking.consultationId).lean()
       : null;
@@ -665,7 +692,7 @@ async function syncBooking(bookingId) {
     // synced from its result, so two of them cannot open two Zenoti bookings.
     if (siblings.length > 1 && String(siblings[0]._id) !== String(booking._id)) {
       logger.info('Skipping: another line of this visit group is pushing it', { bookingId: booking._id, visitGroupId: booking.visitGroupId });
-      return;
+      return { status: 'pending', error: 'Another line in this visit group is creating the shared Zenoti booking.' };
     }
 
     const groupItems = [];
@@ -711,14 +738,14 @@ async function syncBooking(bookingId) {
         : 'Guest is not in Zenoti yet.';
       await booking.save({ validateModifiedOnly: true }).catch(() => {});
       logWrite('bookAppointment(skipped)', payload, { bookingId: booking._id, missing });
-      return;
+      return { status: booking.zenotiSyncStatus, error: booking.zenotiSyncError };
     }
 
     logWrite('bookAppointment', payload, { bookingId: booking._id });
     if (!isLive()) {
       booking.zenotiSyncStatus = 'dryrun';
       await booking.save({ validateModifiedOnly: true }).catch(() => {});
-      return;
+      return { status: 'dryrun', error: 'ZENOTI_WRITE_MODE is not live; no Zenoti appointment was created.' };
     }
 
     // Zenoti booking flow: create booking → get slots → reserve → confirm.
@@ -794,11 +821,19 @@ async function syncBooking(bookingId) {
       logger.info('Pushed a multi-service visit to Zenoti as one booking', { visitGroupId: booking.visitGroupId, lines: groupLines.length });
     }
     logger.info('Pushed booking to Zenoti', { bookingId: booking._id });
+    return {
+      status: 'synced',
+      error: null,
+      appointmentId: booking.zenotiAppointmentId,
+      bookingId: booking.zenotiBookingId,
+      invoiceId: booking.zenotiInvoiceId,
+    };
   } catch (err) {
     booking.zenotiSyncStatus = 'failed';
     booking.zenotiSyncError = err.message;
     await booking.save({ validateModifiedOnly: true }).catch(() => {});
     logger.error('Zenoti syncBooking failed', { bookingId, error: err.message });
+    return { status: 'failed', error: err.message, bookingId: booking.zenotiBookingId || null };
   }
 }
 
@@ -901,7 +936,7 @@ async function rescheduleLinkedBooking(booking, user) {
     throw new Error('Zenoti reschedule identifiers are incomplete; wait for the next inbound reconciliation and retry.');
   }
   const payload = {
-    center_id: clinicCenterIdForBranch(booking.preferredLocation),
+    center_id: strictClinicCenterIdForBranch(booking.preferredLocation),
     date,
     is_only_catalog_employees: false,
     guests: [{

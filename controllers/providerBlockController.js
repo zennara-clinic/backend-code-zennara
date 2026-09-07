@@ -17,6 +17,10 @@ exports.list = async (req, res) => {
   try {
     const { from, to, branchId, doctorId, includeInactive } = req.query;
     if (!from) return res.status(400).json({ success: false, message: 'from (YYYY-MM-DD) is required' });
+    const rows = await require('../services/zenotiAvailabilityService').providerBlocks({ from, to: to || from, branchId: branchId || null, doctorId: doctorId || null });
+    return res.json({ success: true, count: rows.length, data: rows, source: 'zenoti-live' });
+    /* istanbul ignore next -- legacy mirror listing retained for migrations */
+    if (false) {
     const start = clinicDateTime(from, '00:00');
     const end = clinicDateTime(to || from, '23:59');
     const filter = { date: { $gte: start, $lte: end } };
@@ -25,14 +29,22 @@ exports.list = async (req, res) => {
     if (doctorId) filter.doctorId = String(doctorId).toLowerCase();
     const rows = await ProviderBlock.find(filter).sort({ date: 1, startTime: 1 }).lean();
     res.json({ success: true, count: rows.length, data: rows });
+    }
   } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
+    res.status(error.status || 503).json({ success: false, code: error.code || 'ZENOTI_AVAILABILITY_UNAVAILABLE', message: error.message });
   }
 };
 
 /** POST /api/provider-blocks — a desk block: { date, startTime, endTime, doctorId?, adminId?, branchId, title, notes } */
 exports.create = async (req, res) => {
   try {
+    return res.status(409).json({
+      success: false,
+      code: 'ZENOTI_BLOCKOUT_PRIMARY',
+      message: 'Create block-outs, meetings and leave in Zenoti. They are read live into this panel; local-only blocks are disabled because Zenoti would still offer the time.',
+    });
+    /* istanbul ignore next -- legacy local block creation kept for data migrations */
+    if (false) {
     const { date, startTime, endTime, doctorId, adminId, branchId, title, notes, color } = req.body || {};
     if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || ''))) return res.status(400).json({ success: false, message: 'date must be YYYY-MM-DD' });
     if (!HHMM.test(startTime || '') || !HHMM.test(endTime || '')) return res.status(400).json({ success: false, message: 'startTime and endTime must be HH:mm' });
@@ -70,6 +82,7 @@ exports.create = async (req, res) => {
       active: true,
     });
     res.status(201).json({ success: true, data: block });
+    }
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -80,7 +93,9 @@ exports.update = async (req, res) => {
   try {
     const block = await ProviderBlock.findById(req.params.id);
     if (!block) return res.status(404).json({ success: false, message: 'Block not found' });
-    if (block.source === 'zenoti') return res.status(400).json({ success: false, message: 'This block comes from Zenoti. Change it in Zenoti; it will update here on the next sync.' });
+    return res.status(409).json({ success: false, code: 'ZENOTI_BLOCKOUT_PRIMARY', message: 'Change this block-out in Zenoti; the live diary will update here.' });
+    /* istanbul ignore next -- legacy local block editing kept for data migrations */
+    if (false) {
     const { startTime, endTime, title, notes, color, date } = req.body || {};
     const day = date && /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
     if (startTime !== undefined) { if (!HHMM.test(startTime)) return res.status(400).json({ success: false, message: 'startTime must be HH:mm' }); block.startTime = startTime; }
@@ -95,6 +110,7 @@ exports.update = async (req, res) => {
     if (color !== undefined) block.color = color || null;
     await block.save();
     res.json({ success: true, data: block });
+    }
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -105,10 +121,13 @@ exports.remove = async (req, res) => {
   try {
     const block = await ProviderBlock.findById(req.params.id);
     if (!block) return res.status(404).json({ success: false, message: 'Block not found' });
-    if (block.source === 'zenoti') return res.status(400).json({ success: false, message: 'This block comes from Zenoti. Remove it in Zenoti; it will clear here on the next sync.' });
+    return res.status(409).json({ success: false, code: 'ZENOTI_BLOCKOUT_PRIMARY', message: 'Remove this block-out in Zenoti; the live diary will clear it here.' });
+    /* istanbul ignore next -- legacy local block removal kept for data migrations */
+    if (false) {
     block.active = false;
     await block.save();
     res.json({ success: true, data: block });
+    }
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }

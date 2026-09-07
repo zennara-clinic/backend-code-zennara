@@ -812,7 +812,7 @@ exports.confirmBooking = async (req, res) => {
   try {
     const { confirmedDate, confirmedTime } = req.body;
 
-    const booking = await Booking.findById(req.params.id);
+    let booking = await Booking.findById(req.params.id);
 
     if (!booking) {
       return res.status(404).json({
@@ -828,6 +828,32 @@ exports.confirmBooking = async (req, res) => {
       });
     }
 
+    const finalDate = clinicDayStart(confirmedDate || booking.preferredDate);
+    if (!finalDate || !/^([01]\d|2[0-3]):[0-5]\d$/.test(String(confirmedTime || ''))) {
+      return res.status(400).json({
+        success: false,
+        code: 'CONFIRMED_SLOT_REQUIRED',
+        message: 'A valid confirmation date and HH:mm time are required.',
+      });
+    }
+    if (!zenotiWrite.isLive()) {
+      return res.status(503).json({
+        success: false,
+        code: 'ZENOTI_WRITE_NOT_LIVE',
+        message: 'Confirmation is paused because Zenoti live write-back is not enabled. The booking remains Awaiting Confirmation.',
+      });
+    }
+    if (req.body?.specialistId || req.body?.specialistName) {
+      await applyDermatologist(booking, req.body);
+    }
+    if (!booking.specialistId && !booking.zenotiTherapistId) {
+      return res.status(400).json({
+        success: false,
+        code: 'DERMATOLOGIST_REQUIRED',
+        message: 'Choose the dermatologist or therapist before confirming. Zenoti must receive the provider assignment.',
+      });
+    }
+
     // Confirming a dermatologist consultation onto a time another guest holds
     // would double-book the diary. Same guard as reschedule: only a genuine
     // clash blocks; leave/hours problems remain a staff judgement call.
@@ -840,24 +866,51 @@ exports.confirmBooking = async (req, res) => {
             excludeBookingId: booking._id,
           })
         : { ok: true };
-      if (!check.ok && check.reason === 'already-booked') {
+      if (!check.ok) {
         return res.status(409).json({
           success: false,
           code: 'DERMATOLOGIST_SLOT_UNAVAILABLE',
-          message: 'Another guest already holds that time with this dermatologist. Pick a different slot.',
+          message: `Zenoti does not allow this doctor at that clinic and time (${check.reason}). Pick a live Zenoti slot.`,
         });
       }
     }
 
     const from = booking.status;
-    booking.status = 'Confirmed';
-    booking.confirmedDate = clinicDayStart(confirmedDate);
+    const previous = {
+      confirmedDate: booking.confirmedDate,
+      confirmedTime: booking.confirmedTime,
+      slotTime: booking.slotTime,
+    };
+    // Give the write service the exact requested slot while the local booking
+    // deliberately remains Awaiting Confirmation. "Confirmed" is committed
+    // only after Zenoti returns an appointment id.
+    booking.confirmedDate = finalDate;
     booking.confirmedTime = confirmedTime;
-    // Keep the diary's primary field in step for calendar-booked consults.
     if (booking.slotTime) booking.slotTime = confirmedTime || booking.slotTime;
+    booking.$locals.skipZenotiWrite = true;
+    await booking.save();
 
+    const outcome = await zenotiWrite.syncBooking(booking._id);
+    if (outcome.status !== 'synced') {
+      booking.confirmedDate = previous.confirmedDate;
+      booking.confirmedTime = previous.confirmedTime;
+      booking.slotTime = previous.slotTime;
+      booking.$locals.skipZenotiWrite = true;
+      await booking.save({ validateModifiedOnly: true });
+      return res.status(outcome.status === 'reconciliation_required' ? 409 : 502).json({
+        success: false,
+        code: outcome.status === 'reconciliation_required' ? 'ZENOTI_RECONCILIATION_REQUIRED' : 'ZENOTI_CONFIRM_FAILED',
+        message: outcome.error || 'Zenoti did not confirm the appointment. The local booking remains awaiting confirmation.',
+      });
+    }
+
+    // Reload the identifiers written by syncBooking, then commit the matching
+    // local state without firing the legacy asynchronous write hook.
+    booking = await Booking.findById(booking._id);
+    booking.status = 'Confirmed';
     lifecycle.logStatus(booking, { action: 'confirm', from, to: 'Confirmed', admin: req.admin });
-    booking.$locals.zenotiStaffAction = true; // a person at the desk decided this
+    booking.statusLog[booking.statusLog.length - 1].zenoti = 'synced';
+    booking.$locals.skipZenotiWrite = true;
     await booking.save();
 
     // Populate consultation details for email
@@ -1186,6 +1239,12 @@ exports.bookingLifecycleAdmin = async (req, res) => {
           message: 'Choose who is running this appointment before confirming it.',
         });
       }
+      await applyDermatologist(booking, req.body);
+      booking.$locals.skipZenotiWrite = true;
+      await booking.save({ validateModifiedOnly: true });
+      req.body.confirmedDate = req.body.confirmedDate || booking.confirmedDate || booking.preferredDate;
+      req.body.confirmedTime = req.body.confirmedTime || booking.confirmedTime || booking.slotTime || booking.preferredTimeSlots?.[0];
+      return exports.confirmBooking(req, res);
     }
 
     await lifecycle.apply(booking, action, {
@@ -1560,6 +1619,13 @@ exports.createBookingAdmin = async (req, res) => {
         message: 'consultationId, fullName, mobileNumber, preferredLocation and preferredDate are required',
       });
     }
+    if (confirmNow && !zenotiWrite.isLive()) {
+      return res.status(503).json({
+        success: false,
+        code: 'ZENOTI_WRITE_NOT_LIVE',
+        message: 'A confirmed reception booking requires Zenoti live write-back. Create it as awaiting, or enable the approved live integration.',
+      });
+    }
 
     const branch = await Branch.findOne({ name: preferredLocation, isActive: true });
     if (!branch) {
@@ -1630,32 +1696,12 @@ exports.createBookingAdmin = async (req, res) => {
         // once so the desk can say Yes/No — Zenoti's "not working at the
         // mentioned time. Do you want to add the appointment?"
         const check = await isSlotBookable(lineSpecialistId, key, slots[0], { branchId: branch._id });
-        if (!check.ok && check.reason === 'already-booked') {
+        if (!check.ok) {
           return res.status(409).json({
             success: false,
             code: 'DERMATOLOGIST_SLOT_UNAVAILABLE',
-            message: `Another guest already holds ${slots[0]} with this dermatologist. Pick a different slot.`,
-          });
-        }
-        if (!check.ok && !force) {
-          const why = {
-            'not-working': 'is not working at the mentioned time',
-            'not-configured': 'has no working hours set up',
-            'not-at-this-centre': 'is not rostered at this centre on that day',
-            'centre-closed': 'cannot be booked because the centre is closed that day',
-            'outside-centre-hours': 'is outside the centre\'s hours at that time',
-            'too-soon': 'is inside the booking lead time',
-            'past': 'cannot be booked in the past',
-            'beyond-horizon': 'is beyond the booking horizon',
-            'no-such-slot': 'has no slot at that exact time',
-            'doctor-inactive': 'is not listed',
-            'inactive': 'has online booking switched off',
-          }[check.reason] || `cannot take ${slots[0]} (${check.reason})`;
-          return res.status(409).json({
-            success: false,
-            code: 'PROVIDER_NOT_WORKING',
             reason: check.reason,
-            message: `${line.specialistName || specialistName || 'This dermatologist'} ${why}. Do you want to add the appointment anyway?`,
+            message: `Zenoti does not allow ${line.specialistName || specialistName || 'this dermatologist'} at ${slots[0]} (${check.reason}). Choose a live Zenoti slot.`,
           });
         }
       }
@@ -1702,7 +1748,7 @@ exports.createBookingAdmin = async (req, res) => {
         isPackageIncluded: Boolean(assignment),
         packageAssignmentId: assignment ? assignment._id : undefined,
         packageSessionId: session ? session._id : undefined,
-        status: confirmNow ? 'Confirmed' : 'Awaiting Confirmation',
+        status: 'Awaiting Confirmation',
         notes: notes || undefined,
         source: 'reception',
         adminNotes: `Created at reception by ${req.admin?.email || 'admin'}${force ? ' (outside working hours, confirmed by desk)' : ''}`,
@@ -1711,6 +1757,7 @@ exports.createBookingAdmin = async (req, res) => {
         booking.confirmedDate = clinicDayStart(preferredDate);
         booking.confirmedTime = slots[0];
       }
+      booking.$locals.skipZenotiWrite = true;
       await booking.save();
       if (assignment && session) {
         session.bookingId = booking._id;
@@ -1722,6 +1769,28 @@ exports.createBookingAdmin = async (req, res) => {
         await assignment.save();
       }
       created.push({ booking, consultation });
+    }
+
+    if (confirmNow) {
+      const outcome = await zenotiWrite.syncBooking(created[0].booking._id);
+      if (outcome.status !== 'synced') {
+        return res.status(outcome.status === 'reconciliation_required' ? 409 : 502).json({
+          success: false,
+          code: outcome.status === 'reconciliation_required' ? 'ZENOTI_RECONCILIATION_REQUIRED' : 'ZENOTI_CONFIRM_FAILED',
+          message: outcome.error || 'Zenoti did not confirm the appointment. It remains Awaiting Confirmation locally.',
+          bookings: created.map((row) => row.booking),
+        });
+      }
+      for (const row of created) {
+        const synced = await Booking.findById(row.booking._id);
+        const from = synced.status;
+        synced.status = 'Confirmed';
+        lifecycle.logStatus(synced, { action: 'confirm', from, to: 'Confirmed', admin: req.admin });
+        synced.statusLog[synced.statusLog.length - 1].zenoti = 'synced';
+        synced.$locals.skipZenotiWrite = true;
+        await synced.save();
+        row.booking = synced;
+      }
     }
 
     const [{ booking, consultation }] = created;
@@ -1832,6 +1901,17 @@ exports.rescheduleBookingAdmin = async (req, res) => {
     if (!preferredDate) {
       return res.status(400).json({ success: false, message: 'A new date is required' });
     }
+    const prior = {
+      status: booking.status,
+      preferredDate: booking.preferredDate,
+      preferredTimeSlots: [...(booking.preferredTimeSlots || [])],
+      confirmedDate: booking.confirmedDate,
+      confirmedTime: booking.confirmedTime,
+      slotTime: booking.slotTime,
+      rescheduledFrom: booking.rescheduledFrom,
+      rescheduledAt: booking.rescheduledAt,
+      adminNotes: booking.adminNotes,
+    };
 
     // Moving a dermatologist consultation must not land on a slot another
     // guest already holds. Excluding this booking lets it keep (or reclaim)
@@ -1846,11 +1926,11 @@ exports.rescheduleBookingAdmin = async (req, res) => {
             excludeBookingId: booking._id,
           })
         : { ok: true };
-      if (!check.ok && check.reason === 'already-booked') {
+      if (!check.ok) {
         return res.status(409).json({
           success: false,
           code: 'DERMATOLOGIST_SLOT_UNAVAILABLE',
-          message: 'Another guest already holds that time with this dermatologist. Pick a different slot.',
+          message: `Zenoti does not allow that doctor at the requested clinic and time (${check.reason}).`,
         });
       }
     }
@@ -1884,7 +1964,34 @@ exports.rescheduleBookingAdmin = async (req, res) => {
       booking.adminNotes = `${booking.adminNotes ? `${booking.adminNotes}\n` : ''}Rescheduled: ${reason}`;
     }
 
-    booking.$locals.zenotiStaffAction = true; // a person at the desk decided this
+    const targetStatus = booking.status;
+    if (booking.zenotiAppointmentId || booking.zenotiInvoiceId) {
+      if (!confirmedTime) {
+        Object.assign(booking, prior);
+        return res.status(400).json({ success: false, code: 'CONFIRMED_SLOT_REQUIRED', message: 'A linked Zenoti appointment must be moved to one exact time.' });
+      }
+      if (!zenotiWrite.isLive()) {
+        Object.assign(booking, prior);
+        return res.status(503).json({ success: false, code: 'ZENOTI_WRITE_NOT_LIVE', message: 'Rescheduling is paused because Zenoti live write-back is not enabled.' });
+      }
+      // Persist the requested coordinates with the old local status so the
+      // Zenoti reschedule workflow can read them. Commit Rescheduled/Confirmed
+      // only after Zenoti accepts the move.
+      booking.status = prior.status;
+      booking.$locals.skipZenotiWrite = true;
+      await booking.save();
+      const outcome = await zenotiWrite.pushLifecycleAction(booking._id, 'reschedule');
+      if (outcome.status !== 'synced') {
+        Object.assign(booking, prior);
+        booking.$locals.skipZenotiWrite = true;
+        await booking.save({ validateModifiedOnly: true });
+        return res.status(502).json({ success: false, code: 'ZENOTI_RESCHEDULE_FAILED', message: outcome.error || 'Zenoti did not accept the new time.' });
+      }
+      booking.status = targetStatus;
+      lifecycle.logStatus(booking, { action: 'reschedule', from: prior.status, to: targetStatus, admin: req.admin, reason });
+      booking.statusLog[booking.statusLog.length - 1].zenoti = 'synced';
+    }
+    booking.$locals.skipZenotiWrite = true;
     await booking.save();
     await booking.populate('consultationId', 'name category price image');
     await booking.populate('userId', 'fullName email phone patientId');

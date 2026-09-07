@@ -5,6 +5,9 @@ const Booking = require('../models/Booking');
 const Branch = require('../models/Branch');
 const Doctor = require('../models/Doctor');
 const DermatologistSchedule = require('../models/DermatologistSchedule');
+const ZenotiPractitioner = require('../models/ZenotiPractitioner');
+const zenoti = require('../services/zenotiService');
+const liveAvailability = require('../services/zenotiAvailabilityService');
 const {
   getBranchSlotsForDate,
   validateBranchBooking,
@@ -50,34 +53,26 @@ test('treatment slots are hourly even when an old branch record says 30 minutes'
 });
 
 test('doctor slots are hourly and overlapping legacy bookings block the full hour', async () => {
-  const originalScheduleFind = DermatologistSchedule.findOne;
   const originalBookingFind = Booking.find;
   const originalDoctorFindOne = Doctor.findOne;
+  const originalBranchFind = Branch.find;
+  const originalPractitionerFind = ZenotiPractitioner.find;
+  const originalSchedules = zenoti.getCenterEmployeeSchedules;
+  const originalDiary = zenoti.getCenterDiary;
   let bookings = [];
 
-  DermatologistSchedule.findOne = () => ({
-    lean: async () => ({
-      doctorId: 'doctor-test',
-      isActive: true,
-      // Proves existing persisted settings cannot restore half-hour slots.
-      slotMinutes: 30,
-      leadTimeHours: 0,
-      horizonDays: 60,
-      weekly: [{
-        day: new Date(2030, 0, 1).getDay(),
-        branchId: null,
-        ranges: [{ start: '11:00', end: '14:00' }],
-      }],
-      overrides: [],
-    }),
-  });
+  Doctor.findOne = () => ({ select() { return this; }, lean: async () => ({ doctorId: 'doctor-test', isActive: true, availableCentres: ['Jubilee Hills'] }) });
+  Branch.find = () => ({ select() { return this; }, sort() { return this; }, lean: async () => [{ _id: 'branch-jubilee', name: 'Jubilee Hills' }] });
+  ZenotiPractitioner.find = () => ({ select() { return this; }, limit() { return this; }, lean: async () => [{ zenotiEmployeeId: 'employee-test' }] });
+  zenoti.getCenterEmployeeSchedules = async () => [{ employeeId: 'employee-test', shifts: [{ date: '2030-01-01', start: '2030-01-01T11:00:00', end: '2030-01-01T14:00:00', status: 0 }] }];
+  zenoti.getCenterDiary = async () => ({ appointments: [], blockouts: [] });
   Booking.find = () => ({
     select() { return this; },
     lean: async () => bookings,
   });
-  Doctor.findOne = () => ({ select() { return this; }, lean: async () => ({ isActive: true }) });
 
   try {
+    liveAvailability._clearCache();
     const free = await slotsForDate('doctor-test', '2030-01-01', {
       now: new Date(2029, 11, 15, 9, 0),
     });
@@ -100,9 +95,13 @@ test('doctor slots are hourly and overlapping legacy bookings block the full hou
       ],
     );
   } finally {
-    DermatologistSchedule.findOne = originalScheduleFind;
     Booking.find = originalBookingFind;
     Doctor.findOne = originalDoctorFindOne;
+    Branch.find = originalBranchFind;
+    ZenotiPractitioner.find = originalPractitionerFind;
+    zenoti.getCenterEmployeeSchedules = originalSchedules;
+    zenoti.getCenterDiary = originalDiary;
+    liveAvailability._clearCache();
   }
 });
 
@@ -139,8 +138,9 @@ test('any available returns free dermatologists across clinics with their actual
   const originalDoctorFind = Doctor.find;
   const originalDoctorFindOne = Doctor.findOne;
   const originalBranchFind = Branch.find;
-  const originalBranchFindById = Branch.findById;
-  const originalScheduleFind = DermatologistSchedule.findOne;
+  const originalPractitionerFind = ZenotiPractitioner.find;
+  const originalSchedules = zenoti.getCenterEmployeeSchedules;
+  const originalDiary = zenoti.getCenterDiary;
   const originalBookingFind = Booking.find;
 
   const branches = [
@@ -162,38 +162,27 @@ test('any available returns free dermatologists across clinics with their actual
     select() { return this; },
     lean: async () => doctors,
   });
-  Doctor.findOne = () => ({ select() { return this; }, lean: async () => ({ isActive: true }) });
+  Doctor.findOne = ({ doctorId }) => ({ select() { return this; }, lean: async () => doctors.find((doctor) => doctor.doctorId === doctorId) });
   Branch.find = (query) => ({
     select() { return this; },
+    sort() { return this; },
     lean: async () => query?._id
       ? branches.filter((branch) => String(branch._id) === String(query._id))
-      : branches,
+      : query?.name instanceof RegExp ? branches.filter((branch) => query.name.test(branch.name)) : branches,
   });
-  Branch.findById = async (id) => ({
-    _id: id,
-    closureFor: () => null,
-    hoursFor: () => ({ open: '11:00', close: '14:00' }),
-  });
-  DermatologistSchedule.findOne = ({ doctorId }) => ({
-    lean: async () => ({
-      doctorId,
-      isActive: true,
-      leadTimeHours: 0,
-      horizonDays: 60,
-      weekly: [{
-        day: new Date(Date.UTC(2030, 0, 1)).getUTCDay(),
-        branchId: doctorId === 'doctor-jubilee' ? 'branch-jubilee' : 'branch-kondapur',
-        ranges: [{ start: '11:00', end: '14:00' }],
-      }],
-      overrides: [],
-    }),
-  });
+  ZenotiPractitioner.find = (query) => ({ select() { return this; }, limit() { return this; }, lean: async () => [{ zenotiEmployeeId: query.onboardedDoctorId === 'doctor-jubilee' ? 'employee-jubilee' : 'employee-kondapur' }] });
+  zenoti.getCenterEmployeeSchedules = async (centerId) => [{
+    employeeId: centerId.startsWith('c9f') ? 'employee-jubilee' : 'employee-kondapur',
+    shifts: [{ date: '2030-01-01', start: '2030-01-01T11:00:00', end: '2030-01-01T14:00:00', status: 0 }],
+  }];
+  zenoti.getCenterDiary = async () => ({ appointments: [], blockouts: [] });
   Booking.find = () => ({
     select() { return this; },
     lean: async () => [],
   });
 
   try {
+    liveAvailability._clearCache();
     const network = await whoIsFreeWithBranches('2030-01-01', '11:00', {
       now: new Date('2029-12-15T00:00:00.000Z'),
     });
@@ -219,9 +208,11 @@ test('any available returns free dermatologists across clinics with their actual
     Doctor.find = originalDoctorFind;
     Doctor.findOne = originalDoctorFindOne;
     Branch.find = originalBranchFind;
-    Branch.findById = originalBranchFindById;
-    DermatologistSchedule.findOne = originalScheduleFind;
+    ZenotiPractitioner.find = originalPractitionerFind;
+    zenoti.getCenterEmployeeSchedules = originalSchedules;
+    zenoti.getCenterDiary = originalDiary;
     Booking.find = originalBookingFind;
+    liveAvailability._clearCache();
   }
 });
 

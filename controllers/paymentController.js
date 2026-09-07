@@ -1240,13 +1240,17 @@ exports.createConsultationPayment = async (req, res) => {
       });
     }
 
-    const scheduleCheck = (bookingData.slotTime && bookingData.specialistId
-      ? validateBranchSession
-      : validateBranchBooking)(
-      branch,
-      bookingData.preferredDate,
-      requestedTimes
-    );
+    let scheduleCheck = { ok: true };
+    if (!(bookingData.slotTime && bookingData.specialistId)) {
+      const day = clinicDateKey(bookingData.preferredDate);
+      const live = await require('../services/zenotiAvailabilityService').branchSlots(branch._id, day);
+      const missing = requestedTimes.find((time) => !live.slots.includes(time));
+      if (missing) scheduleCheck = {
+        ok: false,
+        code: 'ZENOTI_SLOT_UNAVAILABLE',
+        message: `${missing} is not within the live Zenoti working times for this clinic.`,
+      };
+    }
     if (!scheduleCheck.ok) {
       return res.status(409).json({
         success: false,
@@ -1464,13 +1468,25 @@ exports.verifyConsultationPayment = async (req, res) => {
     const requestedTimes = bookingData.slotTime
       ? [bookingData.slotTime]
       : bookingData.preferredTimeSlots;
-    const scheduleCheck = (bookingData.slotTime && bookingData.specialistId
-      ? validateBranchSession
-      : validateBranchBooking)(
-      branch,
-      bookingData.preferredDate,
-      requestedTimes
-    );
+    let scheduleCheck = { ok: true };
+    if (!(bookingData.slotTime && bookingData.specialistId)) {
+      try {
+        const day = clinicDateKey(bookingData.preferredDate);
+        const live = await require('../services/zenotiAvailabilityService').branchSlots(branch._id, day);
+        const missing = requestedTimes.find((time) => !live.slots.includes(time));
+        if (missing) scheduleCheck = {
+          ok: false,
+          code: 'ZENOTI_SLOT_UNAVAILABLE',
+          message: `${missing} is no longer within the live Zenoti working times for this clinic.`,
+        };
+      } catch (error) {
+        scheduleCheck = {
+          ok: false,
+          code: error.code || 'ZENOTI_AVAILABILITY_UNAVAILABLE',
+          message: error.message || 'Zenoti availability could not be verified.',
+        };
+      }
+    }
     if (!scheduleCheck.ok) {
       payment.metadata = {
         ...(payment.metadata || {}),
@@ -1599,7 +1615,7 @@ exports.verifyConsultationPayment = async (req, res) => {
           await payment.save();
           return res.json({
             success: true,
-            message: 'Payment already verified — this booking is confirmed.',
+            message: 'Payment already verified — the booking request is awaiting clinic confirmation.',
             data: {
               booking: racedBooking,
               payment: { id: payment._id, amount: payment.amount, status: payment.status },
@@ -1642,9 +1658,8 @@ exports.verifyConsultationPayment = async (req, res) => {
 
     console.log('✅ Booking created with payment:', booking.referenceNumber);
     
-    // Create notification — a dermatologist slot is already confirmed, so it
-    // gets the "Appointment Confirmed" notification; a treatment (awaiting the
-    // clinic) gets "Booking Request Received".
+    // Payment holds the requested slot; only the desk's Zenoti-backed confirm
+    // action may tell the guest that an appointment is confirmed.
     const NotificationHelper = require('../utils/notificationHelper');
     try {
       const notifData = {
@@ -1655,15 +1670,7 @@ exports.verifyConsultationPayment = async (req, res) => {
         branch: { name: branch.name },
         appointmentDate: booking.preferredDate
       };
-      if (isDermatologistSlot) {
-        await NotificationHelper.bookingConfirmed({
-          ...notifData,
-          confirmedDate: booking.confirmedDate,
-          confirmedTime: booking.confirmedTime
-        });
-      } else {
-        await NotificationHelper.bookingCreated(notifData);
-      }
+      await NotificationHelper.bookingCreated(notifData);
     } catch (notifError) {
       console.error('⚠️ Failed to create notification:', notifError.message);
     }
@@ -1673,34 +1680,19 @@ exports.verifyConsultationPayment = async (req, res) => {
     setImmediate(async () => {
       const emailService = require('../utils/emailService');
       try {
-        if (isDermatologistSlot) {
-          await emailService.sendAppointmentConfirmed(
-            booking.email,
-            booking.fullName,
-            {
-              referenceNumber: booking.referenceNumber,
-              treatment: consultation.name,
-              confirmedDate: booking.confirmedDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
-              confirmedTime: booking.confirmedTime,
-              location: booking.preferredLocation
-            },
-            booking.preferredLocation
-          );
-        } else {
-          await emailService.sendAppointmentBookingConfirmation(
-            booking.email,
-            booking.fullName,
-            {
-              referenceNumber: booking.referenceNumber,
-              treatment: consultation.name,
-              category: consultation.category,
-              preferredDate: booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
-              timeSlots: booking.preferredTimeSlots.join(', '),
-              location: booking.preferredLocation
-            },
-            booking.preferredLocation
-          );
-        }
+        await emailService.sendAppointmentBookingConfirmation(
+          booking.email,
+          booking.fullName,
+          {
+            referenceNumber: booking.referenceNumber,
+            treatment: consultation.name,
+            category: consultation.category,
+            preferredDate: booking.preferredDate.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' }),
+            timeSlots: booking.preferredTimeSlots.join(', '),
+            location: booking.preferredLocation
+          },
+          booking.preferredLocation
+        );
       } catch (error) {
         console.error('⚠️ Email sending failed:', error.message);
       }

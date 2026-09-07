@@ -94,6 +94,9 @@ exports.getSchedule = async (req, res) => {
     if (!doctor) return fail(res, 404, 'Dermatologist not found');
 
     const schedule = await DermatologistSchedule.findOne({ doctorId }).lean();
+    const linked = await require('../models/ZenotiPractitioner').exists({
+      onboardedDoctorId: String(doctorId).toLowerCase(), active: true,
+    });
 
     return res.json({
       success: true,
@@ -104,7 +107,11 @@ exports.getSchedule = async (req, res) => {
         schedule: schedule
           ? { ...schedule, slotMinutes: SESSION_SLOT_MINUTES, configured: true }
           : DermatologistSchedule.blank(doctorId),
-        canEdit: await canEdit(req, doctorId),
+        canEdit: linked ? false : await canEdit(req, doctorId),
+        scheduleAuthority: linked ? 'zenoti' : 'local',
+        authorityMessage: linked
+          ? 'Working hours, leave and block-outs are managed in Zenoti and read live here.'
+          : 'Link this doctor to a Zenoti employee before accepting online bookings.',
       },
     });
   } catch (error) {
@@ -120,6 +127,17 @@ exports.updateSchedule = async (req, res) => {
 
     const doctor = await Doctor.findOne({ doctorId }).select('doctorId').lean();
     if (!doctor) return fail(res, 404, 'Dermatologist not found');
+
+    const linked = await require('../models/ZenotiPractitioner').exists({
+      onboardedDoctorId: String(doctorId).toLowerCase(), active: true,
+    });
+    if (linked) {
+      return res.status(409).json({
+        success: false,
+        code: 'ZENOTI_SCHEDULE_PRIMARY',
+        message: 'This doctor is linked to Zenoti. Change working hours, leave or block-outs in Zenoti; this panel reads them back live.',
+      });
+    }
 
     if (!(await canEdit(req, doctorId))) {
       return fail(res, 403, 'You can only edit your own availability');
@@ -221,7 +239,7 @@ exports.getAvailability = async (req, res) => {
     return res.json({ success: true, data: result });
   } catch (error) {
     console.error('getAvailability error:', error);
-    return fail(res, 500, 'Could not load availability');
+    return res.status(error.status || 503).json({ success: false, code: error.code || 'ZENOTI_AVAILABILITY_UNAVAILABLE', message: error.message || 'Could not load live Zenoti availability' });
   }
 };
 
@@ -240,7 +258,7 @@ exports.getSlots = async (req, res) => {
     return res.json({ success: true, data: result });
   } catch (error) {
     console.error('getSlots error:', error);
-    return fail(res, 500, 'Could not load slots');
+    return res.status(error.status || 503).json({ success: false, code: error.code || 'ZENOTI_AVAILABILITY_UNAVAILABLE', message: error.message || 'Could not load live Zenoti slots' });
   }
 };
 
@@ -273,7 +291,7 @@ exports.getAnyAvailability = async (req, res) => {
     return res.json({ success: true, data: result });
   } catch (error) {
     console.error('getAnyAvailability error:', error);
-    return fail(res, 500, 'Could not load availability');
+    return res.status(error.status || 503).json({ success: false, code: error.code || 'ZENOTI_AVAILABILITY_UNAVAILABLE', message: error.message || 'Could not load live Zenoti availability' });
   }
 };
 
@@ -290,7 +308,7 @@ exports.getAnySlots = async (req, res) => {
     return res.json({ success: true, data: result });
   } catch (error) {
     console.error('getAnySlots error:', error);
-    return fail(res, 500, 'Could not load slots');
+    return res.status(error.status || 503).json({ success: false, code: error.code || 'ZENOTI_AVAILABILITY_UNAVAILABLE', message: error.message || 'Could not load live Zenoti slots' });
   }
 };
 
@@ -318,7 +336,7 @@ exports.getFreeDermatologists = async (req, res) => {
     return res.json({ success: true, data: { date, time, doctorIds, matches } });
   } catch (error) {
     console.error('getFreeDermatologists error:', error);
-    return fail(res, 500, 'Could not load dermatologists');
+    return res.status(error.status || 503).json({ success: false, code: error.code || 'ZENOTI_AVAILABILITY_UNAVAILABLE', message: error.message || 'Could not load live Zenoti dermatologists' });
   }
 };
 
@@ -334,6 +352,11 @@ exports.getDayShifts = async (req, res) => {
   try {
     const { date, branchId } = req.query;
     if (!DATE_KEY.test(date || '')) return fail(res, 400, 'date is required as YYYY-MM-DD');
+    if (!branchId) return fail(res, 400, 'branchId is required for the Zenoti day book');
+    const data = await require('../services/zenotiAvailabilityService').dayShifts(date, branchId);
+    return res.json({ success: true, data });
+    /* istanbul ignore next -- legacy local day-book implementation retained temporarily for migrations */
+    if (false) {
     const { rangesFor } = require('../utils/dermatologistSlots');
     const Branch = require('../models/Branch');
     const ProviderBlock = require('../models/ProviderBlock');
@@ -402,8 +425,9 @@ exports.getDayShifts = async (req, res) => {
         otherBlocks: orphanBlocks,
       },
     });
+    }
   } catch (error) {
     console.error('getDayShifts error:', error);
-    return fail(res, 500, 'Could not load the day book');
+    return res.status(error.status || 503).json({ success: false, code: error.code || 'ZENOTI_AVAILABILITY_UNAVAILABLE', message: error.message || 'Could not load the live Zenoti day book' });
   }
 };

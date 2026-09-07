@@ -157,7 +157,7 @@ exports.createPackage = async (req, res) => {
 // @access  Public
 exports.getAllPackages = async (req, res) => {
   try {
-    const { isActive, includeInactive, search, limit, origin, inCatalogue, packageType, branchId, page } = req.query;
+    const { isActive, includeInactive, search, limit, origin, inCatalogue, packageType, branchId, page, custom } = req.query;
     const q = {};
     // The app only ever sees active packages; staff opt in to the rest.
     if (isActive === 'true' || (!req.admin && includeInactive !== 'true')) q.isActive = true;
@@ -171,6 +171,16 @@ exports.getAllPackages = async (req, res) => {
     if (inCatalogue === 'true') q.inCatalogue = true;
     else if (inCatalogue === 'false') q.inCatalogue = false;
     if (packageType && packageType !== 'all') q.packageType = packageType;
+    /*
+     * Premade vs custom — the only split the desk cares about.
+     *
+     * A custom package is built for one named guest; a premade one is the
+     * standing menu that can be assigned to anybody. Where a package was
+     * authored (Zenoti or here) stopped mattering when packages ceased to be
+     * sold in the app, so `origin` is no longer a tab.
+     */
+    if (custom === 'true') q.packageType = 'custom';
+    else if (custom === 'false') q.packageType = { $ne: 'custom' };
     if (branchId && /^[0-9a-f]{24}$/i.test(branchId)) q['centres.branchId'] = branchId;
 
     const perPage = Math.min(500, parseInt(limit, 10) || 100);
@@ -179,13 +189,12 @@ exports.getAllPackages = async (req, res) => {
       Package.find(q).sort({ isPopular: -1, name: 1 }).skip((pageNo - 1) * perPage).limit(perPage),
       Package.countDocuments(q),
       // Tab counts, independent of the current filter, so the tabs never lie.
-      Package.aggregate([{ $group: { _id: { origin: '$origin', inCatalogue: '$inCatalogue' }, n: { $sum: 1 } } }]),
+      Package.aggregate([{ $group: { _id: '$packageType', n: { $sum: 1 } } }]),
     ]);
-    const buckets = { catalogue: 0, sold: 0, ours: 0 };
+    const buckets = { premade: 0, custom: 0 };
     for (const c of counts) {
-      if (c._id.origin === 'panel') buckets.ours += c.n;
-      else if (c._id.inCatalogue) buckets.catalogue += c.n;
-      else buckets.sold += c.n;
+      if (c._id === 'custom') buckets.custom += c.n;
+      else buckets.premade += c.n;
     }
 
     res.status(200).json({
