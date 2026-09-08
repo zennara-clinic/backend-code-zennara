@@ -85,12 +85,41 @@ async function branchById(branchId) {
   return branch;
 }
 
+/**
+ * Where this doctor can actually be booked.
+ *
+ * Zenoti is the schedule of record, so the centres come from the doctor's
+ * Zenoti employee links — NOT from `Doctor.availableCentres`, which is typed by
+ * hand in the panel and had drifted for seven of nine active dermatologists on
+ * 2026-09-08. Six of those were listed at FEWER centres than Zenoti has them
+ * at, so real bookable hours were hidden from guests: Rickson, Spoorthy and
+ * Madhurya were rostered at Financial District and offered only at Jubilee
+ * Hills; Meghana was rostered at all three and offered at one. The seventh
+ * (Janaki) was the mirror image — offered at three, present in Zenoti at one —
+ * which is what threw ZENOTI_PRACTITIONER_UNMAPPED into the app.
+ *
+ * Deriving it from the link makes the two agree by construction and self-heals
+ * when the clinic changes a roster in Zenoti. `availableCentres` is still the
+ * fallback for a doctor with no Zenoti link at all, so nothing regresses for an
+ * unlinked (local-only) dermatologist.
+ */
 async function candidateBranches(doctor, branchId = null, branchName = null) {
   if (branchId) return [await branchById(branchId)];
   const query = { isActive: true, centreType: 'clinic' };
   if (branchName) query.name = new RegExp(`^${String(branchName).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
   const rows = await Branch.find(query).select('_id name zenotiCenterId').sort({ displayOrder: 1, name: 1 }).lean();
-  return rows.filter((branch) => !doctor?.availableCentres?.length || doctor.availableCentres.some((name) => norm(name) === norm(branch.name)));
+
+  const links = doctor?.doctorId
+    ? await ZenotiPractitioner.find({ onboardedDoctorId: norm(doctor.doctorId), active: true })
+        .select('centerIds').lean()
+    : [];
+  const linkedCentres = new Set(links.flatMap((l) => (l.centerIds || []).map(norm)));
+  if (linkedCentres.size) {
+    return rows.filter((branch) => linkedCentres.has(norm(branch.zenotiCenterId)));
+  }
+  // No Zenoti link — fall back to what the panel says.
+  return rows.filter((branch) => !doctor?.availableCentres?.length
+    || doctor.availableCentres.some((name) => norm(name) === norm(branch.name)));
 }
 
 async function practitionerFor(doctorId, centerId) {
@@ -258,7 +287,33 @@ async function slotsForDate(doctorId, date, options = {}) {
   const branches = await candidateBranches(doctor, options.branchId, options.branchName);
   if (!branches.length) return { date, configured: true, slots: [], reason: 'not-at-this-centre', source: 'zenoti-live' };
 
-  const results = await Promise.all(branches.map((branch) => doctorSlotsAtBranch(doctor, branch, date, options)));
+  /*
+   * A centre where this doctor has no Zenoti employee is NOT an error — it is
+   * simply a centre they do not work at, and the honest answer is "no times
+   * here", not a 409 that blanks the screen.
+   *
+   * Janaki is listed at three centres in the panel and exists in Zenoti at one,
+   * so /dermatologists/janaki-yalamanchili/slots?branchId=<FD|Kondapur> threw
+   * ZENOTI_PRACTITIONER_UNMAPPED straight out to the app — a guest who picked
+   * her got a broken slot screen rather than an empty one. The clinic-wide
+   * endpoint already degraded this way (it collects warnings); the per-doctor
+   * one did not.
+   *
+   * A genuine Zenoti outage still fails loudly: only configuration problems
+   * (unmapped / ambiguous link) are downgraded to a warning.
+   */
+  const CONFIG_CODES = new Set(['ZENOTI_PRACTITIONER_UNMAPPED', 'AMBIGUOUS_ZENOTI_PRACTITIONER']);
+  const warnings = [];
+  const settled = await Promise.all(branches.map(async (branch) => {
+    try {
+      return await doctorSlotsAtBranch(doctor, branch, date, options);
+    } catch (error) {
+      if (!CONFIG_CODES.has(error?.code)) throw error;
+      warnings.push({ branchId: String(branch._id), branchName: branch.name, code: error.code, message: error.message });
+      return [];
+    }
+  }));
+  const results = settled;
   const byTime = new Map();
   results.flat().forEach((slot) => {
     const existing = byTime.get(slot.time);
@@ -276,7 +331,10 @@ async function slotsForDate(doctorId, date, options = {}) {
     source: 'zenoti-live',
     slotMinutes: SESSION_SLOT_MINUTES,
     slots: [...byTime.values()].sort((a, b) => a.minutes - b.minutes),
-    reason: byTime.size ? null : 'not-working',
+    // "not-linked" when every candidate centre lacks a Zenoti link, so the
+    // panel can say "link this doctor in Zenoti" instead of "not working".
+    reason: byTime.size ? null : (warnings.length === branches.length ? 'not-linked' : 'not-working'),
+    ...(warnings.length ? { warnings } : {}),
   };
 }
 

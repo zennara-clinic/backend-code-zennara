@@ -259,3 +259,36 @@ test('the clinic-wide booking window caps every slot source', () => {
     '11:00 AM', '12:00 PM', '1:00 PM', '2:00 PM',
   ]);
 });
+
+/*
+ * Availability must never hard-fail on a configuration gap.
+ *
+ * On 2026-09-08 Janaki was listed at three centres in the panel and existed in
+ * Zenoti at one, so the per-doctor slots endpoint answered 409
+ * ZENOTI_PRACTITIONER_UNMAPPED and the app's slot screen broke for her. The
+ * clinic-wide endpoint already degraded to a warning; this one did not.
+ */
+test('a doctor unmapped at one centre yields no slots there, never an error', () => {
+  const src = require('fs').readFileSync(require.resolve('../services/zenotiAvailabilityService.js'), 'utf8');
+  const i = src.indexOf('const CONFIG_CODES');
+  assert.ok(i > -1, 'configuration errors must be separated from real outages');
+  const block = src.slice(i, i + 900);
+  assert.match(block, /ZENOTI_PRACTITIONER_UNMAPPED/);
+  assert.match(block, /AMBIGUOUS_ZENOTI_PRACTITIONER/);
+  assert.match(block, /if \(!CONFIG_CODES\.has\(error\?\.code\)\) throw error/,
+    'a genuine Zenoti outage must still fail loudly');
+});
+
+/*
+ * Zenoti is the schedule of record, so it decides WHERE a doctor can be booked
+ * too. Seven of nine active dermatologists had Doctor.availableCentres out of
+ * step with their Zenoti links on 2026-09-08.
+ */
+test('bookable centres come from the Zenoti link, not the hand-typed list', () => {
+  const src = require('fs').readFileSync(require.resolve('../services/zenotiAvailabilityService.js'), 'utf8');
+  const fn = src.slice(src.indexOf('async function candidateBranches'), src.indexOf('async function practitionerFor'));
+  const linked = fn.indexOf('linkedCentres');
+  const fallback = fn.indexOf('availableCentres');
+  assert.ok(linked > -1, 'the Zenoti link must drive centre choice');
+  assert.ok(fallback > linked, 'availableCentres may only be the fallback for an unlinked doctor');
+});
