@@ -292,3 +292,31 @@ test('bookable centres come from the Zenoti link, not the hand-typed list', () =
   assert.ok(linked > -1, 'the Zenoti link must drive centre choice');
   assert.ok(fallback > linked, 'availableCentres may only be the fallback for an unlinked doctor');
 });
+
+/*
+ * Slot reads are what a guest is staring at, so they must not queue behind the
+ * background crawl. On 2026-09-08 a month calendar took 40s on production for
+ * exactly that reason.
+ */
+test('a guest waiting on a screen outranks a background crawl', () => {
+  const src = require('fs').readFileSync(require.resolve('../services/zenotiService.js'), 'utf8');
+  assert.match(src, /const FOREGROUND = 1/);
+  assert.match(src, /priorityStore\.getStore\(\) \?\? FOREGROUND/,
+    'anything that does not opt out must be treated as user-facing');
+  assert.match(src, /STARVATION_MS/, 'a starved background caller must still be promoted');
+
+  const sched = require('fs').readFileSync(require.resolve('../utils/zenotiScheduler.js'), 'utf8');
+  assert.match(sched, /const bg = \(fn\) => \(\) =>/, 'bg must RETURN the handler, not run it');
+  // Every cron job must be wrapped, or it silently keeps foreground priority.
+  const jobs = (sched.match(/cron\.schedule\(/g) || []).length;
+  const wrapped = (sched.match(/cron\.schedule\([^,]+, bg\(/g) || []).length;
+  assert.equal(wrapped, jobs, `all ${jobs} scheduled jobs must run at background priority`);
+});
+
+test('a month calendar is fetched as parallel pages, not one week at a time', () => {
+  const src = require('fs').readFileSync(require.resolve('../services/zenotiAvailabilityService.js'), 'utf8');
+  const fn = src.slice(src.indexOf('async function centerDiaryRange'), src.indexOf('async function centerDiaryRange') + 1200);
+  assert.match(fn, /Promise\.all\(windows\.map/, 'the seven-day pages are independent reads');
+  assert.doesNotMatch(fn, /await zenoti\.getCenterDiary\([\s\S]{0,80}\n\s*appointments\.push/,
+    'they must not be awaited one after another again');
+});

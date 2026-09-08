@@ -31,30 +31,69 @@ const API_KEY = process.env.ZENOTI_API_KEY;
  * instead of bursting past the org limit.
  * --------------------------------------------------------------------------- */
 const callTimestamps = [];
-let gate = Promise.resolve();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function acquireSlot() {
-  // Serialise slot acquisition so two callers can't both read a stale window.
-  const run = gate.then(async () => {
-    for (;;) {
+/*
+ * Two-tier queue: a guest waiting on a screen goes before a background crawl.
+ *
+ * The queue used to be strictly FIFO, so a request from the app or the panel
+ * waited behind every background call already queued. The nightly-ish guest
+ * crawl issues ~100 calls in a burst and the 10-second diary lane another 18 a
+ * minute, so the month-calendar read (five diary pages) could sit behind them
+ * for tens of seconds — measured at 40s on production for one month view.
+ *
+ * Foreground is the DEFAULT so nothing user-facing has to opt in; the
+ * schedulers wrap their jobs in runAtPriority(BACKGROUND) instead. A background
+ * caller that has waited 30s is promoted, so a busy clinic cannot starve the
+ * mirror.
+ */
+const { AsyncLocalStorage } = require('node:async_hooks');
+const priorityStore = new AsyncLocalStorage();
+const FOREGROUND = 1;
+const BACKGROUND = 0;
+const STARVATION_MS = 30_000;
+
+/** Run `fn` (and everything it awaits) at the given Zenoti queue priority. */
+function runAtPriority(priority, fn) {
+  return priorityStore.run(priority, fn);
+}
+
+const waiters = [];
+let pumping = false;
+
+function pump() {
+  if (pumping) return;
+  pumping = true;
+  (async () => {
+    while (waiters.length) {
       const now = Date.now();
-      // Drop timestamps older than the 60s window.
-      while (callTimestamps.length && now - callTimestamps[0] > 60_000) {
-        callTimestamps.shift();
+      while (callTimestamps.length && now - callTimestamps[0] > 60_000) callTimestamps.shift();
+      if (callTimestamps.length >= RATE_LIMIT_PER_MINUTE) {
+        await sleep(60_000 - (now - callTimestamps[0]) + 20);
+        continue;
       }
-      if (callTimestamps.length < RATE_LIMIT_PER_MINUTE) {
-        callTimestamps.push(now);
-        return;
+      let best = 0;
+      for (let i = 1; i < waiters.length; i += 1) {
+        const w = waiters[i];
+        const b = waiters[best];
+        const wp = w.priority + (now - w.at > STARVATION_MS ? 1 : 0);
+        const bp = b.priority + (now - b.at > STARVATION_MS ? 1 : 0);
+        if (wp > bp) best = i;              // higher priority wins; FIFO within a tier
       }
-      // Wait until the oldest call ages out of the window.
-      const waitMs = 60_000 - (now - callTimestamps[0]) + 20;
-      await sleep(waitMs);
+      callTimestamps.push(Date.now());
+      waiters.splice(best, 1)[0].resolve();
     }
+    pumping = false;
+  })();
+}
+
+async function acquireSlot() {
+  const priority = priorityStore.getStore() ?? FOREGROUND;
+  return new Promise((resolve) => {
+    waiters.push({ priority, at: Date.now(), resolve });
+    pump();
   });
-  gate = run.catch(() => {});
-  return run;
 }
 
 /* --------------------------------------------------------------------------- *
@@ -1080,6 +1119,8 @@ function isoDaysFromNow(days) {
 }
 
 module.exports = {
+  runAtPriority,
+  PRIORITY: { FOREGROUND, BACKGROUND },
   getCenterMemberships,
   getCenterTherapists,
   isConfigured,

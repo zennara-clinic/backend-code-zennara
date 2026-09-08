@@ -1,4 +1,5 @@
 const cron = require('node-cron');
+const zenotiApi = require('../services/zenotiService');
 const zenoti = require('../services/zenotiService');
 const importer = require('../services/zenotiImportService');
 const appointmentSync = require('../services/zenotiAppointmentSyncService');
@@ -20,6 +21,14 @@ const logger = require('./logger');
  *
  * Disable with ZENOTI_SYNC_ENABLED=false (e.g. on a second PM2 instance).
  */
+/*
+ * Everything on a timer is BACKGROUND work: its Zenoti calls yield the shared
+ * rate limiter to anything a guest or the desk is waiting on. Without this a
+ * month-calendar read queued behind the guest crawl's ~100-call burst and took
+ * 40 seconds on production.
+ */
+const bg = (fn) => () => zenotiApi.runAtPriority(zenotiApi.PRIORITY.BACKGROUND, fn);
+
 function startZenotiScheduler() {
   if (!zenoti.isConfigured()) {
     logger.info('Zenoti scheduler not started (integration not configured)');
@@ -32,18 +41,18 @@ function startZenotiScheduler() {
 
   // Invoices behind recently mirrored appointments (header only, capped) — the
   // desk pulls a bill's lines on demand when it opens one.
-  cron.schedule('25 * * * *', () => {
+  cron.schedule('25 * * * *', bg(() => {
     require('../services/zenotiInvoiceSyncService').syncRecentInvoices({ days: 7, limit: 150, trigger: 'schedule' }).catch(() => {});
-  }, { timezone: 'Asia/Kolkata' });
+  }), { timezone: 'Asia/Kolkata' });
 
-  cron.schedule('30 2 * * *', () => {
+  cron.schedule('30 2 * * *', bg(() => {
     importer.importRoster({ trigger: 'schedule' }).catch(() => {});
-  }, { timezone: 'Asia/Kolkata' });
+  }), { timezone: 'Asia/Kolkata' });
 
   // Vendor master (the one purchasing read Zenoti allows us), nightly.
-  cron.schedule('45 2 * * *', () => {
+  cron.schedule('45 2 * * *', bg(() => {
     require('../services/zenotiVendorSyncService').syncVendors({ trigger: 'schedule' }).catch(() => {});
-  }, { timezone: 'Asia/Kolkata' });
+  }), { timezone: 'Asia/Kolkata' });
 
   /*
    * Guest-history crawl. Dropped from 40 to 25 guests a pass: the 10-second
@@ -53,16 +62,16 @@ function startZenotiScheduler() {
    * behind it, which is worse. A guest who opens the app is refreshed on
    * login regardless of where this rolling pass has reached.
    */
-  cron.schedule('*/5 * * * *', () => {
+  cron.schedule('*/5 * * * *', bg(() => {
     importer.crawlDetails({ limit: Number(process.env.ZENOTI_CRAWL_BATCH) || 25, trigger: 'schedule' }).catch(() => {});
-  });
+  }));
 
-  cron.schedule('*/5 * * * *', () => {
+  cron.schedule('*/5 * * * *', bg(() => {
     practitionerSync.syncPractitioners({ trigger: 'schedule' })
       // A doctor added in Zenoti appears in the panel (hidden) on the next pass.
       .then(() => practitionerSync.autoOnboardAll())
       .catch(() => {});
-  });
+  }));
 
   /*
    * Zenoti catalogue + per-centre stock → Product, hourly.
@@ -70,23 +79,23 @@ function startZenotiScheduler() {
    * Read-only and hourly rather than every few minutes: stock does not move
    * fast enough to justify the API budget, and this walks every centre.
    */
-  cron.schedule('20 * * * *', () => {
+  cron.schedule('20 * * * *', bg(() => {
     require('../services/zenotiProductSyncService').syncProducts({ trigger: 'schedule' }).catch(() => {});
-  });
+  }));
 
   // Zenoti services + packages → Consultation/Package, hourly. Read-only;
   // creates hidden shells and links names, never publishes or reprices
   // (unless ZENOTI_SYNC_SERVICE_PRICES=true).
-  cron.schedule('40 * * * *', () => {
+  cron.schedule('40 * * * *', bg(() => {
     require('../services/zenotiCatalogSyncService').syncCatalog({ trigger: 'schedule' }).catch(() => {});
-  });
+  }));
 
   // Centres (address / phone / map pin) and the category list change rarely:
   // nightly, after the guest roster, plus the panel's "Sync now".
-  cron.schedule('50 2 * * *', () => {
+  cron.schedule('50 2 * * *', bg(() => {
     require('../services/zenotiCenterSyncService').syncCenters({ trigger: 'schedule' }).catch(() => {});
     require('../services/zenotiCategorySyncService').syncCategories({ trigger: 'schedule' }).catch(() => {});
-  }, { timezone: 'Asia/Kolkata' });
+  }), { timezone: 'Asia/Kolkata' });
 
   // There is intentionally no schedule write or local roster projection here.
   // Zenoti owns shifts, leave and block-outs; availability endpoints read them
@@ -105,15 +114,15 @@ function startZenotiScheduler() {
    * diary, and the guest-history crawl gets the whole rate budget back.
    * `appointmentSyncRunning` means a slow pass is skipped, never stacked.
    */
-  cron.schedule('*/10 * 9-20 * * *', () => {
+  cron.schedule('*/10 * 9-20 * * *', bg(() => {
     appointmentSync.syncTodayAppointments({ trigger: 'schedule' }).catch(() => {});
-  }, { timezone: 'Asia/Kolkata' });
+  }), { timezone: 'Asia/Kolkata' });
 
   // Everything outside today (yesterday + the next six days) stays on two
   // minutes — nobody is watching those rows second by second.
-  cron.schedule('*/2 * * * *', () => {
+  cron.schedule('*/2 * * * *', bg(() => {
     appointmentSync.syncRecentAppointments({ trigger: 'schedule' }).catch(() => {});
-  });
+  }));
 
   /*
    * Retry app/reception bookings whose push to Zenoti failed.
@@ -123,19 +132,19 @@ function startZenotiScheduler() {
    * this into a write storm either. Only future, still-live bookings are ever
    * retried — see retryFailedBookingPushes.
    */
-  cron.schedule('*/10 * * * *', () => {
+  cron.schedule('*/10 * * * *', bg(() => {
     require('../services/zenotiWriteService')
       .retryFailedBookingPushes({ limit: 10, trigger: 'schedule' })
       .catch(() => {});
-  });
+  }));
 
   // Booking-horizon pass: day +6 → +62 in seven-day chunks, every 15 minutes.
   // Keeps far-out Zenoti reservations blocking the app's consultation slots
   // (the near window above only reaches six days ahead; the slot engine offers
   // up to the dermatologist's horizon, 60 days by default).
-  cron.schedule('*/15 * * * *', () => {
+  cron.schedule('*/15 * * * *', bg(() => {
     appointmentSync.syncUpcomingAppointments({ trigger: 'schedule' }).catch(() => {});
-  });
+  }));
 
   // On boot, resume whichever part of the initial import is incomplete. A
   // restart must not leave thousands of roster-only patients waiting for tiny
