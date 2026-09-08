@@ -354,3 +354,34 @@ test('the availability endpoint derives from the Zenoti-synced doctor record', (
   // Branch names are matched, never trusted verbatim.
   assert.match(src, /trim\(\)\.toLowerCase\(\)/, 'centre names must be matched to real branches');
 });
+
+/*
+ * Priority decides who goes NEXT; it does not create capacity. Background jobs
+ * were spending ~45 of the 50 calls a minute, so a guest's request reached the
+ * front of the queue and then waited for the window to roll — 28s measured for
+ * one "any dermatologist" read beside 1.1s single-doctor reads.
+ */
+test('background work never spends the last slice of the rate window', () => {
+  const src = require('fs').readFileSync(require.resolve('../services/zenotiService.js'), 'utf8');
+  assert.match(src, /BACKGROUND_CEILING = Math\.max\(1, Math\.floor\(RATE_LIMIT_PER_MINUTE \* 0\.7\)\)/,
+    'a reserve must be held back from background callers');
+  assert.match(src, /const limit = wantsForeground \? RATE_LIMIT_PER_MINUTE : BACKGROUND_CEILING/,
+    'only a foreground request may spend the reserve');
+  // Background must re-check quickly, not sleep out the whole window, or a
+  // guest arriving a moment later waits for nothing.
+  assert.match(src, /callTimestamps\.length >= RATE_LIMIT_PER_MINUTE\s*\n?\s*\? 60_000/,
+    'only the hard cap waits for the window to roll');
+});
+
+/*
+ * The clinic-wide fan-out asks the same questions once per dermatologist.
+ * Nine identical branch reads and nine team reads per screen is nine Atlas
+ * round trips that buy nothing.
+ */
+test('the any-dermatologist fan-out does not re-read what it already has', () => {
+  const src = require('fs').readFileSync(require.resolve('../services/zenotiAvailabilityService.js'), 'utf8');
+  assert.match(src, /cached\(`branch:\$\{branchId\}`/, 'the same branch must be read once');
+  assert.match(src, /cached\(`prac:/, 'the same practitioner lookup must be read once');
+  assert.match(src, /options\.doctor\s*\n?\s*\|\|/, 'a doctor row already loaded must be reused');
+  assert.match(src, /\{ \.\.\.options, doctor \}/, 'the fan-out must pass the row it loaded');
+});

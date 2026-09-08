@@ -78,9 +78,16 @@ function centerForBranch(branch) {
   );
 }
 
+/*
+ * The "any dermatologist" fan-out asks these same two questions once per
+ * doctor — 9 identical branch reads and 9 practitioner reads per screen, each
+ * a round trip to Atlas. They go through the same short-lived cache as the
+ * Zenoti reads, so the fan-out costs one of each instead of nine.
+ */
 async function branchById(branchId) {
   if (!branchId) return null;
-  const branch = await Branch.findOne({ _id: branchId, isActive: true }).select('_id name zenotiCenterId').lean();
+  const branch = await cached(`branch:${branchId}`, () =>
+    Branch.findOne({ _id: branchId, isActive: true }).select('_id name zenotiCenterId').lean());
   if (!branch) throw new ZenotiAvailabilityError('Clinic not found or inactive.', 'BRANCH_NOT_FOUND', 404);
   return branch;
 }
@@ -110,8 +117,9 @@ async function candidateBranches(doctor, branchId = null, branchName = null) {
   const rows = await Branch.find(query).select('_id name zenotiCenterId').sort({ displayOrder: 1, name: 1 }).lean();
 
   const links = doctor?.doctorId
-    ? await ZenotiPractitioner.find({ onboardedDoctorId: norm(doctor.doctorId), active: true })
-        .select('centerIds').lean()
+    ? await cached(`links:${norm(doctor.doctorId)}`, () =>
+        ZenotiPractitioner.find({ onboardedDoctorId: norm(doctor.doctorId), active: true })
+          .select('centerIds').lean())
     : [];
   const linkedCentres = new Set(links.flatMap((l) => (l.centerIds || []).map(norm)));
   if (linkedCentres.size) {
@@ -123,11 +131,11 @@ async function candidateBranches(doctor, branchId = null, branchName = null) {
 }
 
 async function practitionerFor(doctorId, centerId) {
-  const rows = await ZenotiPractitioner.find({
+  const rows = await cached(`prac:${norm(doctorId)}:${norm(centerId)}`, () => ZenotiPractitioner.find({
     onboardedDoctorId: norm(doctorId),
     active: true,
     centerIds: norm(centerId),
-  }).select('zenotiEmployeeId name centerIds').lean();
+  }).select('zenotiEmployeeId name centerIds').lean());
   if (!rows.length) {
     throw new ZenotiAvailabilityError(
       `Doctor ${doctorId} is not linked to a Zenoti employee at this clinic.`,
@@ -291,8 +299,11 @@ async function doctorSlotsAtBranch(doctor, branch, date, { now = new Date(), exc
 }
 
 async function slotsForDate(doctorId, date, options = {}) {
-  const doctor = await Doctor.findOne({ doctorId: norm(doctorId), isActive: true })
-    .select('doctorId name availableCentres onlineBookingEnabled').lean();
+  // The clinic-wide fan-out has already loaded the team; re-reading each row
+  // was nine more Atlas round trips per screen.
+  const doctor = options.doctor
+    || await Doctor.findOne({ doctorId: norm(doctorId), isActive: true })
+      .select('doctorId name availableCentres onlineBookingEnabled').lean();
   if (!doctor) return { date, configured: true, slots: [], reason: 'doctor-inactive', source: 'zenoti-live' };
   const branches = await candidateBranches(doctor, options.branchId, options.branchName);
   if (!branches.length) return { date, configured: true, slots: [], reason: 'not-at-this-centre', source: 'zenoti-live' };
@@ -429,7 +440,8 @@ async function whoIsFree(date, time, options = {}) {
 
 async function anySlotsForDate(date, options = {}) {
   const doctors = await team();
-  const settled = await Promise.allSettled(doctors.map((doctor) => slotsForDate(doctor.doctorId, date, options)));
+  const settled = await Promise.allSettled(
+    doctors.map((doctor) => slotsForDate(doctor.doctorId, date, { ...options, doctor })));
   const byTime = new Map();
   const warnings = [];
   settled.forEach((entry, index) => {

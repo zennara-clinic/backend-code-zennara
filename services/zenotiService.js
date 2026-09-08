@@ -53,6 +53,8 @@ const priorityStore = new AsyncLocalStorage();
 const FOREGROUND = 1;
 const BACKGROUND = 0;
 const STARVATION_MS = 30_000;
+/** Background work never consumes the last slice of the window. */
+const BACKGROUND_CEILING = Math.max(1, Math.floor(RATE_LIMIT_PER_MINUTE * 0.7));
 
 /** Run `fn` (and everything it awaits) at the given Zenoti queue priority. */
 function runAtPriority(priority, fn) {
@@ -69,16 +71,37 @@ function pump() {
     while (waiters.length) {
       const now = Date.now();
       while (callTimestamps.length && now - callTimestamps[0] > 60_000) callTimestamps.shift();
-      if (callTimestamps.length >= RATE_LIMIT_PER_MINUTE) {
-        await sleep(60_000 - (now - callTimestamps[0]) + 20);
+
+      /*
+       * Reserve the top of the window for people.
+       *
+       * Priority alone was not enough: it decides who goes NEXT, not that there
+       * is any capacity left. Background jobs were using ~45 of the 50 calls a
+       * minute, so a guest's request reached the front of the queue and then
+       * waited for the window to roll — measured at 28s for one "any
+       * dermatologist" read while single-doctor reads beside it took 1.1s.
+       *
+       * Background work therefore stops at BACKGROUND_CEILING and only a
+       * foreground request may spend the last slice. A screen needs two or
+       * three calls, so that reserve is ample; the mirrors just spread out.
+       */
+      const effective = (w) => w.priority + (now - w.at > STARVATION_MS ? 1 : 0);
+      const wantsForeground = waiters.some((w) => effective(w) >= FOREGROUND);
+      const limit = wantsForeground ? RATE_LIMIT_PER_MINUTE : BACKGROUND_CEILING;
+      if (callTimestamps.length >= limit) {
+        // Hard cap: nothing can go until the window rolls. Background ceiling:
+        // re-check soon, so a foreground arrival is served straight away.
+        await sleep(callTimestamps.length >= RATE_LIMIT_PER_MINUTE
+          ? 60_000 - (now - callTimestamps[0]) + 20
+          : 250);
         continue;
       }
       let best = 0;
       for (let i = 1; i < waiters.length; i += 1) {
         const w = waiters[i];
         const b = waiters[best];
-        const wp = w.priority + (now - w.at > STARVATION_MS ? 1 : 0);
-        const bp = b.priority + (now - b.at > STARVATION_MS ? 1 : 0);
+        const wp = effective(w);
+        const bp = effective(b);
         if (wp > bp) best = i;              // higher priority wins; FIFO within a tier
       }
       callTimestamps.push(Date.now());
