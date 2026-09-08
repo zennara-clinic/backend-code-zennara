@@ -45,13 +45,44 @@ const updateManyIfChanged = (filter, set) => ({
  * email and password. Never duplicates a therapist who already exists by name.
  */
 
-/** Keep Doctor.zenotiEmployeeId / zenotiCenterNames in step with the practitioner link. */
+/**
+ * Keep the Doctor row in step with the Zenoti practitioner link.
+ *
+ * `availableCentres` is what the APP reads to decide which dermatologists to
+ * offer at a centre, and it was typed by hand in the panel — so it drifted from
+ * Zenoti for seven of nine active dermatologists (2026-09-08). Janaki was
+ * offered at two centres Zenoti has never had her at; Rickson, Spoorthy,
+ * Madhurya, Meghana, Monica and Bandhavi were each offered at fewer centres
+ * than Zenoti has them at, hiding real bookable time the moment they were
+ * rostered there.
+ *
+ * Zenoti decides where a practitioner works, so it decides this too. Synced on
+ * every practitioner pass (every 5 minutes), which makes a change in Zenoti
+ * show up here on its own. Zenoti's centre names are matched to our Branch
+ * names rather than copied, so a rename on either side cannot invent a centre.
+ *
+ * A doctor with NO Zenoti centres keeps whatever the panel set — an unlinked,
+ * local-only dermatologist is still managed here.
+ */
 async function stampDoctorLink(row) {
   if (!row?.onboardedDoctorId) return;
   const Doctor = require('../models/Doctor');
+  const Branch = require('../models/Branch');
+  const set = {
+    zenotiEmployeeId: row.zenotiEmployeeId,
+    zenotiCenterNames: row.centerNames || [],
+  };
+  const zenotiNames = (row.centerNames || []).map((n) => String(n).trim().toLowerCase());
+  if (zenotiNames.length) {
+    const branches = await Branch.find({ isActive: true, centreType: 'clinic' }).select('name').lean();
+    const matched = branches
+      .filter((b) => zenotiNames.includes(String(b.name).trim().toLowerCase()))
+      .map((b) => b.name);
+    if (matched.length) set.availableCentres = matched;
+  }
   await Doctor.updateOne(
     { doctorId: String(row.onboardedDoctorId).toLowerCase() },
-    { $set: { zenotiEmployeeId: row.zenotiEmployeeId, zenotiCenterNames: row.centerNames || [] } },
+    { $set: set },
   ).catch(() => {});
 }
 

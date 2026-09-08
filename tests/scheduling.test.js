@@ -320,3 +320,17 @@ test('a month calendar is fetched as parallel pages, not one week at a time', ()
   assert.doesNotMatch(fn, /await zenoti\.getCenterDiary\([\s\S]{0,80}\n\s*appointments\.push/,
     'they must not be awaited one after another again');
 });
+
+/*
+ * Zenoti decides where a practitioner works, so it decides which centres the
+ * app offers them at. Doctor.availableCentres was typed by hand and had
+ * drifted for seven of nine active dermatologists on 2026-09-08.
+ */
+test('a linked doctor\'s centres are rewritten from Zenoti, never typed', () => {
+  const src = require('fs').readFileSync(require.resolve('../services/zenotiPractitionerService.js'), 'utf8');
+  const fn = src.slice(src.indexOf('async function stampDoctorLink'), src.indexOf('async function autoOnboardTherapist'));
+  assert.match(fn, /availableCentres/, 'the sync must own availableCentres');
+  assert.match(fn, /zenotiNames\.includes/, 'Zenoti names must be MATCHED to our branches, not copied blindly');
+  assert.match(fn, /if \(zenotiNames\.length\)/,
+    'a doctor with no Zenoti centres must keep whatever the panel set');
+});
