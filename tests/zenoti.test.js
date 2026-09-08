@@ -293,8 +293,18 @@ test('a Zenoti-booked appointment can never be cancelled, rescheduled or no-show
   assert.ok(/RESCHEDULE_AT_CLINIC/.test(src), 'the guest reschedule route must refuse and point at the clinic');
   assert.ok(!/source === 'zenoti' && !zenotiWrite\.lifecycleWritebackEnabled\(\)/.test(src), 'guards must not depend on the write-back switch');
   const write = require('fs').readFileSync(require('path').join(__dirname, '../services/zenotiWriteService.js'), 'utf8');
-  assert.ok(/const ZENOTI_OWNED_ALLOWED = new Set\(\[\s*'check_in', 'undo_check_in', 'start', 'undo_start', 'complete', 'undo_complete',/.test(write),
-    'write-back for Zenoti-booked rows must be attendance-only (never confirm/cancel/no-show)');
+  // Assert the RULE, not the exact line: attendance may be pushed, scheduling
+  // never. Pinning the literal list meant retiring undo_complete (which Zenoti
+  // refuses — AA102) broke a test that had nothing to say about that change.
+  const allowed = write.match(/ZENOTI_OWNED_ALLOWED = new Set\(\[([\s\S]*?)\]\)/);
+  assert.ok(allowed, 'the Zenoti-owned allow-list must exist');
+  for (const attendance of ['check_in', 'undo_check_in', 'start', 'undo_start', 'complete']) {
+    assert.match(allowed[1], new RegExp(`'${attendance}'`), `${attendance} is ours to record`);
+  }
+  for (const scheduling of ['confirm', 'cancel', 'reschedule', 'no_show']) {
+    assert.doesNotMatch(allowed[1], new RegExp(`'${scheduling}'`),
+      'write-back for Zenoti-booked rows must be attendance-only (never confirm/cancel/no-show)');
+  }
 });
 
 test('Zenoti shifts only narrow panel hours; they never extend them', () => {

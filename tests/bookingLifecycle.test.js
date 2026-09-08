@@ -19,14 +19,18 @@ const booking = (over = {}) => ({
 /** An instant on the appointment's clinic day, at HH:mm IST. */
 const at = (time) => new Date(`2026-09-07T${time}:00+05:30`);
 
-test('the desk actions mirror Zenoti, and every forward step has an undo', () => {
-  for (const step of ['check_in', 'start', 'complete', 'no_show', 'cancel']) {
-    assert.ok(ACTIONS[`undo_${step === 'check_in' ? 'check_in' : step}`], `${step} needs an undo`);
+test('every forward step has an undo — except completion, which Zenoti will not reverse', () => {
+  for (const step of ['check_in', 'start', 'no_show', 'cancel']) {
+    assert.ok(ACTIONS[`undo_${step}`], `${step} needs an undo`);
   }
   // Undoing lands exactly one step back, so the trail is reversible.
   assert.equal(ACTIONS.undo_check_in.to, 'Confirmed');
   assert.equal(ACTIONS.undo_start.to, 'Checked In');
-  assert.equal(ACTIONS.undo_complete.to, 'In Progress');
+  // Completion is deliberately one-way here. Zenoti answers a reopen with
+  // `You cannot start appointments that are already completed` (AA102), and
+  // every completed booking is a Zenoti appointment, so the action could only
+  // ever fail. Retired 2026-09-08 — corrected in Zenoti instead.
+  assert.equal(ACTIONS.undo_complete, undefined, 'undo_complete must not come back without Zenoti supporting it');
 });
 
 test('a guest cannot be checked in an hour early, and can 30 minutes before', () => {
@@ -59,7 +63,7 @@ test('only the legal next steps are offered for each status', () => {
   assert.deepEqual(availableActions(booking({ status: 'Confirmed' })), ['check_in', 'no_show', 'cancel']);
   assert.deepEqual(availableActions(booking({ status: 'Checked In' })), ['start', 'undo_check_in', 'cancel']);
   assert.deepEqual(availableActions(booking({ status: 'In Progress' })), ['complete', 'undo_start']);
-  assert.deepEqual(availableActions(booking({ status: 'Completed' })), ['undo_complete']);
+  assert.deepEqual(availableActions(booking({ status: 'Completed' })), [], 'a completed visit offers nothing — it is corrected in Zenoti');
   assert.deepEqual(availableActions(booking({ status: 'No Show' })), ['check_in', 'undo_no_show']);
 });
 
@@ -92,9 +96,17 @@ test('undo no show is flagged local-only — Zenoti exposes no such route', () =
   assert.equal(ACTIONS.undo_no_show.zenoti, null);
 });
 
-test('reopening a completed visit demands a reason', () => {
-  assert.equal(ACTIONS.undo_complete.needsReason, true);
-  assert.equal(ACTIONS.undo_complete.sameDayOnly, true);
+test('the retired reopen action explains itself instead of "Unknown action"', () => {
+  const src = require('fs').readFileSync(require.resolve('../services/bookingLifecycleService.js'), 'utf8');
+  const i = src.indexOf('const RETIRED =');
+  assert.ok(i > -1, 'retired actions must be named, not silently unknown');
+  const block = src.slice(i, i + 400);
+  assert.match(block, /undo_complete/);
+  assert.match(block, /AA102/, 'the desk should be told why, and where to do it instead');
+  // And nothing may offer it any more.
+  const ctrl = require('fs').readFileSync(require.resolve('../controllers/bookingController.js'), 'utf8');
+  const undoMap = ctrl.slice(ctrl.indexOf('const UNDO_FOR_STATUS'), ctrl.indexOf('const UNDO_FOR_STATUS') + 500);
+  assert.doesNotMatch(undoMap, /Completed: 'undo_complete'/, "the panel's undo button must not offer it");
 });
 
 test('logStatus appends one readable audit row', () => {

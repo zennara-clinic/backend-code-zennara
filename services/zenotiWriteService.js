@@ -1079,6 +1079,9 @@ function existingRecordWritebackEnabled() {
  *   undo_check_in   PUT /v1/appointments/{group}/undo_check_in   → permitted
  *   progress        PUT /v1/appointments/{id}/progress           → permitted
  *                     progress 0 = not started, 1 = in service, 2 = closed
+ *                     ...but NOT backwards out of 2: reopening a closed visit
+ *                     returns 200 with { error: AA102 }, so the desk's
+ *                     "Reopen session" was retired on 2026-09-08.
  *   confirm         PUT /v1/invoices/{id}/confirm                → permitted
  *   cancel          PUT /v1/invoices/{id}/cancel                 → permitted
  *   no_show         PUT /v1/appointments/{group}/no_show         → 401 DENIED
@@ -1107,7 +1110,6 @@ const LIFECYCLE_CALLS = {
   start: (ctx) => progressWrite(ctx, 1, 'progressStart'),
   undo_start: (ctx) => progressWrite(ctx, 0, 'progressUndoStart'),
   complete: (ctx) => progressWrite(ctx, 2, 'progressComplete'),
-  undo_complete: (ctx) => progressWrite(ctx, 1, 'progressReopen'),
   no_show: async (ctx) => {
     if (!ctx.groupId) throw new Error('Zenoti needs the appointment group id to mark a no-show.');
     try {
@@ -1187,7 +1189,7 @@ async function progressWrite(ctx, progress, action) {
  * "Technical Documentation/ZENOTI-NO-SHOW-INCIDENT-2026-09-03.md".
  */
 const ZENOTI_OWNED_ALLOWED = new Set([
-  'check_in', 'undo_check_in', 'start', 'undo_start', 'complete', 'undo_complete',
+  'check_in', 'undo_check_in', 'start', 'undo_start', 'complete',
 ]);
 
 /**

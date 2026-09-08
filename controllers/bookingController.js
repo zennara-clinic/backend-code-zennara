@@ -2282,7 +2282,9 @@ exports.updateConsultationStage = async (req, res) => {
 const UNDO_FOR_STATUS = {
   'Checked In': 'undo_check_in',
   'In Progress': 'undo_start',
-  Completed: 'undo_complete',
+  // Completed has no undo: Zenoti refuses to reopen a closed appointment
+  // (AA102), and every completed booking here is a Zenoti appointment. It is
+  // corrected in Zenoti and mirrored back within ~10 seconds.
   'No Show': 'undo_no_show',
   Cancelled: 'undo_cancel',
 };

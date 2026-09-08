@@ -13,8 +13,9 @@
  *                                    No Show                       Completed
  *
  * Every step has an undo, because the desk mis-taps and Zenoti allows it:
- * undo_check_in, undo_start, undo_complete, undo_no_show, and the existing
- * cancel/undo path.
+ * undo_check_in, undo_start, undo_no_show, and the existing cancel/undo path.
+ * Completion is the exception — Zenoti refuses to reopen a closed visit, so the
+ * panel does not offer it (see RETIRED in apply()).
  *
  * Two rules make this safe:
  *
@@ -102,14 +103,6 @@ const ACTIONS = {
     to: 'Completed',
     zenoti: 'complete',
   },
-  undo_complete: {
-    label: 'Reopen session',
-    from: ['Completed'],
-    to: 'In Progress',
-    zenoti: 'undo_complete',
-    needsReason: true,
-    sameDayOnly: true,
-  },
   no_show: {
     label: 'Mark no show',
     from: ['Confirmed', 'Rescheduled', 'Awaiting Confirmation'],
@@ -151,7 +144,7 @@ const ZENOTI_OWNED_BLOCKED = new Set(['confirm', 'cancel', 'no_show', 'undo_canc
 function availableActions(booking) {
   const order = [
     'confirm', 'check_in', 'start', 'complete',
-    'undo_complete', 'undo_start', 'undo_check_in', 'undo_no_show', 'undo_cancel',
+    'undo_start', 'undo_check_in', 'undo_no_show', 'undo_cancel',
     'no_show', 'cancel',
   ];
   return order.filter((name) => {
@@ -233,6 +226,24 @@ async function apply(bookingOrId, action, {
   now = new Date(),
   mutate = null,
 } = {}) {
+  /*
+   * Actions the desk used to have and no longer does. Named explicitly so a
+   * stale panel tab or an old client gets the reason rather than the useless
+   * `Unknown action "undo_complete"`.
+   *
+   * Reopening a completed visit is gone because ZENOTI CANNOT DO IT: the
+   * progress endpoint answers `You cannot start appointments that are already
+   * completed` (code AA102), and every completed booking here is a Zenoti
+   * appointment — a visit only reaches Completed through a confirm that
+   * Zenoti accepted. Offering a button that can only ever fail is worse than
+   * not offering it. Correct a wrongly-completed visit in Zenoti; it reaches
+   * the panel within about ten seconds.
+   */
+  const RETIRED = {
+    undo_complete: 'Reopening a completed visit is done in Zenoti — Zenoti does not accept it from here (error AA102). The change appears in the panel within about 10 seconds.',
+  };
+  if (RETIRED[action]) throw new LifecycleError(RETIRED[action], { status: 400, code: 'ACTION_RETIRED' });
+
   const spec = ACTIONS[action];
   if (!spec) throw new LifecycleError(`Unknown action "${action}".`, { status: 400 });
 
