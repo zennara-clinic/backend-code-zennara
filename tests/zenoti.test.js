@@ -126,6 +126,24 @@ test('cancel sends its payload in the body, not the query string', () => {
   assert.doesNotMatch(block, /query: \{\s*\n\s*comments/, 'comments must not go back into the query string');
 });
 
+/*
+ * Zenoti does not always move the appointment status when a guest arrives — a
+ * check-in taken at the desk can leave it on 0 (Booked) with only a
+ * checkin_time set. One such visit sat at Financial District on 2026-09-09:
+ * the arrival time was mirrored, but the day book read "Confirmed", so the
+ * desk could not see the guest was in the building.
+ */
+test('an arrival recorded by Zenoti counts as checked in, whatever the enum says', () => {
+  const { localStatus } = require('../services/zenotiAppointmentSyncService');
+  assert.equal(localStatus({ status: 0, progress: 0 }), 'Confirmed');
+  assert.equal(localStatus({ status: 0, progress: 0, checkinTime: '2026-09-09T11:00:00' }), 'Checked In');
+  // A later state must still win over the arrival stamp.
+  assert.equal(localStatus({ status: 4, progress: 0, checkinTime: 'x' }), 'In Progress');
+  assert.equal(localStatus({ status: 1, progress: 2, checkinTime: 'x' }), 'Completed');
+  assert.equal(localStatus({ status: -1, checkinTime: 'x' }), 'Cancelled');
+  assert.equal(localStatus({ status: -2, checkinTime: 'x' }), 'No Show');
+});
+
 test('note and form normalizers return stable admin-panel shapes', () => {
   const note = zenoti.normalizeGuestNote({ note_id: 'n1', notes: 'Patch test', is_profile_alert: true, created_by: { name: 'Staff', date: '2026-01-01' } });
   const form = zenoti.normalizeGuestForm({ form_id: 'f1', name: 'Consent', form_filled_status: 2, last_filled_date: '2026-01-02' });

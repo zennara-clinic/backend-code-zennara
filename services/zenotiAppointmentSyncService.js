@@ -94,6 +94,15 @@ function localStatus(appointment) {
   // book and the Zenoti mobile app agree on who is actually being treated.
   if (appointment.isStarted || progress === 1 || status === '4' || status === 'in service') return 'In Progress';
   if (status === '2' || status === 'checkin' || status === 'checked in') return 'Checked In';
+  /*
+   * Zenoti does not always move the status when a guest arrives: a check-in
+   * recorded at the desk can leave the appointment on 0 (Booked) with only a
+   * checkin_time set. One such visit was sitting at Financial District on
+   * 2026-09-09 — the arrival time mirrored onto the booking, but the day book
+   * still reading "Confirmed", so the desk could not see the guest was here.
+   * The stamp is the fact; the enum is just where Zenoti happened to leave it.
+   */
+  if (appointment.checkinTime) return 'Checked In';
   // A row in the center appointment book is a real reserved appointment even
   // when Zenoti uses its default/new status (0).
   return 'Confirmed';
