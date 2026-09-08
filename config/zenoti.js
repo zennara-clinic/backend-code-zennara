@@ -16,6 +16,14 @@ const ZENOTI_API_BASE = process.env.ZENOTI_API_BASE || 'https://api.zenoti.com';
  * Zenoti documents a standard limit of 60 requests/minute per organisation.
  * We queue below that with headroom so a burst never trips the org-wide 429.
  */
+/*
+ * NOTE: this budget is PER PROCESS. Zenoti's limit is per organisation, so
+ * running the API at `instances: > 1` (or a second box, or a script against
+ * prod while the server runs) multiplies the real call rate and earns
+ * org-wide 429s — whose Retry-After backoff delays guests regardless of
+ * queue priority. ecosystem.config.js pins instances: 1 for this reason;
+ * if that ever changes, divide ZENOTI_RATE_LIMIT by the instance count.
+ */
 const RATE_LIMIT_PER_MINUTE = Number(process.env.ZENOTI_RATE_LIMIT || 50);
 
 /**
