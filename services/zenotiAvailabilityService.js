@@ -529,11 +529,42 @@ async function dayShifts(date, branchId) {
     centerSchedule(centerId, date, date), centerDiary(centerId, date),
     Doctor.find({ isActive: true }).select('doctorId name tier designation photo displayOrder onlineBookingEnabled availableCentres').lean(),
   ]);
+  /*
+   * Every practitioner link for this centre in ONE query.
+   *
+   * This loop awaited practitionerFor() per dermatologist — nine sequential
+   * round trips to Atlas before the desk's day board could paint, which is a
+   * good part of the 5-10s wait before the grid became usable.
+   */
+  const mine = doctors.filter((row) => !row.availableCentres?.length
+    || row.availableCentres.some((name) => norm(name) === norm(branch.name)));
+  const links = await ZenotiPractitioner.find({
+    onboardedDoctorId: { $in: mine.map((d) => norm(d.doctorId)) },
+    active: true,
+    centerIds: norm(centerId),
+  }).select('onboardedDoctorId zenotiEmployeeId name').lean();
+  const linksByDoctor = new Map();
+  for (const row of links) {
+    const key = norm(row.onboardedDoctorId);
+    linksByDoctor.set(key, [...(linksByDoctor.get(key) || []), row]);
+  }
+
   const providers = [];
-  for (const doctor of doctors.filter((row) => !row.availableCentres?.length || row.availableCentres.some((name) => norm(name) === norm(branch.name)))) {
+  for (const doctor of mine) {
     let practitioner;
     try {
-      practitioner = await practitionerFor(doctor.doctorId, centerId);
+      const found = linksByDoctor.get(norm(doctor.doctorId)) || [];
+      if (!found.length) {
+        throw new ZenotiAvailabilityError(
+          `Doctor ${doctor.doctorId} is not linked to a Zenoti employee at this clinic.`,
+          'ZENOTI_PRACTITIONER_UNMAPPED', 409);
+      }
+      if (found.length > 1) {
+        throw new ZenotiAvailabilityError(
+          `Doctor ${doctor.doctorId} has ${found.length} active Zenoti employee links at this clinic. Resolve the duplicate before booking.`,
+          'AMBIGUOUS_ZENOTI_PRACTITIONER', 409);
+      }
+      practitioner = found[0];
     } catch (error) {
       providers.push({
         doctorId: doctor.doctorId, name: doctor.name, tier: doctor.tier,

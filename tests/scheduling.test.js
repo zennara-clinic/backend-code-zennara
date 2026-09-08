@@ -385,3 +385,21 @@ test('the any-dermatologist fan-out does not re-read what it already has', () =>
   assert.match(src, /options\.doctor\s*\n?\s*\|\|/, 'a doctor row already loaded must be reused');
   assert.match(src, /\{ \.\.\.options, doctor \}/, 'the fan-out must pass the row it loaded');
 });
+
+/*
+ * The desk's day board waits on dayShifts before it can paint. It used to
+ * await one practitioner lookup PER dermatologist, sequentially — nine round
+ * trips to Atlas before the grid appeared.
+ */
+test('the day board resolves every practitioner in one query', () => {
+  const src = require('fs').readFileSync(require.resolve('../services/zenotiAvailabilityService.js'), 'utf8');
+  const fn = src.slice(src.indexOf('async function dayShifts'));
+  assert.match(fn, /onboardedDoctorId: \{ \$in:/, 'links must be fetched for all doctors at once');
+  assert.match(fn, /linksByDoctor/, 'and indexed for the loop');
+  // The per-doctor await is what made it slow; it must be gone.
+  const loop = fn.slice(fn.indexOf('for (const doctor of mine)'), fn.indexOf('return {'));
+  assert.doesNotMatch(loop, /await practitionerFor/, 'no per-doctor round trip inside the loop');
+  // The unmapped / ambiguous cases must still be reported, not silently dropped.
+  assert.match(fn, /ZENOTI_PRACTITIONER_UNMAPPED/);
+  assert.match(fn, /AMBIGUOUS_ZENOTI_PRACTITIONER/);
+});
