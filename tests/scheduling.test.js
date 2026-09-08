@@ -334,3 +334,23 @@ test('a linked doctor\'s centres are rewritten from Zenoti, never typed', () => 
   assert.match(fn, /if \(zenotiNames\.length\)/,
     'a doctor with no Zenoti centres must keep whatever the panel set');
 });
+
+/*
+ * "Where does this dermatologist work" must have ONE answer.
+ *
+ * There were three: Doctor.availableCentres, the ZenotiPractitioner link, and
+ * a hand-maintained DermatologistAvailability collection. The APP filters its
+ * dermatologist list on the third, so on 2026-09-08 fixing the first two
+ * changed nothing on screen — Janaki was still offered at Financial District
+ * and Kondapur, and Rickson was still hidden at Financial District.
+ */
+test('the availability endpoint derives from the Zenoti-synced doctor record', () => {
+  const src = require('fs').readFileSync(require.resolve('../controllers/dermatologistAvailabilityController.js'), 'utf8');
+  assert.match(src, /async function derivedFromDoctors/, 'branches must come from the Doctor record');
+  const getAll = src.slice(src.indexOf('exports.getAll'), src.indexOf('exports.getOne'));
+  assert.match(getAll, /derivedFromDoctors\(\)/, 'getAll must derive, not read the legacy collection first');
+  const getOne = src.slice(src.indexOf('exports.getOne'), src.indexOf('exports.upsert'));
+  assert.match(getOne, /derivedFromDoctors\(\)/, 'getOne must derive too');
+  // Branch names are matched, never trusted verbatim.
+  assert.match(src, /trim\(\)\.toLowerCase\(\)/, 'centre names must be matched to real branches');
+});
