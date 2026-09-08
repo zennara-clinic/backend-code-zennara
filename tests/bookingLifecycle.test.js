@@ -115,6 +115,57 @@ test('every lifecycle action names a Zenoti call, or explicitly none', () => {
   }
 });
 
+/*
+ * The 2026-09-03 guard rail, pinned end to end.
+ *
+ * That day an automatic job marked ~560 mirrored clinic appointments No Show
+ * and wrote every one into Zenoti. Two rules stop it recurring, and both are
+ * easy to delete by accident while "improving sync speed":
+ *
+ *   1. An appointment Zenoti created is Zenoti's to schedule — we may record
+ *      attendance, never cancel / reschedule / no-show it.
+ *   2. Zenoti goes first: if the push fails the local record does NOT move,
+ *      so the two systems can never disagree about what happened.
+ */
+test('an appointment Zenoti created can never be cancelled or no-showed from here', () => {
+  const src = require('fs').readFileSync(require.resolve('../services/zenotiWriteService.js'), 'utf8');
+  const allowed = src.match(/ZENOTI_OWNED_ALLOWED = new Set\(\[([\s\S]*?)\]\)/);
+  assert.ok(allowed, 'the Zenoti-owned allow-list must still exist');
+  for (const forbidden of ['cancel', 'reschedule', 'no_show']) {
+    assert.doesNotMatch(allowed[1], new RegExp(`'${forbidden}'`),
+      `${forbidden} must never be pushable for a Zenoti-owned appointment (2026-09-03)`);
+  }
+  for (const attendance of ['check_in', 'start', 'complete']) {
+    assert.match(allowed[1], new RegExp(`'${attendance}'`), `${attendance} is ours to record`);
+  }
+});
+
+test('a failed Zenoti push leaves the local booking untouched', () => {
+  const src = require('fs').readFileSync(require.resolve('../services/bookingLifecycleService.js'), 'utf8');
+  const push = src.indexOf('pushLifecycleAction');
+  const commit = src.indexOf('booking.status = to;');
+  assert.ok(push > -1 && commit > -1);
+  assert.ok(push < commit, 'Zenoti must be pushed BEFORE the local status is committed');
+  const between = src.slice(push, commit);
+  assert.match(between, /status !== 'synced'/, 'a non-synced outcome must be detected');
+  assert.match(between, /throw new LifecycleError/, 'and must abort before anything is written locally');
+});
+
+test('the desk is told what to do when Zenoti refuses a no-show', () => {
+  const src = require('fs').readFileSync(require.resolve('../services/zenotiWriteService.js'), 'utf8');
+  assert.match(src, /Zenoti error 438/, 'the 401 must be translated into an instruction, not a raw error');
+});
+
+test('a desk action is attributed to the provider, not a service account', () => {
+  const src = require('fs').readFileSync(require.resolve('../services/zenotiWriteService.js'), 'utf8');
+  const fn = src.match(/async function resolveUpdatedById[\s\S]*?\n}/);
+  assert.ok(fn, 'resolveUpdatedById must exist');
+  const provider = fn[0].indexOf('resolveTherapistId');
+  const envVar = fn[0].indexOf('ZENOTI_UPDATED_BY_ID');
+  assert.ok(provider > -1 && envVar > -1);
+  assert.ok(provider < envVar, 'the real provider must be preferred over ZENOTI_UPDATED_BY_ID');
+});
+
 test('the visit-code flow is gone from the booking surface', () => {
   const fs = require('fs');
   const path = require('path');

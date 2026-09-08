@@ -243,9 +243,27 @@ function strictClinicCenterIdForBranch(branchName) {
 }
 
 /** Who Zenoti records as the updater: env, else the visit's own provider. */
+/**
+ * Which Zenoti employee a desk action is recorded against.
+ *
+ * The provider who actually saw the guest comes FIRST; ZENOTI_UPDATED_BY_ID is
+ * only the fallback for a provider with no Zenoti link. The old order was the
+ * other way round, so the moment that env var was set every check-in, start and
+ * completion in the clinic's Zenoti audit trail would have been stamped with
+ * one service account instead of the real dermatologist — the attribution the
+ * clinic reads to see who did what.
+ *
+ * When neither is available we rethrow resolveTherapistId's message, which
+ * names the doctor and the clinic, rather than a generic failure.
+ */
 async function resolveUpdatedById(booking) {
-  if (process.env.ZENOTI_UPDATED_BY_ID) return process.env.ZENOTI_UPDATED_BY_ID;
-  return resolveTherapistId(booking);
+  try {
+    const providerId = await resolveTherapistId(booking);
+    if (providerId) return providerId;
+  } catch (err) {
+    if (!process.env.ZENOTI_UPDATED_BY_ID) throw err;
+  }
+  return process.env.ZENOTI_UPDATED_BY_ID || null;
 }
 
 /** Resolve one of our products to a Zenoti product id for a centre. */
@@ -797,6 +815,17 @@ async function syncBooking(bookingId) {
     await booking.save({ validateModifiedOnly: true }).catch(() => {});
 
     const slotsRes = await zenoti.request(`/v1/bookings/${zBookingId}/slots`, { method: 'GET' });
+    /*
+     * Zenoti answers a failed slot search with HTTP 200 and { slots: null,
+     * Error: { StatusCode, Message } } — the failure is in the BODY, not the
+     * status. Reading only `slots` turned every distinct cause into the same
+     * "staff shifts are not published" guess below, which on 2026-09-07 sent
+     * the desk off to publish rosters that were already published while the
+     * real answer ("One or more services or addons are not available in the
+     * catalog", account-wide) sat unread in the response. Never swallow it.
+     */
+    const zErr = slotsRes?.Error || slotsRes?.error || null;
+    const zErrMsg = String(zErr?.Message || zErr?.message || '').trim();
     const slots = slotsRes?.slots || slotsRes?.Slots || [];
     const wantedTime = require('../utils/bookingTime').clock24(
       booking.confirmedTime || booking.slotTime || booking.preferredTimeSlots?.[0] || null,
@@ -807,9 +836,16 @@ async function syncBooking(bookingId) {
       ? slotValue(bookableSlots.find((slot) => String(slotValue(slot) || '').includes(`T${wantedTime}`)))
       : slotValue(bookableSlots[0]);
     if (!slotTime) {
-      throw new Error(slots.length
-        ? `Zenoti has no free slot at ${wantedTime || 'the requested time'} on ${date} (${bookableSlots.length} other slots free).`
-        : `Zenoti offers no slots on ${date}: staff shifts are not published in Zenoti (NotScheduled). Publish schedules in Zenoti, then push again.`);
+      if (slots.length) {
+        throw new Error(`Zenoti has no free slot at ${wantedTime || 'the requested time'} on ${date} (${bookableSlots.length} other slots free).`);
+      }
+      // Zenoti told us why — pass its words through rather than guessing.
+      if (zErrMsg) {
+        throw new Error(`Zenoti returned no slots for ${date}: ${zErrMsg}${zErr?.StatusCode ? ` (Zenoti code ${zErr.StatusCode})` : ''}`);
+      }
+      // Silent empty list: now the roster really is the likely culprit, but say
+      // so as a diagnosis to check, not as fact.
+      throw new Error(`Zenoti returned no slots for ${date} and gave no reason. Most often the provider's shift is not published in Zenoti for that day — check the roster, then push again.`);
     }
 
     await liveWrite('reserveSlot', () => zenoti.request(`/v1/bookings/${zBookingId}/slots/reserve`, {
@@ -1074,9 +1110,24 @@ const LIFECYCLE_CALLS = {
   undo_complete: (ctx) => progressWrite(ctx, 1, 'progressReopen'),
   no_show: async (ctx) => {
     if (!ctx.groupId) throw new Error('Zenoti needs the appointment group id to mark a no-show.');
-    return liveWrite('noShow', () => zenoti.request(`/v1/appointments/${ctx.groupId}/no_show`, {
-      method: 'PUT', body: { comments: ctx.booking.cancellationReason || 'No show recorded in Zennara' },
-    }));
+    try {
+      return await liveWrite('noShow', () => zenoti.request(`/v1/appointments/${ctx.groupId}/no_show`, {
+        method: 'PUT', body: { comments: ctx.booking.cancellationReason || 'No show recorded in Zennara' },
+      }));
+    } catch (err) {
+      /*
+       * Zenoti refuses no_show for this organisation's API user (401, code
+       * 438 "User does not have authorization"). The desk sees the raw error
+       * otherwise and cannot tell whether the clinic must act or the guest
+       * must be chased, so name the fix. Nothing is recorded locally either —
+       * apply() treats a failed push as a failed action — which is deliberate:
+       * the 2026-09-03 incident began with no-shows diverging from Zenoti.
+       */
+      if (/401|not have authorization|\b438\b/i.test(String(err.message))) {
+        throw new Error('Zenoti will not accept a no-show from the app: its API user lacks that permission (Zenoti error 438). Mark the no-show in Zenoti — it appears here within 2 minutes — or ask Zenoti to grant the permission.');
+      }
+      throw err;
+    }
   },
   cancel: async (ctx) => {
     if (!ctx.invoiceId) throw new Error('Zenoti needs the invoice id to cancel this appointment.');
