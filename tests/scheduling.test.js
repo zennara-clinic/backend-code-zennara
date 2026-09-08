@@ -403,3 +403,29 @@ test('the day board resolves every practitioner in one query', () => {
   assert.match(fn, /ZENOTI_PRACTITIONER_UNMAPPED/);
   assert.match(fn, /AMBIGUOUS_ZENOTI_PRACTITIONER/);
 });
+
+/*
+ * The money path must validate against the picture the GUEST was shown.
+ *
+ * There are two slot engines: zenotiAvailabilityService reads live Zenoti
+ * rosters (what the app offers) and utils/dermatologistSlots reads the local
+ * DermatologistSchedule, a snapshot frozen on 2026-09-04/07. The payment
+ * guards asked the local one. They agreed only by luck — Janaki's local row is
+ * Thursday-only, so the first time Zenoti gives her any other day the app
+ * offers a slot the guard refuses, which after payment means charging a guest
+ * and refunding them.
+ */
+test('the payment guard asks Zenoti, and falls back only on an outage', () => {
+  const src = require('fs').readFileSync(require.resolve('../utils/slotGuard.js'), 'utf8');
+  assert.match(src, /zenotiAvailability\.isSlotBookable/, 'Zenoti is asked first');
+  assert.match(src, /localSlots\.isSlotBookable/, 'the snapshot remains the fallback');
+  // A doctor unmapped at the centre is a real answer, not an outage — falling
+  // back there would let the stale snapshot approve a slot Zenoti cannot honour.
+  assert.match(src, /ZENOTI_PRACTITIONER_UNMAPPED/);
+  assert.match(src, /AMBIGUOUS_ZENOTI_PRACTITIONER/);
+
+  const pay = require('fs').readFileSync(require.resolve('../controllers/paymentController.js'), 'utf8');
+  assert.doesNotMatch(pay, /require\('\.\.\/utils\/dermatologistSlots'\)/,
+    'the payment path must not reach past the guard to the stale engine');
+  assert.match(pay, /require\('\.\.\/utils\/slotGuard'\)/);
+});

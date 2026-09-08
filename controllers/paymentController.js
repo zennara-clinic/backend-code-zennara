@@ -1297,7 +1297,7 @@ exports.createConsultationPayment = async (req, res) => {
     // is free. Re-check that pairing before opening Razorpay, rather than
     // capturing payment and discovering the mismatch during verification.
     if (bookingData.slotTime && bookingData.specialistId) {
-      const { isSlotBookable } = require('../utils/dermatologistSlots');
+      const { isSlotBookable } = require('../utils/slotGuard');
       const key = clinicDateKey(bookingData.preferredDate);
       const check = key
         ? await isSlotBookable(bookingData.specialistId, key, bookingData.slotTime, {
@@ -1555,7 +1555,7 @@ exports.verifyConsultationPayment = async (req, res) => {
      */
     const slotTime = bookingData.slotTime ? clock24(bookingData.slotTime) : null;
     if (slotTime && bookingData.specialistId) {
-      const { isSlotBookable } = require('../utils/dermatologistSlots');
+      const { isSlotBookable } = require('../utils/slotGuard');
       const key = clinicDateKey(bookingData.preferredDate);
       const check = await isSlotBookable(bookingData.specialistId, key, slotTime, {
         branchId: branch._id,
