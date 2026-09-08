@@ -45,8 +45,16 @@ function startZenotiScheduler() {
     require('../services/zenotiVendorSyncService').syncVendors({ trigger: 'schedule' }).catch(() => {});
   }, { timezone: 'Asia/Kolkata' });
 
+  /*
+   * Guest-history crawl. Dropped from 40 to 25 guests a pass: the 10-second
+   * diary lane above needs ~18 calls/minute of the 50/minute budget, and the
+   * crawl spends ~4 calls per guest. Everything shares one rate-limit queue,
+   * so an oversized crawl does not cause 429s — it makes the diary lane wait
+   * behind it, which is worse. A guest who opens the app is refreshed on
+   * login regardless of where this rolling pass has reached.
+   */
   cron.schedule('*/5 * * * *', () => {
-    importer.crawlDetails({ limit: 40, trigger: 'schedule' }).catch(() => {});
+    importer.crawlDetails({ limit: Number(process.env.ZENOTI_CRAWL_BATCH) || 25, trigger: 'schedule' }).catch(() => {});
   });
 
   cron.schedule('*/5 * * * *', () => {
@@ -84,6 +92,25 @@ function startZenotiScheduler() {
   // Zenoti owns shifts, leave and block-outs; availability endpoints read them
   // live. Publishing panel hours could overwrite the primary diary.
 
+  /*
+   * TODAY's diary, every 10 seconds during clinic hours.
+   *
+   * A change made in Zenoti — check-in, start, completion, cancellation —
+   * reaches the panel in about 10 seconds instead of up to 2.5 minutes. It is
+   * affordable because a pass is now ~3s and three Zenoti calls: the row loop
+   * used to make one findOne and one write PER appointment (157 round trips to
+   * Atlas at ~107 ms each), which is what made a pass take ~33 seconds.
+   *
+   * Restricted to 09:00–20:59 IST: outside clinic hours nothing moves in the
+   * diary, and the guest-history crawl gets the whole rate budget back.
+   * `appointmentSyncRunning` means a slow pass is skipped, never stacked.
+   */
+  cron.schedule('*/10 * 9-20 * * *', () => {
+    appointmentSync.syncTodayAppointments({ trigger: 'schedule' }).catch(() => {});
+  }, { timezone: 'Asia/Kolkata' });
+
+  // Everything outside today (yesterday + the next six days) stays on two
+  // minutes — nobody is watching those rows second by second.
   cron.schedule('*/2 * * * *', () => {
     appointmentSync.syncRecentAppointments({ trigger: 'schedule' }).catch(() => {});
   });

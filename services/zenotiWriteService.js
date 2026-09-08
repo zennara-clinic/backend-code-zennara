@@ -1131,12 +1131,25 @@ const LIFECYCLE_CALLS = {
   },
   cancel: async (ctx) => {
     if (!ctx.invoiceId) throw new Error('Zenoti needs the invoice id to cancel this appointment.');
+    /*
+     * The payload goes in the BODY, not the query string.
+     *
+     * Sent as query params this call fails with "invalid reason_id" — Zenoti
+     * sees no body at all and rejects the (absent) reason before it looks at
+     * anything else. That error reads as "you sent a bad reason id", which
+     * sent us hunting for a reason list that does not exist: every
+     * `/v1/centers/{id}/reasons?reason_type=N` (0,1,2,3,4,5,6,7,8) returns an
+     * empty array, and `/v1/cancel_reasons` is a 404. With the same fields in
+     * the body it returns `{ success: true }` and no reason id is needed at
+     * all (verified live 2026-09-08 on invoice c2d91571-…).
+     *
+     * ZENOTI_CANCEL_REASON_ID stays supported for the day the clinic does
+     * configure cancel reasons in Zenoti.
+     */
     return liveWrite('cancelAppointment', () => zenoti.request(`/v1/invoices/${ctx.invoiceId}/cancel`, {
       method: 'PUT',
-      query: {
+      body: {
         comments: ctx.booking.cancellationReason || 'Cancelled from Zennara',
-        // Zenoti validates reason_id when the org has cancel reasons configured
-        // (this org has none today); set ZENOTI_CANCEL_REASON_ID once it does.
         ...(process.env.ZENOTI_CANCEL_REASON_ID ? { reason_id: process.env.ZENOTI_CANCEL_REASON_ID } : {}),
       },
     }));

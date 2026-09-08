@@ -101,6 +101,31 @@ test('normalized membership carries the Zenoti product id for price lookup', () 
   assert.equal(m.id, 'um-1');
 });
 
+/*
+ * Zenoti answers many failures with HTTP 200 and the error in the body. Two of
+ * them bit us on 2026-09-08: "Reopen session" told the desk it had reopened a
+ * visit Zenoti had kept closed, and the slot search blamed unpublished rosters
+ * for an error Zenoti had actually explained. res.ok is not success.
+ */
+test('an error inside a 200 response is treated as a failure', () => {
+  const src = require('fs').readFileSync(require.resolve('../services/zenotiService.js'), 'utf8');
+  const idx = src.indexOf('const embedded =');
+  assert.ok(idx > -1, 'the 200-with-error guard must exist');
+  const block = src.slice(idx, idx + 700);
+  assert.match(block, /json\.error \|\| json\.Error/, 'both casings Zenoti uses must be checked');
+  assert.match(block, /throw new ZenotiError/, 'a populated error must throw');
+  // …but an empty `error: null` is normal and must NOT throw.
+  assert.match(block, /message \|\| code/, 'only a populated error object counts');
+});
+
+test('cancel sends its payload in the body, not the query string', () => {
+  const src = require('fs').readFileSync(require.resolve('../services/zenotiWriteService.js'), 'utf8');
+  const i = src.indexOf("cancelAppointment");
+  const block = src.slice(i, i + 400);
+  assert.match(block, /body: \{/, 'as query params Zenoti answers "invalid reason_id"');
+  assert.doesNotMatch(block, /query: \{\s*\n\s*comments/, 'comments must not go back into the query string');
+});
+
 test('note and form normalizers return stable admin-panel shapes', () => {
   const note = zenoti.normalizeGuestNote({ note_id: 'n1', notes: 'Patch test', is_profile_alert: true, created_by: { name: 'Staff', date: '2026-01-01' } });
   const form = zenoti.normalizeGuestForm({ form_id: 'f1', name: 'Consent', form_filled_status: 2, last_filled_date: '2026-01-02' });

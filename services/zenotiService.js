@@ -149,6 +149,36 @@ async function request(path, opts = {}) {
         throw new ZenotiError(message, res.status, json);
       }
 
+      /*
+       * Zenoti reports plenty of failures as HTTP 200 with the error in the
+       * BODY, so `res.ok` is not enough to call a write successful.
+       *
+       * Seen live on 2026-09-08:
+       *   PUT /v1/appointments/{id}/progress  (reopen a closed visit)
+       *     → 200 { "error": { "code": "AA102", "message": "You cannot start…" } }
+       *   GET /v1/bookings/{id}/slots         (no bookable slot)
+       *     → 200 { "slots": null, "Error": { "StatusCode": 502, "Message": "…" } }
+       *
+       * The first one made the desk's "Reopen session" report success while
+       * Zenoti kept the visit closed — the panel said one thing, the clinic's
+       * diary another, until the 2-minute mirror silently reverted it. Any
+       * write can do this, so it is caught here for every call rather than at
+       * each call site.
+       *
+       * Only a POPULATED error object counts: several endpoints legitimately
+       * answer `{ reasons: [], error: null }`.
+       */
+      const embedded = json && typeof json === 'object' ? (json.error || json.Error) : null;
+      if (embedded && typeof embedded === 'object') {
+        const message = embedded.message || embedded.Message || null;
+        const code = embedded.code || embedded.Code || embedded.StatusCode || null;
+        if (message || code) {
+          const detail = [message, code ? `(Zenoti ${code})` : null].filter(Boolean).join(' ');
+          logger.error('Zenoti returned an error inside a 200 response', { path, code, message });
+          throw new ZenotiError(detail || 'Zenoti rejected the request', res.status, json);
+        }
+      }
+
       return json;
     } catch (err) {
       clearTimeout(timer);

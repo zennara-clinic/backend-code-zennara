@@ -269,7 +269,11 @@ async function upsertProviderBlock(block, context = null) {
   const status = String(block.status ?? '');
   const active = !(status === '-1' || status === '-2' || status === '21');
 
-  let doc = await ProviderBlock.findOne({ zenotiAppointmentId: block.id });
+  // Prefetched by the caller in one query — see the appointment loop for why
+  // a per-row findOne is the expensive part of a pass.
+  let doc = context?.blockByApptId instanceof Map
+    ? (context.blockByApptId.get(block.id) || null)
+    : await ProviderBlock.findOne({ zenotiAppointmentId: block.id });
   const isNew = !doc;
   if (!doc) doc = new ProviderBlock({ zenotiAppointmentId: block.id, source: 'zenoti' });
   doc.zenotiBlockoutId = block.blockoutId || doc.zenotiBlockoutId || null;
@@ -291,14 +295,28 @@ async function upsertProviderBlock(block, context = null) {
   doc.color = block.color || doc.color || null;
   doc.createdByName = block.createdByName || doc.createdByName || null;
   doc.active = active;
-  doc.zenotiSyncedAt = new Date();
-  doc.zenotiSource = {
+  const nextSource = {
     status: block.status, blockoutId: block.blockoutId, durationMinutes: block.durationMinutes,
     startTime: block.startTime || null, endTime: block.endTime || null,
     createdAt: block.createdAtUtc || block.createdAt || null, centerId: block.centerId || null,
   };
-  await doc.save();
-  return { outcome: isNew ? 'created' : 'updated', blockId: doc._id };
+  const prevSource = doc.zenotiSource
+    ? (typeof doc.zenotiSource.toObject === 'function' ? doc.zenotiSource.toObject() : doc.zenotiSource)
+    : null;
+  const sameSource = prevSource && Object.keys(nextSource).every((k) => {
+    const a = nextSource[k]; const b = prevSource[k];
+    if (a instanceof Date || b instanceof Date) return new Date(a || 0).getTime() === new Date(b || 0).getTime();
+    return (a ?? null) === (b ?? null);
+  });
+  if (!sameSource) doc.zenotiSource = nextSource;
+  // Stamp the sync clock only when there is a change, or every block is dirty
+  // on every pass and the save below costs a network round trip each.
+  if (isNew || doc.isModified()) {
+    doc.zenotiSyncedAt = new Date();
+    await doc.save();
+    return { outcome: isNew ? 'created' : 'updated', blockId: doc._id };
+  }
+  return { outcome: 'unchanged', blockId: doc._id };
 }
 
 /** Blocks that left Zenoti's diary for this window release their time. */
@@ -357,7 +375,17 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
   // App-created bookings may have been linked with an invoice id by the old
   // confirm parser. Match that record before inserting so rollout creates no
   // duplicates; every subsequent pass uses the real appointment id.
-  let booking = await Booking.findOne({ zenotiAppointmentId: appointment.id });
+  /*
+   * `context.bookingByApptId` is a Map the caller prefetched in ONE query.
+   *
+   * This lookup used to be a findOne per appointment: 157 sequential round
+   * trips to Atlas at ~107 ms each, ~17 of the ~30 seconds a pass took, while
+   * the three Zenoti API reads it exists to serve finished in 1.5 s. The index
+   * was never the problem — the network was.
+   */
+  let booking = context?.bookingByApptId instanceof Map
+    ? (context.bookingByApptId.get(appointment.id) || null)
+    : await Booking.findOne({ zenotiAppointmentId: appointment.id });
   if (!booking && appointment.invoiceId) {
     booking = await Booking.findOne({
       userId: owner._id,
@@ -516,7 +544,7 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
   booking.zenotiServiceId = appointment.serviceId || null;
   booking.externalServiceName = appointment.serviceName || null;
   booking.externalServiceCategory = appointment.serviceSubCategory || appointment.serviceCategory || null;
-  booking.zenotiSource = {
+  const nextSource = {
     status: appointment.status,
     statusLabel: zenotiStatusLabel(appointment.status),
     progress: appointment.progress,
@@ -539,6 +567,25 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
     createdAt: bookedAt || booking.zenotiSource?.createdAt || null,
     createdByName: appointment.createdByName || booking.zenotiSource?.createdByName || null,
   };
+  /*
+   * Assign zenotiSource only when it actually differs.
+   *
+   * Handing Mongoose a fresh object marks the path modified even when every
+   * field is identical, so this one line used to dirty all 157 mirrored
+   * appointments on every pass.
+   */
+  const prevSource = booking.zenotiSource
+    ? (typeof booking.zenotiSource.toObject === 'function' ? booking.zenotiSource.toObject() : booking.zenotiSource)
+    : null;
+  const sameSource = prevSource && Object.keys(nextSource).every((k) => {
+    const a = nextSource[k];
+    const b = prevSource[k];
+    if (a instanceof Date || b instanceof Date) {
+      return new Date(a || 0).getTime() === new Date(b || 0).getTime();
+    }
+    return (a ?? null) === (b ?? null);
+  });
+  if (!sameSource) booking.zenotiSource = nextSource;
   // Zenoti records when the guest was checked in at the clinic; without it the
   // day book cannot show a Zenoti visit as "arrived 10:42".
   const zCheckIn = clinicDate(appointment.checkinTime);
@@ -546,13 +593,37 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
   if (zCheckIn && !booking.zenotiSource.checkinTime) booking.zenotiSource.checkinTime = appointment.checkinTime;
   booking.zenotiSyncStatus = 'synced';
   booking.zenotiSyncError = null;
-  booking.zenotiSyncedAt = new Date();
-  booking.zenotiLastInboundAt = new Date();
   if (appointment.notes && !booking.notes) booking.notes = appointment.notes;
 
   // Mark the document so Booking's outbound post-save hook does not echo the
   // imported lifecycle state back to Zenoti.
   booking.$locals.skipZenotiWrite = true;
+
+  /*
+   * Nothing changed? Do not save.
+   *
+   * The sync clocks used to be stamped BEFORE this check, which marked every
+   * document modified and forced a full Mongoose save — validators, pre/post
+   * hooks, eventAt recompute — for all 157 appointments on every single pass,
+   * whether or not Zenoti had changed anything. That is what made one pass
+   * take ~33 seconds and put a 10-second cadence out of reach.
+   *
+   * The clocks are now stamped only when there is something to record. An
+   * unchanged row still gets its "we looked at it" timestamp, through the
+   * driver: one field, no validation, no hooks.
+   */
+  if (!isNew && !booking.isModified()) {
+    /*
+     * Defer the "we looked at it" stamp to one bulk write per pass.
+     * Writing it here per row is the same 157 network round trips the
+     * per-row findOne was — the cost is the trip, not the work.
+     */
+    if (Array.isArray(context?.touched)) context.touched.push(booking._id);
+    else await Booking.collection.updateOne({ _id: booking._id }, { $set: { zenotiLastInboundAt: new Date() } });
+    return { outcome: 'unchanged', bookingId: booking._id };
+  }
+  booking.zenotiSyncedAt = new Date();
+  booking.zenotiLastInboundAt = new Date();
   try {
     await booking.save({ validateModifiedOnly: !isNew });
   } catch (error) {
@@ -661,6 +732,21 @@ async function reconcileWindow(from, to, { trigger = 'schedule', mode = 'increme
       .lean();
     const userByGuest = new Map(linked.map((owner) => [String(owner.zenotiGuestId).toLowerCase(), owner]));
 
+    /*
+     * Every mirrored booking for this window in ONE query, not one per row.
+     * Full documents (not .lean()) because upsertAppointment mutates and saves
+     * them. This is the other half of the ~30s → ~2s fix: 157 sequential
+     * findOne round trips to Atlas at ~107 ms each were 17 of those seconds,
+     * while the three Zenoti reads they serve took 1.5 s in total.
+     */
+    const apptIds = rows.map((r) => r.id).filter(Boolean);
+    context.bookingByApptId = new Map(
+      (apptIds.length ? await Booking.find({ zenotiAppointmentId: { $in: apptIds } }) : [])
+        .map((doc) => [doc.zenotiAppointmentId, doc]),
+    );
+
+    context.touched = [];
+
     for (const appointment of rows) {
       try {
         const guestId = String(appointment.guest?.zenotiGuestId || '').toLowerCase();
@@ -687,9 +773,22 @@ async function reconcileWindow(from, to, { trigger = 'schedule', mode = 'increme
       if (tally.processed % 50 === 0) await run.updateOne(tally);
     }
 
+    // One bulk stamp for every row Zenoti had not changed.
+    if (context.touched.length) {
+      await Booking.collection.updateMany(
+        { _id: { $in: context.touched } },
+        { $set: { zenotiLastInboundAt: new Date() } },
+      );
+    }
+
     // Block-outs: held time on a provider's diary. Mirrored so the slot
     // engine and the desk calendar honour them; never a User or Booking.
     const blockTally = { created: 0, updated: 0, skipped: 0, failed: 0, retired: 0 };
+    const blockIds = blocks.map((b) => b.id).filter(Boolean);
+    context.blockByApptId = new Map(
+      (blockIds.length ? await ProviderBlock.find({ zenotiAppointmentId: { $in: blockIds } }) : [])
+        .map((d) => [d.zenotiAppointmentId, d]),
+    );
     for (const block of blocks) {
       try {
         const result = await upsertProviderBlock(block, context);
@@ -738,6 +837,28 @@ async function reconcileWindow(from, to, { trigger = 'schedule', mode = 'increme
  * The operational near window: yesterday through the next six days, every two
  * minutes. This is what keeps today's diary, check-ins and reception live.
  */
+/**
+ * TODAY only, for the desk's live view.
+ *
+ * Same three Zenoti calls as the wider pass (the window costs nothing extra —
+ * it is one request per clinic either way), but a much smaller row set, so it
+ * finishes in ~2s and can run on a 10-second cadence. The −1/+6 day pass still
+ * runs every two minutes for everything outside today.
+ *
+ * Shares `appointmentSyncRunning` with the other passes, so a slow run is
+ * skipped rather than stacked.
+ */
+async function syncTodayAppointments({ trigger = 'schedule' } = {}) {
+  if (!zenoti.isConfigured() || appointmentSyncRunning) return null;
+  appointmentSyncRunning = true;
+  try {
+    const today = clinicDay(Date.now());
+    return await reconcileWindow(today, today, { trigger, mode: 'incremental' });
+  } finally {
+    appointmentSyncRunning = false;
+  }
+}
+
 async function syncRecentAppointments({ trigger = 'schedule' } = {}) {
   if (!zenoti.isConfigured() || appointmentSyncRunning) return null;
   appointmentSyncRunning = true;
@@ -795,6 +916,7 @@ module.exports = {
   refreshAppointment,
   appointmentAttended,
   syncUserAppointments,
+  syncTodayAppointments,
   syncRecentAppointments,
   syncUpcomingAppointments,
   isAppointmentSyncRunning,
