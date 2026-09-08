@@ -540,7 +540,7 @@ exports.sendSupportMessageNotification = async (adminEmail, messageData) => {
   try {
     const htmlContent = getSupportMessageNotificationTemplate(messageData);
     
-    const response = await sendEmail(adminEmail, `🔔 New Support Message - ${messageData.subject}`, htmlContent);
+  const response = await sendEmail(adminEmail, `New Support Message - ${messageData.subject}`, htmlContent);
     console.log('✅ Support notification email sent to admin');
     return response;
   } catch (error) {
@@ -558,7 +558,7 @@ exports.sendOtpEmail = async (email, otp, fullName, serviceName, packageName) =>
   try {
     const htmlContent = getServiceCompletionOTPTemplate(fullName, otp, serviceName, packageName);
     
-    const response = await sendEmail(email, '🔐 Service Completion Verification - Zennara Clinic', htmlContent);
+  const response = await sendEmail(email, ' Service Completion Verification - Zennara Clinic', htmlContent);
     console.log('✅ Service completion OTP email sent successfully');
     return response;
   } catch (error) {
@@ -576,7 +576,7 @@ exports.sendPackageCancellationOtp = async (email, otp, fullName, packageName, a
   try {
     const htmlContent = getPackageCancellationOtpTemplate(fullName, otp, packageName, assignmentId);
     
-    const response = await sendEmail(email, '⚠️ Package Cancellation Verification - Zennara', htmlContent);
+  const response = await sendEmail(email, '⚠ Package Cancellation Verification - Zennara', htmlContent);
     console.log('✅ Package cancellation OTP email sent successfully');
     return response;
   } catch (error) {
@@ -608,7 +608,7 @@ exports.sendBirthdayWish = async (email, fullName) => {
   try {
     const htmlContent = getBirthdayWishTemplate(fullName);
     
-    const response = await sendEmail(email, '🎂 Happy Birthday from Zennara! 🎉', htmlContent);
+  const response = await sendEmail(email, ' Happy Birthday from Zennara! ', htmlContent);
     console.log(`✅ Birthday wish email sent successfully to ${fullName}`);
     return response;
   } catch (error) {

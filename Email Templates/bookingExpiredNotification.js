@@ -44,7 +44,7 @@ const bookingExpiredNotification = (name, bookingDetails) => {
                 <tr>
                   <td style="padding: 20px;">
                     <p style="margin: 0 0 15px 0; color: #c53030; font-size: 14px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">
-                      📋 Expired Booking Details
+                      Expired Booking Details
                     </p>
                     
                     <table width="100%" cellpadding="8" cellspacing="0">
@@ -106,7 +106,7 @@ const bookingExpiredNotification = (name, bookingDetails) => {
               <!-- Next Steps -->
               <div style="background-color: #f0fdf4; border-left: 4px solid #10b981; border-radius: 8px; padding: 20px; margin: 25px 0;">
                 <p style="margin: 0 0 10px 0; color: #065f46; font-size: 15px; font-weight: 600;">
-                  💚 Book Again
+                  Book Again
                 </p>
                 <p style="margin: 0 0 15px 0; color: #065f46; font-size: 14px; line-height: 1.6;">
                   We'd love to serve you! Please book a new appointment through our app or website, and our team will confirm it promptly.
@@ -118,7 +118,7 @@ const bookingExpiredNotification = (name, bookingDetails) => {
                 <tr>
                   <td align="center">
                     <a href="https://zennara.app/book" style="display: inline-block; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: #ffffff; text-decoration: none; padding: 16px 40px; border-radius: 12px; font-size: 16px; font-weight: 600; box-shadow: 0 4px 6px rgba(16, 185, 129, 0.3);">
-                      📅 Book New Appointment
+                      Book New Appointment
                     </a>
                   </td>
                 </tr>

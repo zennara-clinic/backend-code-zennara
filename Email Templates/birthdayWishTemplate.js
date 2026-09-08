@@ -16,7 +16,6 @@ const getBirthdayWishTemplate = (name) => {
               <!-- Header with Birthday Decoration -->
               <tr>
                 <td style="background: linear-gradient(135deg, #10b981 0%, #059669 100%); padding: 50px 40px; text-align: center;">
-                  <div style="font-size: 60px; margin-bottom: 15px;">🎂🎉🎈</div>
                   <h1 style="margin: 0; color: #ffffff; font-size: 32px; font-weight: 700; text-shadow: 0 2px 4px rgba(0,0,0,0.1);">
                     Happy Birthday!
                   </h1>
@@ -31,7 +30,7 @@ const getBirthdayWishTemplate = (name) => {
                   </h2>
                   
                   <p style="margin: 0 0 20px 0; color: #4b5563; font-size: 16px; line-height: 1.7;">
-                    🎊 On behalf of the entire Zennara family, we wish you a very <strong>Happy Birthday</strong>! 🎊
+                    On behalf of the entire Zennara family, we wish you a very <strong>Happy Birthday</strong>!
                   </p>
 
                   <p style="margin: 0 0 20px 0; color: #4b5563; font-size: 16px; line-height: 1.7;">
@@ -44,7 +43,6 @@ const getBirthdayWishTemplate = (name) => {
 
                   <!-- Special Birthday Offer Card -->
                   <div style="background: linear-gradient(135deg, #fef3c7 0%, #fde68a 100%); border-radius: 12px; padding: 30px; text-align: center; margin-bottom: 30px; border: 2px dashed #f59e0b;">
-                    <div style="font-size: 40px; margin-bottom: 15px;">🎁</div>
                     <h3 style="margin: 0 0 10px 0; color: #92400e; font-size: 22px; font-weight: 600;">
                       Special Birthday Treat!
                     </h3>
@@ -68,7 +66,7 @@ const getBirthdayWishTemplate = (name) => {
                   </p>
                   
                   <p style="margin: 0; color: #1f2937; font-size: 16px; font-weight: 600;">
-                    The Zennara Wellness Team 💚
+                    The Zennara Wellness Team
                   </p>
                 </td>
               </tr>
@@ -77,16 +75,10 @@ const getBirthdayWishTemplate = (name) => {
               <tr>
                 <td style="background-color: #f9fafb; padding: 30px 40px; text-align: center; border-top: 1px solid #e5e7eb;">
                   <p style="margin: 0 0 15px 0; color: #6b7280; font-size: 14px;">
-                    📍 Zennara Wellness Clinic<br>
+                    Zennara Wellness Clinic<br>
                     Your Partner in Health & Wellness
                   </p>
                   
-                  <div style="margin: 20px 0;">
-                    <a href="#" style="display: inline-block; margin: 0 8px; text-decoration: none; color: #10b981; font-size: 24px;">📱</a>
-                    <a href="#" style="display: inline-block; margin: 0 8px; text-decoration: none; color: #10b981; font-size: 24px;">📧</a>
-                    <a href="#" style="display: inline-block; margin: 0 8px; text-decoration: none; color: #10b981; font-size: 24px;">🌐</a>
-                  </div>
-
                   <p style="margin: 15px 0 0 0; color: #9ca3af; font-size: 12px;">
                     This is an automated birthday greeting from Zennara.<br>
                     You're receiving this because you're a valued member of our wellness community.
