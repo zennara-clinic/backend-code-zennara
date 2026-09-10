@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { adminLoginLimiter, adminOTPLimiter } = require('../middleware/rateLimiter');
+const { adminLoginLimiter, adminEmailLookupLimiter, adminOTPLimiter } = require('../middleware/rateLimiter');
 const {
   adminLogin,
   adminVerifyOTP,
@@ -15,7 +15,9 @@ const { protectAdmin } = require('../middleware/auth');
 router.post('/login', adminLoginLimiter, adminLogin);
 router.post('/verify-otp', adminOTPLimiter, adminVerifyOTP);
 router.post('/resend-otp', adminLoginLimiter, adminResendOTP);
-router.post('/check-email', adminLoginLimiter, checkAuthorizedEmail);
+// A lookup, not a sign-in attempt: the panel calls it before every login,
+// so charging it to the login budget halved that budget.
+router.post('/check-email', adminEmailLookupLimiter, checkAuthorizedEmail);
 // Email + password, for accounts an administrator has given a password.
 router.post('/login-password', adminLoginLimiter, require('../controllers/adminAuthController').adminLoginPassword);
 

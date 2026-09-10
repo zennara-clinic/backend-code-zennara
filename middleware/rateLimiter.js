@@ -1,26 +1,114 @@
 const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = require('express-rate-limit');
 
-// Strict rate limiter for admin login endpoints
+/* ---------------------------------------------------------------------------
+ * Is the staff login limiter paused right now?
+ *
+ * express-rate-limit's `skip` runs on every request and must be synchronous,
+ * so the pause is held in memory and refreshed rather than read from Mongo per
+ * request. `refreshLoginRateLimitPause()` is called at boot and whenever a
+ * super admin changes it, and a 60-second ceiling means a pause that expires
+ * (or is set by another process) is picked up without a restart.
+ * ------------------------------------------------------------------------- */
+let pausedUntil = null;
+let lastRefresh = 0;
+
+/** Called by the settings controller the moment the pause changes. */
+exports.setLoginRateLimitPause = (until) => {
+  pausedUntil = until ? new Date(until) : null;
+  lastRefresh = Date.now();
+};
+
+exports.refreshLoginRateLimitPause = async () => {
+  try {
+    const doc = await require('../models/SecuritySettings').load();
+    pausedUntil = doc?.loginRateLimit?.pausedUntil ? new Date(doc.loginRateLimit.pausedUntil) : null;
+  } catch {
+    // A database hiccup must never accidentally DISABLE the limiter.
+    pausedUntil = null;
+  }
+  lastRefresh = Date.now();
+};
+
+const loginLimiterPaused = () => {
+  if (Date.now() - lastRefresh > 60 * 1000) {
+    lastRefresh = Date.now();
+    exports.refreshLoginRateLimitPause().catch(() => {});
+  }
+  return Boolean(pausedUntil && pausedUntil.getTime() > Date.now());
+};
+exports.isLoginRateLimitPaused = loginLimiterPaused;
+
+/**
+ * One account's sign-in attempts, not one office's.
+ *
+ * Keying on IP alone meant a whole clinic behind one connection shared a single
+ * budget — one person fat-fingering their password locked out the front desk.
+ * The email is what an attacker has to guess, so it belongs in the key.
+ * `ipKeyGenerator` normalises IPv6 into a /64 block; using `req.ip` raw lets an
+ * attacker walk addresses within their own prefix.
+ */
+const perAccountKey = (req) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  return `${ipKeyGenerator(req.ip)}:${email || 'anonymous'}`;
+};
+
+/**
+ * Staff sign-in. Counts FAILURES only.
+ *
+ * It used to count every request, including successful ones, across five
+ * endpoints — and the panel spends two of them per attempt (`check-email` to
+ * decide whether to show a password box, then `login-password`). Three
+ * successful sign-ins therefore hit a five-request ceiling and locked the user
+ * out of their own panel. A login limiter exists to stop guessing; a success is
+ * not a guess.
+ */
 exports.adminLoginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // 5 attempts per windowMs
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  keyGenerator: perAccountKey,
+  skip: loginLimiterPaused,
+  skipSuccessfulRequests: true,
   message: {
     success: false,
-    message: 'Too many login attempts. Please try again after 15 minutes.',
+    message: 'Too many failed sign-in attempts. Please try again in 15 minutes.',
     code: 'RATE_LIMIT_EXCEEDED'
   },
   standardHeaders: true,
   legacyHeaders: false,
-  skipSuccessfulRequests: false // Count all requests
 });
 
-// OTP verification rate limiter
-exports.adminOTPLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000, // 10 minutes
-  max: 10, // 10 OTP attempts per windowMs
+/**
+ * "Does this address have a panel account?" — a lookup, not an attempt.
+ *
+ * The panel calls it before every sign-in, so charging it to the login budget
+ * halved that budget. It still needs a ceiling of its own: unthrottled, it
+ * enumerates which addresses are staff.
+ */
+exports.adminEmailLookupLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 40,
+  keyGenerator: perAccountKey,
+  skip: loginLimiterPaused,
   message: {
     success: false,
-    message: 'Too many OTP verification attempts. Please request a new OTP.',
+    message: 'Too many attempts. Please try again in a few minutes.',
+    code: 'RATE_LIMIT_EXCEEDED'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// OTP verification rate limiter — failures only, for the same reason.
+exports.adminOTPLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 10,
+  keyGenerator: perAccountKey,
+  skip: loginLimiterPaused,
+  skipSuccessfulRequests: true,
+  message: {
+    success: false,
+    message: 'Too many incorrect codes. Please request a new one.',
     code: 'RATE_LIMIT_EXCEEDED'
   },
   standardHeaders: true,

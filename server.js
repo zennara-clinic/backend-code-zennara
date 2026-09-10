@@ -197,6 +197,12 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 /* --------------------------- Connect services/jobs --------------------------- */
 connectDB();
+/*
+ * Prime the login-rate-limit pause from the database. `skip` on the limiter has
+ * to be synchronous, so the value is cached in memory; without this a restart
+ * would re-enable the limiter mid-pause and lock out whoever is testing.
+ */
+require('./middleware/rateLimiter').refreshLoginRateLimitPause().catch(() => {});
 require('./utils/seedRoles').seedRoles();
 startBookingScheduler();
 require('./utils/bookingScheduler').startRefillReminderJob();
@@ -236,6 +242,7 @@ app.use('/api/admin/users', require('./routes/user'));
 app.use('/api/admin/staff', require('./routes/admin/staffRoutes'));
 app.use('/api/admin/roles', require('./routes/admin/roleRoutes'));
 app.use('/api/admin/audit-logs', require('./routes/admin/auditLogRoutes'));
+app.use('/api/admin/security-settings', require('./routes/admin/securitySettingsRoutes'));
 app.use('/api/admin/products', require('./routes/adminProducts'));
 app.use('/api/admin/product-orders', require('./routes/adminOrders'));
 app.use('/api/admin/brands', require('./routes/brand'));
