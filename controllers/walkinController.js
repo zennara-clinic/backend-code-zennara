@@ -78,12 +78,20 @@ async function issueSession(user, req) {
   return token;
 }
 
-/** The guest's most recent submitted form, as form values, for pre-filling. */
+/**
+ * The guest's most recent submitted form, as form values, for pre-filling.
+ *
+ * Deliberately NOT `.lean()`. Half this record is encrypted at rest —
+ * medical history, allergies, current medication, the recent-activity answers —
+ * and mongoose-field-encryption decrypts in a `post('init')` hook, which
+ * mongoose skips entirely for lean queries. A lean read hands back ciphertext
+ * strings where objects are expected, so the pre-fill would come up silently
+ * missing every clinical answer instead of failing loudly.
+ */
 async function latestFormValues(userId) {
   const doc = await PreConsultForm.findOne({ userId, status: { $ne: 'Draft' } })
-    .sort({ createdAt: -1 })
-    .lean();
-  return toFormValues(doc);
+    .sort({ createdAt: -1 });
+  return doc ? toFormValues(doc.toObject()) : null;
 }
 
 // @desc    Branches a walk-in can check in at

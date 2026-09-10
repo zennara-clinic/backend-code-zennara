@@ -231,3 +231,39 @@ test('the walk-in OTP endpoints are rate limited', () => {
     assert.match(line, /walkInOtpLimiter/, `unthrottled OTP route: ${line.trim()}`);
   }
 });
+
+test('a lean read of a pre-consult loses every encrypted answer', () => {
+  /*
+   * Half this record is encrypted at rest — medical history, allergies,
+   * current medication, the recent-activity answers. mongoose-field-encryption
+   * decrypts in a post('init') hook, and mongoose skips post('init') entirely
+   * for .lean(). A lean read therefore hands back ciphertext STRINGS where the
+   * mapper expects objects, and the pre-fill comes up silently missing the
+   * clinical half of the form rather than failing.
+   *
+   * This is not hypothetical: latestFormValues was written with .lean().
+   */
+  process.env.ENCRYPTION_SECRET = process.env.ENCRYPTION_SECRET || 'test-secret-for-walkin-spec';
+  delete require.cache[require.resolve('../models/PreConsultForm')];
+  const Model = require('../models/PreConsultForm');
+
+  const doc = new Model({
+    userId: new (require('mongoose').Types.ObjectId)(),
+    ...toPreConsultDocument(filled, { user: guest }),
+  });
+
+  // Sanity: readable before encryption.
+  assert.equal(toFormValues(doc.toObject()).drugAllergiesDetail, 'Penicillin');
+
+  doc.encryptFieldsSync();
+  const asLeanWouldSee = toFormValues(doc.toObject());
+  assert.notEqual(asLeanWouldSee.drugAllergiesDetail, 'Penicillin',
+    'if this ever passes, the field stopped being encrypted — check the model');
+  assert.deepEqual(asLeanWouldSee.medical, [], 'medical history is unreadable from a lean read');
+  assert.equal(asLeanWouldSee.newProducts, '', 'recent activity is unreadable from a lean read');
+
+  // And the fix: the controller must not lean-read the form it pre-fills from.
+  const ctrl = fs.readFileSync(path.join(__dirname, '..', 'controllers', 'walkinController.js'), 'utf8');
+  const fn = ctrl.slice(ctrl.indexOf('async function latestFormValues'), ctrl.indexOf('// @desc    Branches'));
+  assert.ok(!/\.lean\(\)/.test(fn), 'latestFormValues must not use .lean() — it reads encrypted fields');
+});
