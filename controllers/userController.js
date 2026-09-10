@@ -755,7 +755,12 @@ exports.exportUsers = async (req, res) => {
       'Email': publicEmail(user.email) || '',
       'Phone': user.phone,
       'Centre': user.location || '',
-      'Source': user.source === 'zenoti' ? 'Clinic (Zenoti)' : 'App',
+      // 'reception' covers both a desk-created patient and a walk-in who
+      // checked themselves in on the front-desk tablet. Reporting either of
+      // them as an App sign-up overstates app adoption in every export.
+      'Source': user.source === 'zenoti' ? 'Clinic (Zenoti)'
+        : user.source === 'reception' ? 'Walk-in / reception'
+          : 'App',
       'Member Type': user.memberType,
       'Zen Since': fmtDate(user.zenMembershipStartDate),
       'Zen Expires': fmtDate(user.zenMembershipExpiryDate),

@@ -80,3 +80,24 @@ exports.paymentVerificationLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false
 });
+
+/**
+ * The walk-in tablet's OTP endpoint.
+ *
+ * Its per-phone cooldown stops someone re-sending to one number, but nothing
+ * stopped a caller cycling through numbers — and every one of those is a
+ * WhatsApp message the clinic pays for. A front desk checks in a few dozen
+ * guests an hour at most, so a generous IP ceiling costs the desk nothing and
+ * caps the damage.
+ */
+exports.walkInOtpLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 40,
+  message: {
+    success: false,
+    message: 'Too many check-ins from this device. Please wait a few minutes.',
+    code: 'RATE_LIMIT_EXCEEDED',
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});

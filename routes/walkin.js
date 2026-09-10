@@ -2,11 +2,12 @@ const express = require('express');
 const router = express.Router();
 const walkin = require('../controllers/walkinController');
 const { protect, optionalAuth } = require('../middleware/auth');
+const { walkInOtpLimiter } = require('../middleware/rateLimiter');
 
 // Public — the desk tablet before anyone is signed in.
 router.get('/branches', walkin.getBranches);
-router.post('/send-otp', walkin.sendOtp);
-router.post('/verify-otp', walkin.verifyOtp);
+router.post('/send-otp', walkInOtpLimiter, walkin.sendOtp);
+router.post('/verify-otp', walkInOtpLimiter, walkin.verifyOtp);
 
 /*
  * Profile is the one endpoint that serves both a brand-new guest (authorised
@@ -20,7 +21,6 @@ router.post('/profile', optionalAuth, walkin.saveProfile);
 // Signed-in walk-in session.
 router.get('/me', protect, walkin.me);
 router.post('/preconsult', protect, walkin.submitPreConsult);
-router.get('/preconsult/:id', protect, walkin.getPreConsult);
 router.post('/finish', protect, walkin.finish);
 
 module.exports = router;

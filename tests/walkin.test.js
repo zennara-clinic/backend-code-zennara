@@ -194,3 +194,40 @@ test('the walk-in never writes a patient before the number is proved', () => {
   const profile = src.slice(src.indexOf('exports.saveProfile'), src.indexOf('exports.me'));
   assert.ok(profile.indexOf('findOneAndUpdate') < profile.indexOf('User.create'), 'consume the OTP proof before creating the patient');
 });
+
+test('a form with no appointment is still findable — the walk-in case', () => {
+  /*
+   * A guest who checks in at the front desk has no booking, so their form
+   * carries no bookingId. Every path the clinic uses to reach a form must
+   * therefore fall back to the guest, or their answers sit unread:
+   *
+   *   · the reception chip on an appointment (getFormStatusForBooking)
+   *   · the app's own gate (intakeStatus — already userId-only)
+   *   · the admin list the panels read (getAllForms?userId=)
+   *
+   * The dermatologist panel's consultation card does the same fallback in its
+   * own repo; this pins the server half.
+   */
+  const ctrl = fs.readFileSync(path.join(__dirname, '..', 'controllers', 'preConsultFormController.js'), 'utf8');
+
+  const byBooking = ctrl.slice(ctrl.indexOf('exports.getFormStatusForBooking'), ctrl.indexOf('POST /api/pre-consult-forms/photos'));
+  assert.match(byBooking, /PreConsultForm\.findOne\(\{\s*userId: booking\.userId/,
+    'the per-appointment status must fall back to the guest\'s own latest form');
+  assert.match(byBooking, /linked/, 'and must say whether the form it found belongs to this appointment');
+
+  const all = ctrl.slice(ctrl.indexOf('exports.getAllForms'), ctrl.indexOf('exports.getAdminFormById'));
+  assert.match(all, /if \(userId\) query\.userId = userId;/, 'the panel lists a guest\'s forms by userId');
+
+  const intake = fs.readFileSync(path.join(__dirname, '..', 'utils', 'preConsultIntake.js'), 'utf8');
+  assert.ok(!/bookingId/.test(intake), 'the booking gate must never require a form to be tied to an appointment');
+});
+
+test('the walk-in OTP endpoints are rate limited', () => {
+  // A 30-second per-phone cooldown does not stop someone cycling through
+  // numbers, and every one of those is a WhatsApp message the clinic pays for.
+  const src = fs.readFileSync(path.join(__dirname, '..', 'routes', 'walkin.js'), 'utf8');
+  for (const line of src.split('\n')) {
+    if (!/\/send-otp|\/verify-otp/.test(line)) continue;
+    assert.match(line, /walkInOtpLimiter/, `unthrottled OTP route: ${line.trim()}`);
+  }
+});

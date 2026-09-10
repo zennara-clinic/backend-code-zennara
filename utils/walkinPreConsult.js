@@ -147,7 +147,13 @@ function toPreConsultDocument(values, { user, ipAddress, bookingId } = {}) {
  */
 function toFormValues(doc) {
   if (!doc) return null;
-  const iso = (d) => (d ? new Date(d).toISOString().slice(0, 10) : '');
+  /*
+   * The clinic's day, not UTC's. A form saved at 11pm IST carries a UTC
+   * instant on the previous date, so reading the UTC day back would pre-fill
+   * the next visit with a date of visit one day before the desk recorded it.
+   */
+  const { clinicDateKey } = require('./bookingTime');
+  const iso = (d) => (d ? clinicDateKey(new Date(d)) : '');
   const concerns = [];
   for (const [label, key] of Object.entries(SKIN_CONCERNS)) if (doc.skinConcerns?.[key]) concerns.push(label);
   for (const [label, key] of Object.entries(HAIR_CONCERNS)) if (doc.hairConcerns?.[key]) concerns.push(label);

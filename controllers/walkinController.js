@@ -489,33 +489,6 @@ exports.submitPreConsult = async (req, res) => {
   }
 };
 
-// @desc    Read back one submitted walk-in form (the "all done" screen)
-// @route   GET /api/walkin/preconsult/:id
-// @access  Bearer session
-exports.getPreConsult = async (req, res) => {
-  try {
-    const form = await PreConsultForm.findOne({ _id: req.params.id, userId: req.user._id }).lean();
-    if (!form) return res.status(404).json({ success: false, message: 'Form not found.' });
-    return res.json({
-      success: true,
-      data: {
-        id: form._id,
-        clientId: req.user.patientId,
-        name: form.name,
-        phone: req.user.phone,
-        email: publicEmail(form.email),
-        dateOfVisit: form.dateOfVisit,
-        status: form.status,
-        clientSignature: form.clientSignature || null,
-        values: toFormValues(form),
-      },
-    });
-  } catch (error) {
-    logger.error('Walk-in get pre-consult failed', { error: error.message });
-    return res.status(500).json({ success: false, message: 'Could not load the form.' });
-  }
-};
-
 // @desc    End the walk-in session on the shared tablet
 // @route   POST /api/walkin/finish
 // @access  Bearer session
