@@ -110,6 +110,9 @@ const AdminAuditLogSchema = new mongoose.Schema({
 
       // Clinical
       'PRESCRIPTION_SAVED',
+      // A dermatologist saving a prescription they will reuse on other guests.
+      // Worth a trail of its own: it shapes every prescription written from it.
+      'RX_FAVOURITE_SAVED',
       'CONSENT_SIGNED',
       'FORM_STATUS_CHANGED',
       'FORM_TEMPLATE_UPDATED',
