@@ -16,6 +16,8 @@ const { protectAdmin, requireAccess, requirePermission, auditLog, identifyAdmin 
 router.get('/', identifyAdmin, getAllDoctors);
 router.get('/tiers/list', getTiers);
 router.get('/me', protectAdmin, require('../controllers/doctorController').getMyDoctor);
+// Declared before /:id so "me" is never read as an id.
+router.get('/me/patients', protectAdmin, require('../controllers/doctorController').getMyPatients);
 
 // Admin — tier pricing. Declared before /:id so "tiers" is never read as an id.
 router.put(

@@ -527,6 +527,38 @@ exports.getMyDoctor = async (req, res) => {
 
 
 /**
+ * GET /api/doctors/me/patients — every guest the signed-in dermatologist has
+ * been booked with, grouped, searched, sorted and paged (utils/doctorPatients).
+ *
+ * A dermatologist always gets their own list. Anyone else must name a
+ * dermatologist (?doctorId=) and hold dermatologists.view.
+ */
+exports.getMyPatients = async (req, res) => {
+  try {
+    const { listDoctorPatients } = require('../utils/doctorPatients');
+    let doctor = null;
+    if (req.admin?.role !== 'doctor' && req.query.doctorId) {
+      const canView = req.admin?.role === 'super_admin' || req.admin?.isSuperAdmin
+        || req.admin?.permissions?.has?.('dermatologists.view');
+      if (!canView) return res.status(403).json({ success: false, message: 'Not allowed to view this dermatologist\'s patients' });
+      doctor = await Doctor.findOne({ doctorId: String(req.query.doctorId).toLowerCase().trim() }).lean();
+    } else {
+      doctor = await resolveDoctorForAdmin(req);
+    }
+    if (!doctor) {
+      return res.status(200).json({
+        success: true, linked: false, data: [], total: 0, page: 1, pages: 1, counts: { all: 0, booked: 0, unbooked: 0 },
+      });
+    }
+    const result = await listDoctorPatients(doctor, req.query);
+    return res.status(200).json({ success: true, linked: true, ...result });
+  } catch (error) {
+    console.error('Get my patients error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to load patients' });
+  }
+};
+
+/**
  * Keep a panel login (Admin, role 'doctor') in step with the profile: same
  * email and phone, linked by doctorId. Created on first save.
  */

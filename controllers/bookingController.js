@@ -10,11 +10,23 @@ const isConsultationEntry = (c) => /^consultations?$/i.test(String(c?.category |
   || /consultation/i.test(String(c?.name || ''));
 const zenotiWrite = require('../services/zenotiWriteService');
 
-/** A dermatologist login only ever sees its own diary, whatever specialistId it asks for. */
+/**
+ * A dermatologist login only ever sees its own diary, whatever specialistId it
+ * asks for. `ownDiaryParams` drops the specialistId they sent before the
+ * filters are built; `scopeToOwnDiary` then adds their real match — profile id
+ * or Zenoti employee id (utils/doctorPatients.doctorBookingMatch), so a visit
+ * synced from Zenoti before the profile was linked is still theirs.
+ */
+function ownDiaryParams(req) {
+  if (req.admin?.role !== 'doctor') return req.query;
+  const { specialistId, ...rest } = req.query || {}; // eslint-disable-line no-unused-vars
+  return rest;
+}
 async function scopeToOwnDiary(req, query) {
   if (req.admin?.role !== 'doctor') return;
   const mine = await require('../utils/doctorIdentity').resolveDoctorForAdmin(req).catch(() => null);
-  query.specialistId = mine ? mine.doctorId : '__none__';
+  const { doctorBookingMatch } = require('../utils/doctorPatients');
+  query.$and = [...(query.$and || []), mine ? doctorBookingMatch(mine) : { _id: { $exists: false } }];
 }
 const { publicEmail, isPlaceholderEmail } = require('../config/zenoti');
 const { buildBookingQuery } = require('../utils/listFilters');
@@ -686,7 +698,7 @@ exports.getAllBookingsAdmin = async (req, res) => {
     const { page, limit } = req.query;
 
     // Filters + sort are shared with the export endpoint (utils/listFilters).
-    const { query, sort, due } = await buildBookingQuery(req.query);
+    const { query, sort, due } = await buildBookingQuery(ownDiaryParams(req));
     await scopeToOwnDiary(req, query);
 
     // Pagination is opt-in (`limit`) so existing callers keep the full list.
@@ -762,7 +774,7 @@ exports.getAllBookingsAdmin = async (req, res) => {
 // @access  Private (Admin)
 exports.exportBookingsAdmin = async (req, res) => {
   try {
-    const { query, sort } = await buildBookingQuery(req.query);
+    const { query, sort } = await buildBookingQuery(ownDiaryParams(req));
     await scopeToOwnDiary(req, query);
     const limit = Math.min(20000, Math.max(1, parseInt(req.query.limit || '20000', 10)));
     const bookings = await Booking.find(query)
