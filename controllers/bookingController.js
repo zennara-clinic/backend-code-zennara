@@ -18,12 +18,21 @@ const zenotiWrite = require('../services/zenotiWriteService');
  * synced from Zenoti before the profile was linked is still theirs.
  */
 function ownDiaryParams(req) {
-  if (req.admin?.role !== 'doctor') return req.query;
+  if (req.admin?.role !== 'doctor' || isGuestHistory(req)) return req.query;
   const { specialistId, ...rest } = req.query || {}; // eslint-disable-line no-unused-vars
   return rest;
 }
+/**
+ * One guest's visit history is clinical context, not someone else's diary: a
+ * dermatologist looking up a guest (?userId=) sees every visit that guest has
+ * had — treatments by therapists and other dermatologists included. On prod
+ * (2026-09-10) the diary scope hid those for 173 of 343 sampled guests.
+ */
+function isGuestHistory(req) {
+  return /^[a-f0-9]{24}$/i.test(String(req.query?.userId || ''));
+}
 async function scopeToOwnDiary(req, query) {
-  if (req.admin?.role !== 'doctor') return;
+  if (req.admin?.role !== 'doctor' || isGuestHistory(req)) return;
   const mine = await require('../utils/doctorIdentity').resolveDoctorForAdmin(req).catch(() => null);
   const { doctorBookingMatch } = require('../utils/doctorPatients');
   query.$and = [...(query.$and || []), mine ? doctorBookingMatch(mine) : { _id: { $exists: false } }];

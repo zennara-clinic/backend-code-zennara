@@ -464,6 +464,20 @@ exports.getFormStatusForBooking = async (req, res) => {
     }
 
     if (!form) {
+      /*
+       * A guest the clinic has already seen holds their intake on paper — the
+       * same rule the booking gate uses (utils/preConsultIntake). Without this
+       * the dermatologist panel flagged long-standing guests "No pre-consult
+       * form", as if they were new.
+       */
+      const { intakeStatus } = require('../utils/preConsultIntake');
+      const intake = booking.userId ? await intakeStatus(booking.userId).catch(() => null) : null;
+      if (intake?.waived) {
+        return res.json({
+          success: true,
+          data: { state: 'waived', label: 'On file at the clinic', formId: null, linked: false, reason: intake.reason },
+        });
+      }
       return res.json({
         success: true,
         data: { state: 'not_started', label: 'Not started', formId: null, linked: false },
