@@ -1380,7 +1380,10 @@ exports.checkOutBookingAdmin = lifecycleAlias('complete');
  */
 exports.getBookingLifecycleAdmin = async (req, res) => {
   try {
-    const booking = await Booking.findById(req.params.id).select('status source confirmedDate confirmedTime preferredDate preferredTimeSlots slotTime statusLog checkInTime checkOutTime');
+    // availableActions() hides local-only undos (undo_no_show, undo_cancel) for a
+    // visit Zenoti holds, which it can only tell from these two ids — without
+    // them the menu offered "Undo no show" and the POST answered 409.
+    const booking = await Booking.findById(req.params.id).select('status source confirmedDate confirmedTime preferredDate preferredTimeSlots slotTime statusLog checkInTime checkOutTime zenotiAppointmentId zenotiInvoiceId');
     if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
     return res.json({ success: true, data: { ...lifecycle.lifecycleState(booking), statusLog: booking.statusLog } });
   } catch (error) {
