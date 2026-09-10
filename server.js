@@ -233,6 +233,8 @@ app.use((req, res, next) => {
 
 /* ------------------------------- Route guards ------------------------------- */
 app.use('/api/bookings', checkBookingStatus);
+// Dermatologist logins never receive a guest's phone or email.
+app.use('/api', require('./middleware/doctorContactRedaction'));
 
 /* --------------------------------- Routes ---------------------------------- */
 app.use('/api/auth', require('./routes/auth'));

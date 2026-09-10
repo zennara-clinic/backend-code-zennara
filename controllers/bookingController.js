@@ -1660,9 +1660,6 @@ exports.createBookingAdmin = async (req, res) => {
   try {
     const {
       consultationId,
-      fullName,
-      mobileNumber,
-      email,
       preferredLocation,
       preferredDate,
       preferredTimeSlots,
@@ -1682,6 +1679,19 @@ exports.createBookingAdmin = async (req, res) => {
       packageAssignmentId, // book from the guest's package balance
       packageSessionId,
     } = req.body;
+    let { fullName, mobileNumber, email } = req.body;
+
+    // A dermatologist books a follow-up for a guest already on file but is never
+    // shown their phone or email (middleware/doctorContactRedaction) — so the
+    // contact comes from the record, not the form.
+    if (userId && (!fullName || !mobileNumber)) {
+      const onFile = await User.findById(userId).select('fullName phone email').lean().catch(() => null);
+      if (onFile) {
+        fullName = fullName || onFile.fullName;
+        mobileNumber = mobileNumber || onFile.phone;
+        email = email || onFile.email;
+      }
+    }
 
     const lines = Array.isArray(services) && services.length
       ? services

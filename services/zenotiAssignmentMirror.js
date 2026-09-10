@@ -181,7 +181,13 @@ async function mirrorGuestPackages(user, packages) {
       a.preferredLocation = branch?.name || zp.centerName || a.preferredLocation || '';
       a.branchId = branch?._id || a.branchId || null;
       a.sessions = sessionsFrom(zp, a.sessions || [], a.packageDetails.services || []);
-      const remaining = a.sessions.filter((s) => s.status === 'Scheduled').length;
+      // Zenoti's per-service balances are the truth for a clinic purchase. The
+      // counter was never set here, so every mirrored package read "0 of 0 used"
+      // (prod 2026-09-10: a 25-session package with 16 used showed 0/0).
+      a.usageTracking = usageFromZenoti(zp);
+      const remaining = a.usageTracking.totalSessions
+        ? a.usageTracking.remainingSessions
+        : a.sessions.filter((s) => s.status === 'Scheduled').length;
       const expired = a.validUntil && new Date(a.validUntil) < new Date();
       a.status = a.status === 'Cancelled' ? 'Cancelled' : remaining === 0 && a.sessions.length ? 'Completed' : expired ? 'Expired' : 'Active';
       a.zenotiInvoiceId = zp.invoice?.id || a.zenotiInvoiceId || null;
@@ -264,4 +270,25 @@ async function mirrorGuestOrders(user, orders) {
   return stats;
 }
 
-module.exports = { mirrorGuestPackages, mirrorGuestOrders, getPools };
+/**
+ * The session counter for one Zenoti purchase, from Zenoti's per-service lines.
+ * Used = what Zenoti says was redeemed; remaining = its balance. A purchase
+ * Zenoti lists no services for gets 0/0/0 — "not published", not "used up".
+ */
+function usageFromZenoti(zp) {
+  let totalSessions = 0;
+  let usedSessions = 0;
+  let remainingSessions = 0;
+  for (const s of zp?.services || []) {
+    const total = Math.max(0, Number(s?.total) || 0);
+    if (!total) continue;
+    const left = s?.balance != null ? Math.min(total, Math.max(0, Number(s.balance) || 0)) : Math.max(0, total - (Number(s?.used) || 0));
+    const used = s?.used != null ? Math.min(total, Math.max(0, Number(s.used) || 0)) : total - left;
+    totalSessions += total;
+    usedSessions += used;
+    remainingSessions += left;
+  }
+  return { totalSessions, usedSessions, remainingSessions };
+}
+
+module.exports = { mirrorGuestPackages, mirrorGuestOrders, getPools, usageFromZenoti };
