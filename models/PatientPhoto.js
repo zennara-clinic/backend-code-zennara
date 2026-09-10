@@ -66,6 +66,32 @@ const patientPhotoSchema = new mongoose.Schema(
     bodyArea: { type: String, default: '', trim: true },
     note: { type: String, default: '', trim: true, maxlength: 1000 },
 
+    /**
+     * Marks drawn on the photo — circles, boxes, arrows, freehand — each with
+     * an optional note. Vector shapes over the untouched original; geometry is
+     * in fractions of the image (utils/photoAnnotations validates them).
+     */
+    annotations: {
+      type: [new mongoose.Schema({
+        kind: { type: String, enum: ['ellipse', 'rect', 'arrow', 'pen'], required: true },
+        x: Number,
+        y: Number,
+        w: Number,
+        h: Number,
+        points: { type: [[Number]], default: undefined },
+        color: { type: String, default: '#D92D20' },
+        width: { type: Number, default: 3 },
+        note: { type: String, default: '', trim: true, maxlength: 500 },
+        createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', default: null },
+        createdByName: { type: String, default: '' },
+        createdAt: { type: Date, default: Date.now },
+      })],
+      default: [],
+    },
+    annotatedAt: { type: Date, default: null },
+    annotatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', default: null },
+    annotatedByName: { type: String, default: '', trim: true },
+
     /** S3 URL written by uploadToS3. */
     url: { type: String, required: true, trim: true },
     /** Kept so the object can be removed from S3 on a hard delete. */

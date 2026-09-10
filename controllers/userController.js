@@ -15,6 +15,8 @@ exports.getAllUsers = async (req, res) => {
     // All filtering/sorting lives in utils/listFilters so the export endpoint
     // produces exactly what the list shows.
     const { filter, sort } = await buildUserFilter(req.query);
+    // A dermatologist searches their own guests only (routes/user.js attaches the ids).
+    if (req.doctorGuestIds) filter.$and = [...(filter.$and || []), { _id: { $in: req.doctorGuestIds } }];
 
     // Calculate pagination
     const skip = (parseInt(page) - 1) * parseInt(limit);

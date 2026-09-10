@@ -37,14 +37,18 @@ router.post('/:assignmentId/service-consent', protect, packageAssignmentControll
 router.get('/:assignmentId/service-consent/:serviceId', protect, packageAssignmentController.getServiceConsentStatus);
 
 // ADMIN ROUTES
+// A dermatologist reads the packages of their own guests only.
+const scope = require('../utils/doctorGuestScope');
+const OWN_ASSIGNMENT = scope.ownRecord(require('../models/PackageAssignment'));
+
 // Get all assignments with filters
-router.get('/', protectAdmin, packageAssignmentController.getAllAssignments);
+router.get('/', protectAdmin, scope.scopedList({ bookingKey: null }), packageAssignmentController.getAllAssignments);
 
 // Get assignment statistics
-router.get('/stats', protectAdmin, packageAssignmentController.getAssignmentStats);
+router.get('/stats', protectAdmin, scope.notForDoctors, packageAssignmentController.getAssignmentStats);
 
 // Get single assignment
-router.get('/:id', protectAdmin, packageAssignmentController.getAssignmentById);
+router.get('/:id', protectAdmin, OWN_ASSIGNMENT, packageAssignmentController.getAssignmentById);
 
 // Create new assignment
 router.post('/', protectAdmin, MANAGE, packageAssignmentController.createAssignment);
@@ -79,7 +83,7 @@ router.delete('/:id', protectAdmin, MANAGE, packageAssignmentController.deleteAs
 
 // Zenoti package actions (2026-09-06): freeze / unfreeze / transfer / refund / ledger.
 const REFUND = requirePermission('packages.refund');
-router.get('/:id/ledger', protectAdmin, packageAssignmentController.assignmentLedger);
+router.get('/:id/ledger', protectAdmin, OWN_ASSIGNMENT, packageAssignmentController.assignmentLedger);
 router.post('/:id/freeze', protectAdmin, MANAGE, packageAssignmentController.freezeAssignment);
 router.post('/:id/unfreeze', protectAdmin, MANAGE, packageAssignmentController.unfreezeAssignment);
 router.post('/:id/transfer', protectAdmin, REFUND, packageAssignmentController.transferAssignment);

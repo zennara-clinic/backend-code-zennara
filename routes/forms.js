@@ -13,6 +13,8 @@ const { protectAdmin, requirePermission } = require('../middleware/auth');
 router.use(protectAdmin);
 // Patient-submitted forms are part of the patient record.
 router.use(requirePermission('patients.view'));
+// Clinic-wide form inbox; the dermatologist panel reads forms per guest instead.
+router.use(require('../utils/doctorGuestScope').notForDoctors);
 
 // Get form statistics
 router.get('/stats', getFormStats);

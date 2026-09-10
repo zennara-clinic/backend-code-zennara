@@ -199,8 +199,15 @@ exports.recent = async (req, res) => {
      * useful suggestion, and a clinic-wide list would just be a top-20 of
      * whatever the busiest doctor writes.
      */
+    // A note carries the dermatologist's profile slug (doctorId), never the login's id.
+    const mine = await require('../utils/doctorIdentity').resolveDoctorForAdmin(req).catch(() => null);
+    const who = [
+      ...(mine?.doctorId ? [{ doctorId: String(mine.doctorId).toLowerCase() }] : []),
+      ...(mine?.name ? [{ doctorName: mine.name }] : []),
+      ...(req.admin?.name ? [{ doctorName: req.admin.name }] : []),
+    ];
     const notes = await ConsultationNote.find({
-      $or: [{ doctorId: req.admin._id }, { doctorName: req.admin.name }],
+      $or: who.length ? who : [{ _id: null }],
       'prescription.0': { $exists: true },
     })
       .select('prescription createdAt')

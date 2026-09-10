@@ -17,9 +17,14 @@ const {
  */
 router.use(protectAdmin);
 
-router.get('/', requirePermission('patientPhotos.view', 'patientPhotos.manage'), listPhotos);
-router.post('/', requirePermission('patientPhotos.manage'), upload.array('photos', 10), uploadPhotos);
-router.patch('/:id', requirePermission('patientPhotos.manage'), updatePhoto);
-router.delete('/:id', requirePermission('patientPhotos.manage'), deletePhoto);
+// A dermatologist sees and adds photographs of their own guests only.
+const scope = require('../utils/doctorGuestScope');
+const OWN_PHOTO = scope.ownRecord(require('../models/PatientPhoto'));
+
+router.get('/', requirePermission('patientPhotos.view', 'patientPhotos.manage'), scope.scopedList(), listPhotos);
+// After multer: the guest id arrives in the multipart body.
+router.post('/', requirePermission('patientPhotos.manage'), upload.array('photos', 10), scope.ownGuest((req) => req.body?.userId), uploadPhotos);
+router.patch('/:id', requirePermission('patientPhotos.manage'), OWN_PHOTO, updatePhoto);
+router.delete('/:id', requirePermission('patientPhotos.manage'), OWN_PHOTO, deletePhoto);
 
 module.exports = router;

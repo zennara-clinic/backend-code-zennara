@@ -36,24 +36,31 @@ router.get('/eligibility', protect, require('../controllers/prescriptionControll
  * hold it through their role baseline (config/permissions.js).
  */
 const VIEW = requirePermission('bookings.view', 'today.view', 'patients.view');
-router.get('/admin/all', protectAdmin, VIEW, getAllBookingsAdmin);
-router.get('/admin/export', protectAdmin, VIEW, bookingController.exportBookingsAdmin);
+/*
+ * A dermatologist's list is already their own diary (bookingController
+ * scopeToOwnDiary); naming a guest (?userId=) or opening an appointment by id
+ * is allowed only for a guest in that diary (utils/doctorGuestScope).
+ */
+const scope = require('../utils/doctorGuestScope');
+const OWN = scope.ownBooking((req) => req.params.id);
+router.get('/admin/all', protectAdmin, VIEW, scope.ownGuestIfNamed('userId'), getAllBookingsAdmin);
+router.get('/admin/export', protectAdmin, VIEW, scope.ownGuestIfNamed('userId'), bookingController.exportBookingsAdmin);
 // Reception creates walk-in and phone bookings here.
 router.post('/admin', protectAdmin, auditLog('BOOKING_CREATED', 'BOOKING'), createBookingAdmin);
-router.get('/admin/:id', protectAdmin, VIEW, getBookingByIdAdmin);
-router.put('/admin/:id/confirm', protectAdmin, auditLog('BOOKING_CONFIRMED', 'BOOKING'), confirmBooking);
+router.get('/admin/:id', protectAdmin, VIEW, OWN, getBookingByIdAdmin);
+router.put('/admin/:id/confirm', protectAdmin, OWN, auditLog('BOOKING_CONFIRMED', 'BOOKING'), confirmBooking);
 /*
  * The desk's appointment lifecycle, in Zenoti's own shape: check in, undo
  * check-in, start, undo start, complete, reopen, no show, cancel and undos.
  * One endpoint takes the action name; the two legacy paths below stay so an
  * older panel build keeps working.
  */
-router.get('/admin/:id/lifecycle', protectAdmin, VIEW, bookingController.getBookingLifecycleAdmin);
-router.post('/admin/:id/lifecycle', protectAdmin, requirePermission('bookings.manage'), auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.bookingLifecycleAdmin);
-router.put('/admin/:id/checkin', protectAdmin, auditLog('BOOKING_CHECKED_IN', 'BOOKING'), checkInBookingAdmin);
-router.put('/admin/:id/checkout', protectAdmin, auditLog('BOOKING_CHECKED_OUT', 'BOOKING'), checkOutBookingAdmin);
-router.put('/admin/:id/dermatologist', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.setDermatologistAdmin);
-router.put('/admin/:id/therapist', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.setTherapistAdmin);
+router.get('/admin/:id/lifecycle', protectAdmin, VIEW, OWN, bookingController.getBookingLifecycleAdmin);
+router.post('/admin/:id/lifecycle', protectAdmin, requirePermission('bookings.manage'), OWN, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.bookingLifecycleAdmin);
+router.put('/admin/:id/checkin', protectAdmin, OWN, auditLog('BOOKING_CHECKED_IN', 'BOOKING'), checkInBookingAdmin);
+router.put('/admin/:id/checkout', protectAdmin, OWN, auditLog('BOOKING_CHECKED_OUT', 'BOOKING'), checkOutBookingAdmin);
+router.put('/admin/:id/dermatologist', protectAdmin, OWN, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.setDermatologistAdmin);
+router.put('/admin/:id/therapist', protectAdmin, OWN, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.setTherapistAdmin);
 // Visit codes were retired on 2026-09-07 — Zenoti has no such concept and the
 // desk now moves the appointment directly. Answer 410 rather than 404 so an
 // un-updated panel tab tells its user why the button vanished.
@@ -66,23 +73,23 @@ router.post('/admin/:id/visit-code', protectAdmin, codesRetired);
 router.get('/admin/:id/visit-code', protectAdmin, codesRetired);
 router.put('/admin/:id/verify-checkin', protectAdmin, codesRetired);
 router.put('/admin/:id/verify-checkout', protectAdmin, codesRetired);
-router.put('/admin/:id/no-show', protectAdmin, auditLog('BOOKING_NO_SHOW', 'BOOKING'), markNoShow);
-router.put('/admin/:id/cancel', protectAdmin, auditLog('BOOKING_CANCELLED', 'BOOKING'), cancelBookingAdmin);
-router.put('/admin/:id/payment', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.updateBookingPaymentAdmin);
-router.put('/admin/:id/notes', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.addBookingNoteAdmin);
+router.put('/admin/:id/no-show', protectAdmin, OWN, auditLog('BOOKING_NO_SHOW', 'BOOKING'), markNoShow);
+router.put('/admin/:id/cancel', protectAdmin, OWN, auditLog('BOOKING_CANCELLED', 'BOOKING'), cancelBookingAdmin);
+router.put('/admin/:id/payment', protectAdmin, OWN, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.updateBookingPaymentAdmin);
+router.put('/admin/:id/notes', protectAdmin, OWN, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.addBookingNoteAdmin);
 // Step the last desk status change back (undo check-in / check-out / no-show / cancel).
-router.post('/admin/:id/undo', protectAdmin, requirePermission('bookings.manage'), auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.undoBookingStatusAdmin);
+router.post('/admin/:id/undo', protectAdmin, requirePermission('bookings.manage'), OWN, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.undoBookingStatusAdmin);
 // Clinical lifecycle (waiting → started → completed → prescribed → follow-up).
 // Never touches `status`, so it cannot disturb the diary or the Zenoti mirror.
-router.patch('/admin/:id/stage', protectAdmin, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.updateConsultationStage);
-router.post('/admin/:id/zenoti-refresh', protectAdmin, VIEW, bookingController.refreshFromZenotiAdmin);
-router.post('/admin/:id/zenoti-push', protectAdmin, requirePermission('bookings.manage'), auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.pushToZenotiAdmin);
-router.put('/admin/:id/reschedule', protectAdmin, auditLog('BOOKING_RESCHEDULED', 'BOOKING'), rescheduleBookingAdmin);
+router.patch('/admin/:id/stage', protectAdmin, OWN, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.updateConsultationStage);
+router.post('/admin/:id/zenoti-refresh', protectAdmin, VIEW, OWN, bookingController.refreshFromZenotiAdmin);
+router.post('/admin/:id/zenoti-push', protectAdmin, requirePermission('bookings.manage'), OWN, auditLog('BOOKING_UPDATED', 'BOOKING'), bookingController.pushToZenotiAdmin);
+router.put('/admin/:id/reschedule', protectAdmin, OWN, auditLog('BOOKING_RESCHEDULED', 'BOOKING'), rescheduleBookingAdmin);
 // Clinic declines a guest's reschedule request → reverts to the original slot.
-router.put('/admin/:id/reject-reschedule', protectAdmin, auditLog('BOOKING_RESCHEDULED', 'BOOKING'), rejectReschedule);
+router.put('/admin/:id/reject-reschedule', protectAdmin, OWN, auditLog('BOOKING_RESCHEDULED', 'BOOKING'), rejectReschedule);
 
 // Manual cleanup endpoint for testing
-router.post('/admin/cleanup-expired', protectAdmin, async (req, res) => {
+router.post('/admin/cleanup-expired', protectAdmin, scope.notForDoctors, async (req, res) => {
   try {
     await manualCleanup();
     res.status(200).json({

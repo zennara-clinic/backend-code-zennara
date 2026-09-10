@@ -11,7 +11,7 @@ router.use(protectAdmin);
 
 // Clinic (CRM) data is a module of its own — reading it needs `zenoti.view`.
 const VIEW = requirePermission('zenoti.view', 'patients.view');
-router.get('/overview', VIEW, adminGuestOverview); // legacy by-phone/email lookup
+router.get('/overview', VIEW, require('../utils/doctorGuestScope').notForDoctors, adminGuestOverview); // legacy by-phone/email lookup
 router.get('/status', VIEW, z.getStatus);
 router.post('/import', requirePermission('zenoti.manage'), z.startImport);
 router.post('/crawl', requirePermission('zenoti.manage'), z.startCrawl);
@@ -34,14 +34,18 @@ router.post('/categories/sync', requirePermission('zenoti.manage', 'categories.m
 router.get('/sync-health', VIEW, z.syncHealth);
 router.post('/practitioners/:employeeId/onboard', requirePermission('dermatologists.manage'), z.onboardPractitioner);
 
-router.get('/packages', VIEW, z.listPackages);
-router.get('/appointments', VIEW, z.listAppointments);
-router.get('/memberships', VIEW, z.listMemberships);
-router.get('/orders', VIEW, z.listOrders);
-router.get('/notes', VIEW, z.listNotes);
-router.get('/forms', VIEW, z.listForms);
+// Clinic-wide lists span every guest; a dermatologist reads one of their own guests at a time.
+const { ownGuest, notForDoctors } = require('../utils/doctorGuestScope');
+const OWN_GUEST = ownGuest((req) => req.params.userId);
 
-router.get('/users/:userId', VIEW, z.getUserData);
-router.post('/users/:userId/sync', VIEW, z.syncUser);
+router.get('/packages', VIEW, notForDoctors, z.listPackages);
+router.get('/appointments', VIEW, notForDoctors, z.listAppointments);
+router.get('/memberships', VIEW, notForDoctors, z.listMemberships);
+router.get('/orders', VIEW, notForDoctors, z.listOrders);
+router.get('/notes', VIEW, notForDoctors, z.listNotes);
+router.get('/forms', VIEW, notForDoctors, z.listForms);
+
+router.get('/users/:userId', VIEW, OWN_GUEST, z.getUserData);
+router.post('/users/:userId/sync', VIEW, OWN_GUEST, z.syncUser);
 
 module.exports = router;

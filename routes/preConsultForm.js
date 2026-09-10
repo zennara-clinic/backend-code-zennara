@@ -13,16 +13,21 @@ const {
 } = require('../controllers/preConsultFormController');
 const { protect, protectAdmin } = require('../middleware/auth');
 
-// Admin routes
-router.get('/admin/all', protectAdmin, getAllForms);
+// Admin routes. A dermatologist reads the forms of their own guests only.
+const scope = require('../utils/doctorGuestScope');
+// Reads only userId/bookingId, which are not encrypted, so a lean read is safe here.
+const OWN_FORM = scope.ownRecord(require('../models/PreConsultForm'));
+
+router.get('/admin/all', protectAdmin, scope.scopedList(), getAllForms);
 // Must be declared BEFORE '/admin/:id', or Express matches "by-booking" as an id.
 router.get(
   '/admin/by-booking/:bookingId',
   protectAdmin,
+  scope.ownBooking((req) => req.params.bookingId),
   require('../controllers/preConsultFormController').getFormStatusForBooking,
 );
-router.get('/admin/:id', protectAdmin, getAdminFormById);
-router.patch('/admin/:id/status', protectAdmin, updateFormStatus);
+router.get('/admin/:id', protectAdmin, OWN_FORM, getAdminFormById);
+router.patch('/admin/:id/status', protectAdmin, OWN_FORM, updateFormStatus);
 
 // Protected user routes
 router.use(protect);

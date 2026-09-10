@@ -28,9 +28,11 @@ router.use(protectAdmin);
 // Order routes
 // Also read by a patient's record (their purchase history) and by Analytics.
 const VIEW = requirePermission('orders.view', 'patients.view', 'analytics.view');
-router.get('/', VIEW, getAllOrders);
-router.get('/stats', VIEW, getOrderStats);
-router.get('/:id', VIEW, getOrderById);
+// A dermatologist reads one of their own guests' purchases, nothing clinic-wide.
+const scope = require('../utils/doctorGuestScope');
+router.get('/', VIEW, scope.scopedList({ bookingKey: null }), getAllOrders);
+router.get('/stats', VIEW, scope.notForDoctors, getOrderStats);
+router.get('/:id', VIEW, scope.notForDoctors, getOrderById);
 router.put('/:id/status',
   requirePermission('orders.manage'),
   auditLog('ORDER_STATUS_UPDATED', 'ORDER'),

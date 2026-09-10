@@ -83,7 +83,11 @@ test('reading is open to note-readers; writing needs prescriptions.draft', () =>
 
 test('"recent" is built from this doctor\'s own notes, not the clinic\'s', () => {
   const body = ctrl.slice(ctrl.indexOf('exports.recent'));
-  assert.match(body, /doctorId: req\.admin\._id/, 'recent must be scoped to the signed-in dermatologist');
+  // A note stores the dermatologist's profile slug, so the login must be resolved
+  // to its Doctor first; matching on the login's own _id found nothing on prod.
+  assert.match(body, /resolveDoctorForAdmin\(req\)/, 'recent must be scoped to the signed-in dermatologist');
+  assert.match(body, /doctorId: String\(mine\.doctorId\)/, 'recent must match notes by the profile slug');
+  assert.ok(!/doctorId: req\.admin\._id/.test(body), 'a note never carries the login id');
   // Another dermatologist's habits are not a useful suggestion, and a
   // clinic-wide list is just a top-20 of whatever the busiest doctor writes.
   assert.ok(!/ConsultationNote\.find\(\{\s*\}/.test(body), 'recent must never read every note in the clinic');

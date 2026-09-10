@@ -9,6 +9,7 @@ const PatientPhoto = require('../models/PatientPhoto');
 const Booking = require('../models/Booking');
 const AdminAuditLog = require('../models/AdminAuditLog');
 const { uploadToS3, deleteFromS3 } = require('../services/s3Service');
+const { sanitizeAnnotations } = require('../utils/photoAnnotations');
 
 const PHASES = ['before', 'during', 'after'];
 
@@ -122,7 +123,10 @@ exports.listPhotos = async (req, res) => {
   }
 };
 
-/** PATCH /api/patient-photos/:id — re-file a photo (phase, area, note, visit). */
+/**
+ * PATCH /api/patient-photos/:id — re-file a photo (phase, area, note, visit),
+ * or replace its marks (`annotations`, the full list — see utils/photoAnnotations).
+ */
 exports.updatePhoto = async (req, res) => {
   try {
     const allowed = ['phase', 'bodyArea', 'note', 'bookingId', 'consultationNoteId', 'takenAt'];
@@ -132,13 +136,25 @@ exports.updatePhoto = async (req, res) => {
       if (key === 'phase' && !PHASES.includes(req.body.phase)) continue;
       set[key] = req.body[key];
     }
+    let markCount = null;
+    if (req.body.annotations !== undefined) {
+      const current = await PatientPhoto.findOne({ _id: req.params.id, isDeleted: false }).select('annotations').lean();
+      if (!current) return res.status(404).json({ success: false, message: 'Photograph not found' });
+      const marks = sanitizeAnnotations(req.body.annotations, current.annotations, req.admin);
+      if (!marks) return res.status(400).json({ success: false, message: 'Marks must be a list' });
+      set.annotations = marks;
+      set.annotatedAt = new Date();
+      set.annotatedBy = req.admin?._id || null;
+      set.annotatedByName = req.admin?.name || '';
+      markCount = marks.length;
+    }
     const photo = await PatientPhoto.findOneAndUpdate(
       { _id: req.params.id, isDeleted: false },
       { $set: set },
-      { new: true },
+      { new: true, runValidators: true },
     );
     if (!photo) return res.status(404).json({ success: false, message: 'Photograph not found' });
-    await audit(req, 'PATIENT_PHOTO_UPDATED', { fields: Object.keys(set) }, photo._id);
+    await audit(req, 'PATIENT_PHOTO_UPDATED', { fields: Object.keys(set), ...(markCount !== null ? { marks: markCount } : {}) }, photo._id);
     return res.json({ success: true, data: photo });
   } catch (error) {
     console.error('updatePhoto failed:', error);

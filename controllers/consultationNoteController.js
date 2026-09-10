@@ -32,16 +32,23 @@ async function emailPrescription(note, booking) {
   }
 }
 
+const { canonical, signedContent, plainOf } = require('../utils/noteSignature');
+
+// Everything a revision must be able to show: the clinical text, and who had signed it.
 const SNAPSHOT_FIELDS = [
   'complaint', 'examination', 'assessment', 'plan', 'sketch',
   'prescription', 'assignedServices', 'followUpDate', 'status',
+  'primaryDiagnosis', 'secondaryDiagnosis', 'skinCareAdvice', 'lifestyleAdvice', 'precautions',
+  'prescriptionSigned', 'prescriptionSignedAt', 'prescriptionSignedByName',
 ];
 
-const snapshotOf = (note) =>
-  SNAPSHOT_FIELDS.reduce((acc, key) => {
-    acc[key] = note[key];
+const snapshotOf = (note) => {
+  const plain = plainOf(note);
+  return SNAPSHOT_FIELDS.reduce((acc, key) => {
+    acc[key] = plain[key];
     return acc;
   }, {});
+};
 
 // @desc    List consultation notes
 // @route   GET /api/consultation-notes
@@ -141,13 +148,11 @@ exports.saveNote = async (req, res) => {
 
     let note = await ConsultationNote.findOne({ bookingId });
 
+    // The version before this save: kept as a revision if the save changes it.
+    let before = null;
     if (note) {
-      // Keep the prior version before overwriting.
-      note.revisions.push({
-        savedAt: new Date(),
-        savedByEmail: req.admin?.email || null,
-        snapshot: snapshotOf(note),
-      });
+      const snapshot = snapshotOf(note);
+      before = { snapshot, content: JSON.stringify(canonical(snapshot) || {}), signed: signedContent(note) };
     } else {
       // The booking's specialist owns the note; when a booking carries none
       // (walk-in, "any available"), the signed-in doctor does.
@@ -181,17 +186,21 @@ exports.saveNote = async (req, res) => {
      * the dermatologist's name — a signature must only ever attest to the text
      * that was actually approved. The note drops back to Draft and has to be
      * signed again.
+     *
+     * "Changed" is judged by value (utils/noteSignature), so an autosave that
+     * resends the same text leaves the signature alone.
      */
-    const clinicalChanged = [
-      'prescription', 'primaryDiagnosis', 'secondaryDiagnosis', 'assessment',
-      'plan', 'skinCareAdvice', 'lifestyleAdvice', 'precautions', 'followUpDate',
-    ].some((path) => note.isModified(path));
-    if (note.prescriptionSigned && clinicalChanged && status !== 'Completed') {
+    const signedChanged = before ? signedContent(note) !== before.signed : false;
+    if (note.prescriptionSigned && signedChanged && status !== 'Completed') {
       note.prescriptionSigned = false;
       note.prescriptionSignedAt = null;
       note.prescriptionSignedBy = null;
       note.prescriptionSignedByName = null;
       note.status = 'Draft';
+      // The guest holds the old version; the next signature must reach them again.
+      note.prescriptionEmailedAt = null;
+      note.prescriptionEmailedTo = null;
+      note.guestNotifiedAt = null;
     }
 
     note.savedBy = req.admin?._id || null;
@@ -205,8 +214,18 @@ exports.saveNote = async (req, res) => {
       note.prescriptionSignedAt = new Date();
       note.prescriptionSignedBy = req.admin?._id || null;
       note.prescriptionSignedByName = req.admin?.name || note.doctorName || null;
-    } else if (status) {
+    } else if (status && !(note.prescriptionSigned && status === 'Draft')) {
+      // A signed note leaves Completed only through a real edit (above). A late
+      // autosave still carrying "Draft" must not unpublish a signed prescription.
       note.status = status;
+    }
+
+    // One revision per save that changed something, holding the version before it.
+    if (before && JSON.stringify(canonical(snapshotOf(note)) || {}) !== before.content) {
+      const snapshot = { ...before.snapshot };
+      // The sketch is an image: copy it only when this save replaced it.
+      if (canonical(snapshot.sketch) === canonical(note.sketch)) delete snapshot.sketch;
+      note.revisions.push({ savedAt: new Date(), savedByEmail: req.admin?.email || null, snapshot });
     }
 
     await note.save();

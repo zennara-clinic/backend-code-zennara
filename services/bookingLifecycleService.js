@@ -456,7 +456,10 @@ function applySideEffects(booking, action, { to, now, admin, reason }) {
         booking.sessionDuration = Math.max(0, Math.round((now - booking.checkInTime) / 60_000));
       }
       require('../utils/guestStats').touchLastVisit(booking.userId, now);
-      stage('consultation_completed');
+      // Signing may already have moved the visit on (prescribed, follow-up due);
+      // checking out afterwards must not pull it back to "completed".
+      if (!['prescription_created', 'treatment_recommended', 'follow_up_required', 'no_follow_up']
+        .includes(booking.consultationStage || '')) stage('consultation_completed');
       break;
 
     case 'undo_complete':

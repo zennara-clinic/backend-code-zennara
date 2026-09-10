@@ -5,22 +5,31 @@ const { protectAdmin, requirePermission, auditLog } = require('../middleware/aut
 
 router.use(protectAdmin);
 
+/*
+ * A dermatologist holds bookings.view/manage for their diary, which these gates
+ * accept. They read one of their own guests' bills as history and never touch
+ * billing (utils/doctorGuestScope).
+ */
+const scope = require('../utils/doctorGuestScope');
+const Invoice = require('../models/Invoice');
+const OWN_INVOICE = scope.ownRecord(Invoice, { bookingField: 'bookingIds' });
+
 const VIEW = requirePermission('billing.view', 'billing.manage', 'bookings.view', 'today.view');
-const MANAGE = requirePermission('billing.manage', 'bookings.manage');
-const VOID = requirePermission('billing.void');
+const MANAGE = [requirePermission('billing.manage', 'bookings.manage'), scope.notForDoctors];
+const VOID = [requirePermission('billing.void'), scope.notForDoctors];
 
 router.get('/meta', VIEW, ctrl.meta);
-router.get('/lookup', VIEW, ctrl.lookup);
-router.get('/', VIEW, ctrl.list);
+router.get('/lookup', VIEW, scope.notForDoctors, ctrl.lookup);
+router.get('/', VIEW, scope.scopedList(), ctrl.list);
 router.post('/', MANAGE, auditLog('INVOICE_CREATED', 'INVOICE'), ctrl.create);
-router.get('/summary', VIEW, ctrl.summary);
-router.get('/for-booking/:bookingId', VIEW, ctrl.forBooking);
-router.get('/:id', VIEW, ctrl.get);
-router.post('/guest/:userId/hydrate', VIEW, ctrl.hydrateGuest);
-router.post('/:id/zenoti-refresh', VIEW, ctrl.refreshFromZenoti);
+router.get('/summary', VIEW, scope.notForDoctors, ctrl.summary);
+router.get('/for-booking/:bookingId', VIEW, scope.ownBooking((req) => req.params.bookingId), ctrl.forBooking);
+router.get('/:id', VIEW, OWN_INVOICE, ctrl.get);
+router.post('/guest/:userId/hydrate', VIEW, scope.ownGuest((req) => req.params.userId), ctrl.hydrateGuest);
+router.post('/:id/zenoti-refresh', VIEW, OWN_INVOICE, ctrl.refreshFromZenoti);
 router.put('/:id', MANAGE, auditLog('INVOICE_UPDATED', 'INVOICE'), ctrl.update);
-router.get('/:id/receipt', VIEW, ctrl.receipt);
-router.get('/:id/packages', VIEW, ctrl.guestPackages);
+router.get('/:id/receipt', VIEW, OWN_INVOICE, ctrl.receipt);
+router.get('/:id/packages', VIEW, OWN_INVOICE, ctrl.guestPackages);
 router.post('/:id/send', MANAGE, ctrl.sendReceipt);
 router.post('/:id/lines', MANAGE, auditLog('INVOICE_UPDATED', 'INVOICE'), ctrl.addLine);
 router.put('/:id/lines/:lineId', MANAGE, auditLog('INVOICE_UPDATED', 'INVOICE'), ctrl.updateLine);

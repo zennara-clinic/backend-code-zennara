@@ -12,12 +12,15 @@ const MANAGE = requirePermission('memberships.manage', 'packages.manage');
 
 router.get('/', VIEW, ctrl.list);
 router.post('/', MANAGE, ctrl.create);
-router.get('/members', VIEW, ctrl.listMembers);
+// A dermatologist reads the memberships of their own guests only.
+const scope = require('../utils/doctorGuestScope');
+
+router.get('/members', VIEW, scope.scopedList({ bookingKey: null }), ctrl.listMembers);
 router.post('/members', MANAGE, ctrl.sell);
-router.get('/members/:id', VIEW, ctrl.getMember);
+router.get('/members/:id', VIEW, scope.ownRecord(require('../models/MembershipAssignment')), ctrl.getMember);
 router.put('/members/:id', MANAGE, ctrl.updateMember);
 router.post('/members/:id/cancel', MANAGE, ctrl.cancelMember);
-router.get('/current/:userId', VIEW, ctrl.currentForUser);
+router.get('/current/:userId', VIEW, scope.ownGuest((req) => req.params.userId), ctrl.currentForUser);
 router.get('/:id', VIEW, ctrl.get);
 router.put('/:id', MANAGE, ctrl.update);
 router.patch('/:id/toggle', MANAGE, ctrl.toggle);
