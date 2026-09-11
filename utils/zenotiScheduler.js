@@ -113,14 +113,22 @@ function startZenotiScheduler() {
    * Restricted to 09:00–20:59 IST: outside clinic hours nothing moves in the
    * diary, and the guest-history crawl gets the whole rate budget back.
    * `appointmentSyncRunning` means a slow pass is skipped, never stacked.
+   *
+   * The diary lanes run at FOREGROUND priority. As background work their three
+   * calls queued behind the guest crawl under the 70% background ceiling until
+   * the 30-second starvation promotion — measured on 2026-09-11 at a median of
+   * 26 s (max 57 s) for a "10-second" pass. The desk watches this data; the
+   * crawl does not need it to be fast.
    */
-  cron.schedule('*/10 * 9-20 * * *', bg(() => {
+  const live = (fn) => () => zenotiApi.runAtPriority(zenotiApi.PRIORITY.FOREGROUND, fn);
+  cron.schedule('*/10 * 9-20 * * *', live(() => {
     appointmentSync.syncTodayAppointments({ trigger: 'schedule' }).catch(() => {});
   }), { timezone: 'Asia/Kolkata' });
 
-  // Everything outside today (yesterday + the next six days) stays on two
-  // minutes — nobody is watching those rows second by second.
-  cron.schedule('*/2 * * * *', bg(() => {
+  // Yesterday + the next six days, every two minutes. This pass WAITS for the
+  // diary lock rather than skipping, and the today lane yields to it — it used
+  // to lose the lock to the today lane every time and did not run for hours.
+  cron.schedule('*/2 * * * *', live(() => {
     appointmentSync.syncRecentAppointments({ trigger: 'schedule' }).catch(() => {});
   }));
 
@@ -145,6 +153,16 @@ function startZenotiScheduler() {
   cron.schedule('*/15 * * * *', bg(() => {
     appointmentSync.syncUpcomingAppointments({ trigger: 'schedule' }).catch(() => {});
   }));
+
+  /*
+   * A run still marked "running" from before this boot was cut off by a restart
+   * or crash and will never finish — 115 had piled up by 2026-09-11, making the
+   * sync-health view look permanently busy. Close them out.
+   */
+  require('../models/ZenotiSyncRun').updateMany(
+    { status: 'running', startedAt: { $lt: new Date(Date.now() - 15 * 60 * 1000) } },
+    { $set: { status: 'failed', error: 'Interrupted — the server restarted before this run finished.', finishedAt: new Date() } },
+  ).catch(() => {});
 
   // On boot, resume whichever part of the initial import is incomplete. A
   // restart must not leave thousands of roster-only patients waiting for tiny

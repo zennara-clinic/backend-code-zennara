@@ -245,7 +245,17 @@ async function request(path, opts = {}) {
     } catch (err) {
       clearTimeout(timer);
       const transient = TRANSIENT.test(err.name || '') || TRANSIENT.test(err.message || '') || err.name === 'AbortError';
-      if (transient && attempt < retries) {
+      /*
+       * A read can always be repeated. A write can only be repeated when it
+       * provably never reached Zenoti (DNS failure, connection refused). After a
+       * timeout or a dropped connection Zenoti may already have created the
+       * guest, booking or invoice — sending it again makes a duplicate in the
+       * clinic's system. That failure is surfaced to the caller instead.
+       */
+      const mayHaveReachedZenoti = err.name === 'AbortError'
+        || /ECONNRESET|ETIMEDOUT|socket hang up|network|fetch failed/i.test(`${err.name || ''} ${err.message || ''}`);
+      const safeToRepeat = String(method).toUpperCase() === 'GET' || !mayHaveReachedZenoti;
+      if (transient && safeToRepeat && attempt < retries) {
         const backoff = 500 * 2 ** attempt;
         logger.warn('Zenoti transient error — retrying', { path, attempt, error: err.message });
         await sleep(backoff);

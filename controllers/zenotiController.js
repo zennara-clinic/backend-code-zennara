@@ -224,8 +224,21 @@ exports.ensureGuest = async (req, res) => {
 // @access  Private
 exports.resyncBooking = async (req, res) => {
   try {
-    const booking = await Booking.findOne({ _id: req.params.id, userId: req.user._id }).select('_id');
+    const booking = await Booking.findOne({ _id: req.params.id, userId: req.user._id }).select('_id status source');
     if (!booking) return res.status(404).json({ success: false, message: 'Booking not found' });
+    /*
+     * A guest may not push their own booking into the clinic's Zenoti diary.
+     * syncBooking checks neither status nor source, so this route could put an
+     * Awaiting, Cancelled or past booking into Zenoti. Only a booking the clinic
+     * has confirmed goes there, and a Zenoti-owned visit already lives there.
+     */
+    if (booking.source === 'zenoti' || !['Confirmed', 'Checked In', 'In Progress'].includes(booking.status)) {
+      return res.status(409).json({
+        success: false,
+        code: 'NOT_CONFIRMED_BY_CLINIC',
+        message: 'This appointment reaches the clinic diary once the clinic confirms it.',
+      });
+    }
     await zenotiWrite.syncBooking(booking._id);
     const fresh = await Booking.findById(booking._id).select('zenotiAppointmentId zenotiSyncStatus zenotiSyncError').lean();
     res.status(200).json({ success: true, data: { mode: zenotiWrite.mode(), ...fresh } });
@@ -295,8 +308,17 @@ exports.adminGuestOverview = async (req, res) => {
 // @access  Private
 exports.resyncOrder = async (req, res) => {
   try {
-    const order = await ProductOrder.findOne({ _id: req.params.id, userId: req.user._id }).select('_id');
+    const order = await ProductOrder.findOne({ _id: req.params.id, userId: req.user._id }).select('_id source paymentStatus orderStatus');
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
+    // Only a paid, live app order may become a sale in Zenoti — never an unpaid,
+    // cancelled or refunded one, and never a counter sale that came from Zenoti.
+    if (order.source === 'zenoti' || order.paymentStatus !== 'Paid' || ['Cancelled', 'Returned', 'Refunded'].includes(order.orderStatus)) {
+      return res.status(409).json({
+        success: false,
+        code: 'ORDER_NOT_PAYABLE_IN_ZENOTI',
+        message: 'Only a paid order is recorded in the clinic system.',
+      });
+    }
     await zenotiWrite.syncOrder(order._id);
     const fresh = await ProductOrder.findById(order._id).select('zenotiInvoiceId zenotiSyncStatus zenotiSyncError').lean();
     res.status(200).json({ success: true, data: { mode: zenotiWrite.mode(), ...fresh } });

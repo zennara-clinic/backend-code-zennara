@@ -24,6 +24,39 @@ const ProviderBlock = require('../models/ProviderBlock');
 const logger = require('../utils/logger');
 
 let appointmentSyncRunning = false;
+/**
+ * A near-window (yesterday → +6 days) or on-demand pass waiting for the diary
+ * lock. The 10-second today lane yields to it: that lane re-took the lock every
+ * few seconds, so on 2026-09-11 the near window had not run for more than 30
+ * minutes and tomorrow's appointments stopped updating at all.
+ */
+let diaryWaiters = 0;
+const sleepMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Wait for the diary lock instead of skipping. True once held; false after `maxMs`. */
+async function acquireDiaryLock(maxMs) {
+  const until = Date.now() + maxMs;
+  while (appointmentSyncRunning) {
+    if (Date.now() > until) return false;
+    await sleepMs(250);
+  }
+  appointmentSyncRunning = true;
+  return true;
+}
+
+/** States that mean the guest came. None of them can happen before the visit's clinic day. */
+const ATTENDED_STATES = new Set(['Checked In', 'In Progress', 'Completed']);
+function attendanceBeforeVisitDay(status, visitDay, today = clinicDay()) {
+  return ATTENDED_STATES.has(status) && Boolean(visitDay) && visitDay > today;
+}
+
+/** The clinic days the centre-diary passes own and keep refreshed: yesterday through +62. */
+const DIARY_BACK_DAYS = 1;
+const DIARY_AHEAD_DAYS = 62;
+function diaryOwnsDay(day, now = Date.now()) {
+  if (!day) return false;
+  return day >= clinicDay(now - DIARY_BACK_DAYS * 86_400_000) && day <= clinicDay(now + DIARY_AHEAD_DAYS * 86_400_000);
+}
 
 const norm = (value) => String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
 
@@ -198,18 +231,39 @@ function mergeStatus(booking, appointment, zenotiStatus, isNew) {
 async function retireVanishedAppointments({ centerId, from, to, seenIds, runStartedAt, feedCount }) {
   // An empty feed for a whole window is more likely an API hiccup than a
   // clinic with no appointments at all — refuse to retire anything on it.
-  if (!feedCount) return 0;
+  if (!feedCount) return [];
   const dayStart = new Date(`${from}T00:00:00+05:30`);
   const dayEnd = new Date(`${to}T23:59:59.999+05:30`);
-  const filter = {
+  const missing = {
     source: 'zenoti',
     'zenotiSource.centerId': centerId,
-    status: { $in: ['Awaiting Confirmation', 'Confirmed', 'Rescheduled', 'Checked In', 'In Progress'] },
     preferredDate: { $gte: dayStart, $lte: dayEnd },
     zenotiAppointmentId: { $nin: [...seenIds] },
     zenotiLastInboundAt: { $lt: runStartedAt },
   };
-  const result = await Booking.updateMany(filter, {
+  /*
+   * A guest who is checked in or in a session is never cancelled on a read:
+   * Zenoti does not delete a visit that is under way, so a missing row there is
+   * a feed problem. It is logged instead.
+   */
+  const attendedMissing = await Booking.countDocuments({ ...missing, status: { $in: ['Checked In', 'In Progress'] } });
+  if (attendedMissing) logger.warn('Zenoti diary did not return visits that are under way here; left unchanged', { centerId, from, to, attendedMissing });
+  const live = { ...missing, status: { $in: ['Awaiting Confirmation', 'Confirmed', 'Rescheduled'] } };
+  /*
+   * Two reads before a cancellation. The diary is one unpaginated response; a
+   * single short or partial answer used to cancel real appointments and free
+   * their slots. The first miss only records when the row went missing; a later
+   * pass that still does not see it retires it. Seeing it again clears the mark.
+   */
+  await Booking.updateMany(
+    { ...live, 'zenotiSource.missingSince': null },
+    { $set: { 'zenotiSource.missingSince': runStartedAt } },
+  );
+  const doomed = await Booking.find({ ...live, 'zenotiSource.missingSince': { $lt: runStartedAt } })
+    .select('_id userId branchId').lean();
+  if (!doomed.length) return [];
+  const filter = { _id: { $in: doomed.map((row) => row._id) } };
+  await Booking.updateMany(filter, {
     $set: {
       status: 'Cancelled',
       cancellationReason: 'Removed from the clinic diary in Zenoti',
@@ -224,7 +278,7 @@ async function retireVanishedAppointments({ centerId, from, to, seenIds, runStar
       zenotiLastInboundAt: new Date(),
     },
   });
-  return result.modifiedCount || 0;
+  return doomed;
 }
 
 async function lookupContext() {
@@ -394,7 +448,7 @@ async function retireVanishedBlocks({ centerId, from, to, seenIds, runStartedAt,
   return result.modifiedCount || 0;
 }
 
-async function upsertAppointment(appointment, { user = null, context = null, verified = false } = {}) {
+async function upsertAppointment(appointment, { user = null, context = null, verified = false, historyFeed = false } = {}) {
   if (!appointment?.id) return { outcome: 'skipped', reason: 'missing appointment id' };
   const guest = appointment.guest;
   // A visit booked under a diary placeholder ("Meeting", "Reserved") is held
@@ -462,6 +516,24 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
     });
   }
   const isNew = !booking;
+  /*
+   * The guest-history feed has no progress, check-in time or therapist. For a
+   * day the centre diary covers (yesterday → +62 days), the diary passes are
+   * the source of truth and refresh every few seconds to minutes; letting the
+   * history crawl re-save those rows flipped a checked-in visit back to
+   * Confirmed and cleared its dermatologist whenever a guest's record was
+   * opened. History may still ADD a visit the diary has not mirrored yet.
+   */
+  if (historyFeed && !isNew && diaryOwnsDay(parts.day)) return { outcome: 'unchanged', bookingId: booking._id };
+  // What the panels can see before this pass, to tell them only about real changes.
+  const shownBefore = booking ? {
+    status: booking.status,
+    day: booking.confirmedDate ? new Date(booking.confirmedDate).getTime() : null,
+    time: booking.confirmedTime || null,
+    specialistId: booking.specialistId || null,
+    therapistName: booking.therapistName || null,
+    checkInTime: booking.checkInTime ? new Date(booking.checkInTime).getTime() : null,
+  } : null;
   // "Booked on" is Zenoti's creation_date (centre diary / detail only). Without
   // it every mirrored visit was stamped with the crawl day, so 32,000 bookings
   // read as booked on 23–25 Aug. Preferring the UTC form avoids the zone guess.
@@ -484,6 +556,19 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
   // finished visit, not something "in progress" today — the app's Upcoming
   // list and the panel's day book must not keep showing it as live.
   if (status === 'In Progress' && parts.day < clinicDay()) status = 'Completed';
+  /*
+   * A safety net under the mapping above: nobody is checked in, in a session or
+   * finished before the day of their visit. Whatever Zenoti's fields appear to
+   * say — an unfamiliar status code, a stale stamp, a future enum change — a
+   * future-day appointment is mirrored as Confirmed and the oddity is logged,
+   * so the panels never offer Start or Complete for a guest who has not come.
+   */
+  if (attendanceBeforeVisitDay(status, parts.day)) {
+    logger.warn('Zenoti appointment reads as attended before its day — mirrored as Confirmed', {
+      appointmentId: appointment.id, day: parts.day, zenotiStatus: appointment.status, progress: appointment.progress,
+    });
+    status = 'Confirmed';
+  }
   // A no-show or cancellation from the feed that contradicts attendance the
   // desk already recorded here is re-read from Zenoti before it is applied.
   // If Zenoti's own detail shows the guest checked in / started / closed, the
@@ -501,6 +586,8 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
       logger.warn('Zenoti appointment detail re-check failed; applying feed state', { appointmentId: appointment.id, error: error.message });
     }
   }
+  // The detail re-read above can produce a status too; the same safety net applies to it.
+  if (attendanceBeforeVisitDay(status, parts.day)) status = 'Confirmed';
   status = mergeStatus(booking, appointment, status, isNew);
   booking.userId = owner._id;
   if (consultation) booking.consultationId = consultation._id;
@@ -659,7 +746,9 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
     }
     return (a ?? null) === (b ?? null);
   });
-  if (!sameSource) booking.zenotiSource = nextSource;
+  // Seen in the feed again: drop the "missing since" marker the vanished pass
+  // may have set, so a later absence starts counting afresh.
+  if (!sameSource || prevSource?.missingSince) booking.zenotiSource = nextSource;
   // Zenoti records when the guest was checked in at the clinic; without it the
   // day book cannot show a Zenoti visit as "arrived 10:42".
   const zCheckIn = clinicDate(appointment.checkinTime);
@@ -723,7 +812,23 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
   if (status === 'Completed') {
     await require('../utils/guestStats').touchLastVisit(owner._id, booking.checkOutTime || booking.checkInTime || parts.date);
   }
-  return { outcome: isNew ? 'created' : 'updated', bookingId: booking._id };
+  // Tell open panels only about what they would draw differently.
+  const changed = isNew || !shownBefore
+    || shownBefore.status !== booking.status
+    || shownBefore.day !== (booking.confirmedDate ? new Date(booking.confirmedDate).getTime() : null)
+    || shownBefore.time !== (booking.confirmedTime || null)
+    || shownBefore.specialistId !== (booking.specialistId || null)
+    || shownBefore.therapistName !== (booking.therapistName || null)
+    || shownBefore.checkInTime !== (booking.checkInTime ? new Date(booking.checkInTime).getTime() : null);
+  if (changed && Array.isArray(context?.changed)) {
+    context.changed.push({
+      id: String(booking._id),
+      status: booking.status,
+      userId: booking.userId ? String(booking.userId) : null,
+      branchId: booking.branchId ? String(booking.branchId) : null,
+    });
+  }
+  return { outcome: isNew ? 'created' : 'updated', bookingId: booking._id, changed };
 }
 
 /**
@@ -737,7 +842,9 @@ async function refreshAppointment(bookingId) {
   const detail = await zenoti.getAppointment(booking.zenotiAppointmentId);
   if (!detail) throw Object.assign(new Error('Zenoti has no appointment with this id any more.'), { status: 404 });
   const owner = await User.findById(booking.userId).select('_id fullName phone email zenotiGuestId zenotiCenterId').lean();
-  const result = await upsertAppointment(detail, { user: owner, verified: true });
+  const context = { ...(await lookupContext()), changed: [] };
+  const result = await upsertAppointment(detail, { user: owner, context, verified: true });
+  notifyPanels(context.changed);
   return { result, booking: await Booking.findById(bookingId).populate('consultationId', 'name category price image').populate('userId', 'fullName email phone patientId') };
 }
 
@@ -745,21 +852,34 @@ async function refreshAppointment(bookingId) {
 async function syncUserAppointments(user, appointments) {
   if (!user || !Array.isArray(appointments) || !appointments.length) return { created: 0, updated: 0, skipped: 0, failed: 0 };
   const context = await lookupContext();
+  context.changed = [];
   const tally = { created: 0, updated: 0, skipped: 0, failed: 0 };
   for (const appointment of appointments) {
     try {
+      // Guest-history rows: never overwrite a day the centre diary owns (see upsertAppointment).
       const result = await upsertAppointment({
         ...appointment,
         centerId: appointment.centerId || user.zenotiCenterId,
         branchName: appointment.branchName || branchNameForCenter(appointment.centerId || user.zenotiCenterId),
-      }, { user, context });
+      }, { user, context, historyFeed: true });
       tally[result.outcome] = (tally[result.outcome] || 0) + 1;
     } catch (error) {
       tally.failed += 1;
       logger.warn('Zenoti appointment backfill row failed', { appointmentId: appointment.id, error: error.message });
     }
   }
+  notifyPanels(context.changed);
   return tally;
+}
+
+/** Push the bookings a pass changed to open panels and the guest's app. Never throws. */
+function notifyPanels(changes) {
+  if (!Array.isArray(changes) || !changes.length) return;
+  try {
+    require('./socketService').emitBookingsSynced(changes);
+  } catch (error) {
+    logger.warn('Zenoti sync could not notify panels', { error: error.message });
+  }
 }
 
 /**
@@ -801,9 +921,18 @@ async function reconcileWindow(from, to, { trigger = 'schedule', mode = 'increme
     // Preload the entire linked-user index once. Calling provisionUserFromGuest
     // for every service row made a busy six-day diary too slow for a two-minute
     // cadence and aggravated legacy GUID-casing differences.
-    const linked = await User.find({ zenotiGuestId: { $exists: true, $ne: null } })
-      .select('_id fullName phone email zenotiGuestId zenotiCenterId source')
-      .lean();
+    /*
+     * Only the guests who appear in THIS window — not every linked guest. The
+     * pass used to load all ~7,000 linked users every 10 seconds. Legacy rows
+     * differ in GUID casing, so each id is asked for as written, lower and upper.
+     */
+    const guestIds = [...new Set(rows.map((r) => String(r.guest?.zenotiGuestId || '')).filter(Boolean))];
+    const guestIdVariants = [...new Set(guestIds.flatMap((id) => [id, id.toLowerCase(), id.toUpperCase()]))];
+    const linked = guestIdVariants.length
+      ? await User.find({ zenotiGuestId: { $in: guestIdVariants } })
+        .select('_id fullName phone email zenotiGuestId zenotiCenterId source')
+        .lean()
+      : [];
     const userByGuest = new Map(linked.map((owner) => [String(owner.zenotiGuestId).toLowerCase(), owner]));
 
     /*
@@ -820,6 +949,8 @@ async function reconcileWindow(from, to, { trigger = 'schedule', mode = 'increme
     );
 
     context.touched = [];
+    // Bookings whose visible state this pass changed — pushed to the panels at the end.
+    context.changed = [];
 
     for (const appointment of rows) {
       try {
@@ -878,7 +1009,16 @@ async function reconcileWindow(from, to, { trigger = 'schedule', mode = 'increme
     for (const { centerId, feedCount } of fulfilledCenters) {
       const seenIds = new Set(rows.filter((r) => r.centerId === centerId).map((r) => String(r.id)));
       try {
-        retired += await retireVanishedAppointments({ centerId, from, to, seenIds, runStartedAt, feedCount });
+        const gone = await retireVanishedAppointments({ centerId, from, to, seenIds, runStartedAt, feedCount });
+        retired += gone.length;
+        for (const row of gone) {
+          context.changed.push({
+            id: String(row._id),
+            status: 'Cancelled',
+            userId: row.userId ? String(row.userId) : null,
+            branchId: row.branchId ? String(row.branchId) : null,
+          });
+        }
       } catch (error) {
         logger.warn('Zenoti vanished-appointment pass failed', { centerId, error: error.message });
       }
@@ -890,6 +1030,9 @@ async function reconcileWindow(from, to, { trigger = 'schedule', mode = 'increme
       }
     }
     if (retired) logger.info('Zenoti: retired appointments no longer in the clinic diary', { from, to, retired });
+    // Open panels and the guest's app redraw now, not at their next poll.
+    notifyPanels(context.changed);
+    tally.changed = context.changed.length;
     tally.retired = retired;
     tally.blocks = blockTally;
     await run.updateOne({
@@ -922,27 +1065,108 @@ async function reconcileWindow(from, to, { trigger = 'schedule', mode = 'increme
  * Shares `appointmentSyncRunning` with the other passes, so a slow run is
  * skipped rather than stacked.
  */
+let lastTodayPassAt = 0;
 async function syncTodayAppointments({ trigger = 'schedule' } = {}) {
-  if (!zenoti.isConfigured() || appointmentSyncRunning) return null;
+  // Skip while a pass runs, or while a wider pass waits — that window covers today too.
+  if (!zenoti.isConfigured() || appointmentSyncRunning || diaryWaiters > 0) return null;
   appointmentSyncRunning = true;
   try {
     const today = clinicDay(Date.now());
-    return await reconcileWindow(today, today, { trigger, mode: 'incremental' });
+    const tally = await reconcileWindow(today, today, { trigger, mode: 'incremental' });
+    lastTodayPassAt = Date.now();
+    return tally;
+  } finally {
+    appointmentSyncRunning = false;
+  }
+}
+
+/** Run `fn` holding the diary lock, waiting up to `maxMs` for it. Null when the lock could not be had. */
+async function withDiaryLock(maxMs, fn) {
+  diaryWaiters += 1;
+  let acquired = false;
+  try {
+    acquired = await acquireDiaryLock(maxMs);
+  } finally {
+    diaryWaiters -= 1;
+  }
+  if (!acquired) return null;
+  try {
+    return await fn();
   } finally {
     appointmentSyncRunning = false;
   }
 }
 
 async function syncRecentAppointments({ trigger = 'schedule' } = {}) {
-  if (!zenoti.isConfigured() || appointmentSyncRunning) return null;
-  appointmentSyncRunning = true;
-  try {
+  if (!zenoti.isConfigured()) return null;
+  const tally = await withDiaryLock(90_000, () => {
     const from = clinicDay(Date.now() - 24 * 60 * 60 * 1000);
     const to = clinicDay(Date.now() + 6 * 24 * 60 * 60 * 1000);
-    return await reconcileWindow(from, to, { trigger, mode: 'incremental' });
-  } finally {
-    appointmentSyncRunning = false;
+    return reconcileWindow(from, to, { trigger, mode: 'incremental' });
+  });
+  if (tally === null) logger.warn('Zenoti near-window pass waited 90 s for the diary lock; it runs again on the next tick');
+  return tally;
+}
+
+/*
+ * A day someone has just opened in a panel — Today, the day book, a
+ * dermatologist's diary, a date on the Bookings page — is re-read from Zenoti
+ * straight away instead of at the next scheduled pass. At most once every 15 s
+ * per window; skipped for today while the 10-second lane is fresh; windows of
+ * up to seven days (Zenoti's limit) inside the days the diary passes own.
+ * Changes reach the open page through the socket. Read-only towards Zenoti.
+ */
+const onDemandStarted = new Map();
+const ON_DEMAND_MIN_MS = 15_000;
+async function syncWindowOnDemand(from, to) {
+  if (!zenoti.isConfigured()) return null;
+  const dayKey = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dayKey.test(from) || !dayKey.test(to) || to < from) return null;
+  const days = Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000) + 1;
+  if (days > 7) return null;
+  if (!diaryOwnsDay(from) && !diaryOwnsDay(to)) return null;
+  const today = clinicDay();
+  if (from === today && to === today && Date.now() - lastTodayPassAt < ON_DEMAND_MIN_MS) return null;
+  const now = Date.now();
+  const key = `${from}|${to}`;
+  if (now - (onDemandStarted.get(key) || 0) < ON_DEMAND_MIN_MS) return null;
+  onDemandStarted.set(key, now);
+  if (onDemandStarted.size > 200) {
+    for (const [k, at] of onDemandStarted) if (now - at > 10 * 60_000) onDemandStarted.delete(k);
   }
+  return withDiaryLock(20_000, () => reconcileWindow(from, to, { trigger: 'live', mode: 'incremental' }));
+}
+
+/*
+ * The desk's action bar re-reads one Zenoti appointment before offering its
+ * actions: at most every 10 s per booking, waiting at most 2.5 s. A slower
+ * answer keeps going in the background and reaches the panel over the socket,
+ * so the page is never held up by Zenoti.
+ */
+const deskRefresh = new Map();
+async function refreshForDesk(bookingId, { maxAgeMs = 10_000, waitMs = 2_500 } = {}) {
+  const key = String(bookingId);
+  const now = Date.now();
+  let entry = deskRefresh.get(key);
+  if (!entry || now - entry.at >= maxAgeMs) {
+    const promise = refreshAppointment(key).then(() => true).catch((error) => {
+      logger.warn('Zenoti live re-read for the desk failed; showing the last mirrored state', { bookingId: key, error: error.message });
+      return false;
+    });
+    entry = { at: now, promise };
+    deskRefresh.set(key, entry);
+    if (deskRefresh.size > 500) {
+      for (const [k, e] of deskRefresh) if (now - e.at > 5 * 60_000) deskRefresh.delete(k);
+    }
+  }
+  return Promise.race([entry.promise, sleepMs(waitMs).then(() => false)]);
+}
+
+/** A Zenoti-linked booking on a day the diary still owns (yesterday → +62 days). */
+function bookingNeedsLiveCheck(booking) {
+  if (!booking?.zenotiAppointmentId) return false;
+  const when = booking.confirmedDate || booking.preferredDate;
+  return Boolean(when) && diaryOwnsDay(clinicDay(when));
 }
 
 /**
@@ -993,5 +1217,10 @@ module.exports = {
   syncTodayAppointments,
   syncRecentAppointments,
   syncUpcomingAppointments,
+  syncWindowOnDemand,
+  refreshForDesk,
+  bookingNeedsLiveCheck,
+  attendanceBeforeVisitDay,
+  diaryOwnsDay,
   isAppointmentSyncRunning,
 };

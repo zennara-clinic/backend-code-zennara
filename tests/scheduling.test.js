@@ -307,10 +307,20 @@ test('a guest waiting on a screen outranks a background crawl', () => {
 
   const sched = require('fs').readFileSync(require.resolve('../utils/zenotiScheduler.js'), 'utf8');
   assert.match(sched, /const bg = \(fn\) => \(\) =>/, 'bg must RETURN the handler, not run it');
-  // Every cron job must be wrapped, or it silently keeps foreground priority.
+  assert.match(sched, /const live = \(fn\) => \(\) =>/, 'live must RETURN the handler, not run it');
+  // Every cron job must declare its priority, or it silently keeps foreground.
   const jobs = (sched.match(/cron\.schedule\(/g) || []).length;
-  const wrapped = (sched.match(/cron\.schedule\([^,]+, bg\(/g) || []).length;
-  assert.equal(wrapped, jobs, `all ${jobs} scheduled jobs must run at background priority`);
+  const background = (sched.match(/cron\.schedule\([^,]+, bg\(/g) || []).length;
+  const foreground = sched.match(/cron\.schedule\([^,]+, live\(\(\) => \{\s*appointmentSync\.(\w+)/g) || [];
+  assert.equal(background + foreground.length, jobs, `all ${jobs} scheduled jobs must declare a priority`);
+  /*
+   * Only the centre-diary lanes the desk watches run at foreground. As
+   * background work they queued behind the guest crawl until starvation
+   * promotion — a "10-second" today pass measured a median 26 s on
+   * 2026-09-11, and the near-window pass stopped running at all.
+   */
+  const lanes = foreground.map((m) => m.match(/appointmentSync\.(\w+)/)[1]).sort();
+  assert.deepEqual(lanes, ['syncRecentAppointments', 'syncTodayAppointments']);
 });
 
 test('a month calendar is fetched as parallel pages, not one week at a time', () => {

@@ -510,8 +510,49 @@ const emitBookingUpdate = async (bookingId, action = null) => {
   }
 };
 
+/**
+ * Several bookings changed in one Zenoti mirror pass.
+ *
+ * One event per room rather than one per booking: panels coalesce reloads
+ * anyway, and a first far-horizon pass can touch hundreds of rows. Same event
+ * name and shape as emitBookingUpdate, so every panel and the app already
+ * listen for it. Fire-and-forget.
+ */
+const emitBookingsSynced = (changes = []) => {
+  if (!ioRef || !Array.isArray(changes) || !changes.length) return;
+  try {
+    const at = new Date().toISOString();
+    const first = changes[0];
+    ioRef.to('staff').emit('booking:updated', {
+      bookingId: first.id, status: first.status, action: 'zenoti_sync', count: changes.length, at,
+    });
+    const byBranch = new Map();
+    const byUser = new Map();
+    for (const change of changes) {
+      if (change.branchId && !byBranch.has(change.branchId)) byBranch.set(change.branchId, change);
+      if (change.userId) {
+        if (!byUser.has(change.userId)) byUser.set(change.userId, []);
+        byUser.get(change.userId).push(change);
+      }
+    }
+    for (const [branchId, change] of byBranch) {
+      ioRef.to(`staff_branch_${branchId}`).emit('booking:updated', {
+        bookingId: change.id, status: change.status, action: 'zenoti_sync', count: changes.length, at,
+      });
+    }
+    for (const [userId, list] of byUser) {
+      ioRef.to(`user_${userId}`).emit('booking:updated', {
+        bookingId: list[0].id, status: list[0].status, action: 'zenoti_sync', count: list.length, at,
+      });
+    }
+  } catch (error) {
+    console.error('⚠️ booking:updated (zenoti sync) broadcast failed:', error.message);
+  }
+};
+
 module.exports = {
   setupSocketIO,
+  emitBookingsSynced,
   getConnectedUsers,
   getConnectedAdmins,
   emitBookingUpdate

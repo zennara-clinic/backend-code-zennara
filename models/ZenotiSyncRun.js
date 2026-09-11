@@ -4,10 +4,14 @@ const mongoose = require('mongoose');
 const ZenotiSyncRunSchema = new mongoose.Schema(
   {
     /** Which mirror ran. 'catalog' = services + packages, 'products' = retail stock. */
-    type: { type: String, enum: ['roster', 'details', 'appointments', 'catalog', 'products', 'centers', 'categories'], required: true },
-    mode: { type: String, enum: ['incremental', 'full'], default: 'incremental' },
+    // 'vendors' was missing, so every vendor run failed validation and was never recorded.
+    type: { type: String, enum: ['roster', 'details', 'appointments', 'catalog', 'products', 'centers', 'categories', 'vendors'], required: true },
+    // 'horizon' was missing, so the day +6 → +62 appointment pass threw before
+    // reading Zenoti and far-out appointments were never mirrored or updated.
+    mode: { type: String, enum: ['incremental', 'full', 'horizon'], default: 'incremental' },
     status: { type: String, enum: ['running', 'completed', 'failed'], default: 'running' },
-    trigger: { type: String, enum: ['schedule', 'manual', 'boot'], default: 'schedule' },
+    // 'live' = a pass started because someone opened that day in a panel.
+    trigger: { type: String, enum: ['schedule', 'manual', 'boot', 'live'], default: 'schedule' },
     startedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', default: null },
     startedAt: { type: Date, default: Date.now },
     finishedAt: { type: Date, default: null },

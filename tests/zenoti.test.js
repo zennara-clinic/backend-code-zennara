@@ -282,6 +282,28 @@ test('a session or arrival nobody recorded here follows Zenoti once Zenoti is re
   assert.equal(mergeStatus(synced('Completed', 4), feed(4), 'Confirmed', false), 'Completed');
 });
 
+test('no guest is checked in, in a session or finished before the day of their visit', () => {
+  const { attendanceBeforeVisitDay } = require('../services/zenotiAppointmentSyncService');
+  assert.equal(attendanceBeforeVisitDay('In Progress', '2026-09-15', '2026-09-11'), true);
+  assert.equal(attendanceBeforeVisitDay('Checked In', '2026-09-12', '2026-09-11'), true);
+  assert.equal(attendanceBeforeVisitDay('Completed', '2026-09-12', '2026-09-11'), true);
+  assert.equal(attendanceBeforeVisitDay('In Progress', '2026-09-11', '2026-09-11'), false);
+  assert.equal(attendanceBeforeVisitDay('Confirmed', '2026-09-15', '2026-09-11'), false);
+  // A cancellation or no-show can be recorded ahead of the day.
+  assert.equal(attendanceBeforeVisitDay('Cancelled', '2026-09-15', '2026-09-11'), false);
+});
+
+test('the centre diary owns yesterday through +62 days, so the history crawl may not overwrite those rows', () => {
+  const { diaryOwnsDay } = require('../services/zenotiAppointmentSyncService');
+  const now = Date.parse('2026-09-11T12:00:00+05:30');
+  assert.equal(diaryOwnsDay('2026-09-10', now), true);
+  assert.equal(diaryOwnsDay('2026-09-11', now), true);
+  assert.equal(diaryOwnsDay('2026-11-12', now), true);
+  assert.equal(diaryOwnsDay('2026-09-09', now), false);
+  assert.equal(diaryOwnsDay('2026-11-13', now), false);
+  assert.equal(diaryOwnsDay(null, now), false);
+});
+
 test('a Zenoti appointment counts as attended on check-in, start or close', () => {
   assert.equal(appointmentAttended({ status: 0, progress: 0 }), false);
   assert.equal(appointmentAttended({ status: 0, progress: 0, checkinTime: '2026-09-03T10:00:00' }), true);

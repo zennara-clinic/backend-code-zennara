@@ -706,6 +706,19 @@ exports.getAllBookingsAdmin = async (req, res) => {
   try {
     const { page, limit } = req.query;
 
+    /*
+     * Opening a day — Today, the day book, a dermatologist's diary — asks
+     * Zenoti for that day straight away, in the background, rather than waiting
+     * for the next scheduled pass. What changed reaches the open page over the
+     * socket a moment later. Throttled per day window; read-only towards Zenoti.
+     */
+    const dayKeyPattern = /^\d{4}-\d{2}-\d{2}$/;
+    const liveFrom = String(req.query.date || req.query.startDate || '');
+    const liveTo = String(req.query.date || req.query.endDate || req.query.startDate || '');
+    if (dayKeyPattern.test(liveFrom) && dayKeyPattern.test(liveTo)) {
+      require('../services/zenotiAppointmentSyncService').syncWindowOnDemand(liveFrom, liveTo).catch(() => {});
+    }
+
     // Filters + sort are shared with the export endpoint (utils/listFilters).
     const { query, sort, due } = await buildBookingQuery(ownDiaryParams(req));
     await scopeToOwnDiary(req, query);
@@ -1380,6 +1393,17 @@ exports.checkOutBookingAdmin = lifecycleAlias('complete');
  */
 exports.getBookingLifecycleAdmin = async (req, res) => {
   try {
+    /*
+     * A visit Zenoti holds is re-read from Zenoti before its actions are
+     * offered — at most once every 10 seconds per booking, waiting up to 2.5 s.
+     * A slower answer finishes in the background and reaches the panel over
+     * the socket. The desk acts on Zenoti's state as it is now, not as the last
+     * mirror pass left it. Read-only towards Zenoti.
+     */
+    const appointmentSync = require('../services/zenotiAppointmentSyncService');
+    const link = await Booking.findById(req.params.id).select('zenotiAppointmentId confirmedDate preferredDate').lean();
+    if (!link) return res.status(404).json({ success: false, message: 'Booking not found' });
+    if (appointmentSync.bookingNeedsLiveCheck(link)) await appointmentSync.refreshForDesk(link._id);
     // availableActions() hides local-only undos (undo_no_show, undo_cancel) for a
     // visit Zenoti holds, which it can only tell from these two ids — without
     // them the menu offered "Undo no show" and the POST answered 409.
