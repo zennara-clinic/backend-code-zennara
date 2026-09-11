@@ -137,11 +137,26 @@ test('an arrival recorded by Zenoti counts as checked in, whatever the enum says
   const { localStatus } = require('../services/zenotiAppointmentSyncService');
   assert.equal(localStatus({ status: 0, progress: 0 }), 'Confirmed');
   assert.equal(localStatus({ status: 0, progress: 0, checkinTime: '2026-09-09T11:00:00' }), 'Checked In');
+  // A confirmed (4) appointment with an arrival stamp is a checked-in guest, not a session.
+  assert.equal(localStatus({ status: 4, progress: 0, checkinTime: 'x' }), 'Checked In');
   // A later state must still win over the arrival stamp.
-  assert.equal(localStatus({ status: 4, progress: 0, checkinTime: 'x' }), 'In Progress');
+  assert.equal(localStatus({ status: 4, progress: 1, checkinTime: 'x' }), 'In Progress');
   assert.equal(localStatus({ status: 1, progress: 2, checkinTime: 'x' }), 'Completed');
   assert.equal(localStatus({ status: -1, checkinTime: 'x' }), 'Cancelled');
   assert.equal(localStatus({ status: -2, checkinTime: 'x' }), 'No Show');
+});
+
+/*
+ * Zenoti can leave an older check-in stamp on an appointment. On 2026-09-11 a
+ * 16 Sep visit carried a 3 Aug stamp and showed as checked in five days early.
+ */
+test('a check-in stamp from another clinic day is not an arrival', () => {
+  const { localStatus } = require('../services/zenotiAppointmentSyncService');
+  const visit = { status: 0, progress: 0, startTime: '2026-09-16T14:00:00' };
+  assert.equal(localStatus({ ...visit, checkinTime: '2026-08-03T09:47:00' }), 'Confirmed');
+  assert.equal(localStatus({ ...visit, checkinTime: '2026-09-16T13:52:00' }), 'Checked In');
+  // Late-evening UTC stamp that is the same IST day still counts.
+  assert.equal(localStatus({ ...visit, checkinTime: '2026-09-16T08:22:00Z' }), 'Checked In');
 });
 
 test('note and form normalizers return stable admin-panel shapes', () => {
@@ -177,11 +192,14 @@ test('center appointment normalizer retains operational schedule identifiers', (
 });
 
 test('Zenoti lifecycle maps to real Booking statuses', () => {
-  // Zenoti 2 = "Checked in" (the guest is here) and 4 = "In service" (the guest
-  // is in the room). These were the wrong way round until 2026-09-07, so a
-  // checked-in guest showed as being treated and a guest under treatment showed
-  // as merely confirmed.
-  assert.equal(localStatus({ status: 4, progress: 0 }), 'In Progress');
+  // Zenoti 2 = "Checked in" (the guest is here). 4 = "Confirm": a booked
+  // appointment the clinic confirmed, days or weeks ahead — NOT a session in
+  // the room. It was read as "In service" until 2026-09-11, which showed
+  // confirmed guests as mid-treatment. Being in the room is progress 1.
+  assert.equal(localStatus({ status: 4, progress: 0 }), 'Confirmed');
+  assert.equal(localStatus({ status: 4 }), 'Confirmed');
+  assert.equal(localStatus({ status: 4, progress: 1 }), 'In Progress');
+  assert.equal(localStatus({ status: 0, progress: 1 }), 'In Progress');
   assert.equal(localStatus({ status: 2, progress: 0 }), 'Checked In');
   assert.equal(localStatus({ status: 0, progress: 2 }), 'Completed');
   assert.equal(localStatus({ status: -1 }), 'Cancelled');
@@ -236,9 +254,10 @@ const { mergeStatus, appointmentAttended } = require('../services/zenotiAppointm
 const zenotiWrite = require('../services/zenotiWriteService');
 
 test('inbound merge keeps a desk-advanced state while Zenoti is unchanged, and lets Zenoti terminal states win', () => {
-  const local = (status, zs, zp = 0) => ({ status, zenotiSource: { status: zs, progress: zp } });
+  const local = (status, zs, zp = 0, log = [{ to: status, via: 'panel' }]) => ({ status, zenotiSource: { status: zs, progress: zp }, statusLog: log });
   const feed = (status, progress = 0) => ({ status, progress });
   assert.equal(mergeStatus(local('In Progress', 0), feed(0), 'Confirmed', false), 'In Progress');
+  assert.equal(mergeStatus(local('Checked In', 0), feed(0), 'Confirmed', false), 'Checked In');
   assert.equal(mergeStatus(local('Completed', 0), feed(0), 'Confirmed', false), 'Completed');
   assert.equal(mergeStatus(local('No Show', 0), feed(0), 'Confirmed', false), 'No Show');
   assert.equal(mergeStatus(local('No Show', 0), feed(2, 1), 'In Progress', false), 'In Progress');
@@ -246,6 +265,21 @@ test('inbound merge keeps a desk-advanced state while Zenoti is unchanged, and l
   assert.equal(mergeStatus(local('Completed', 0), feed(-1), 'Cancelled', false), 'Cancelled');
   assert.equal(mergeStatus(local('Cancelled', 'vanished'), feed(0), 'Confirmed', false), 'Confirmed');
   assert.equal(mergeStatus({}, feed(0), 'Confirmed', true), 'Confirmed');
+});
+
+test('a session or arrival nobody recorded here follows Zenoti once Zenoti is read correctly', () => {
+  const synced = (status, zs, zp = 0, log = []) => ({ status, zenotiSource: { status: zs, progress: zp }, statusLog: log });
+  const feed = (status, progress = 0) => ({ status, progress });
+  // The 2026-09-11 misread: confirmed in Zenoti (4), stored here as In Progress, Zenoti unchanged.
+  assert.equal(mergeStatus(synced('In Progress', 4), feed(4), 'Confirmed', false), 'Confirmed');
+  // An old check-in stamp stored as an arrival.
+  assert.equal(mergeStatus(synced('Checked In', 0), feed(0), 'Confirmed', false), 'Confirmed');
+  // A system correction entry is not a desk move.
+  assert.equal(mergeStatus(synced('In Progress', 4, 0, [{ to: 'In Progress', via: 'system' }]), feed(4), 'Confirmed', false), 'Confirmed');
+  // A dermatologist who really started the session keeps it.
+  assert.equal(mergeStatus(synced('In Progress', 4, 0, [{ to: 'In Progress', via: 'panel' }]), feed(4), 'Confirmed', false), 'In Progress');
+  // Closed history is never reopened by a read.
+  assert.equal(mergeStatus(synced('Completed', 4), feed(4), 'Confirmed', false), 'Completed');
 });
 
 test('a Zenoti appointment counts as attended on check-in, start or close', () => {

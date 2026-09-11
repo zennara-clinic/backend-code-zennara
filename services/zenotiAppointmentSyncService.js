@@ -71,10 +71,14 @@ function clinicDate(value) {
  * data (2026-09-06): 1 is by far the commonest and always carries a closed
  * invoice; -1/-2 are cancellations and no-shows. Anything we have not seen
  * documented is shown as its raw code rather than guessed at.
+ *
+ * 4 is "Confirm" (corrected 2026-09-11 — it was labelled "In service"). Live
+ * data settles it: status-4 appointments sit days and weeks in the future with
+ * progress 0 and no check-in. Being in the room is PROGRESS 1, not a status.
  */
 const ZENOTI_STATUS_LABEL = {
   '-2': 'No show', '-1': 'Cancelled', '0': 'Booked', '1': 'Serviced (closed)',
-  '2': 'Checked in', '3': 'Confirmed', '4': 'In service', '11': 'Reserved', '21': 'Voided',
+  '2': 'Checked in', '3': 'Confirmed', '4': 'Confirmed', '11': 'Reserved', '21': 'Voided',
 };
 function zenotiStatusLabel(status) {
   const key = String(status ?? '').trim();
@@ -82,17 +86,41 @@ function zenotiStatusLabel(status) {
   return ZENOTI_STATUS_LABEL[key] || `Zenoti status ${key}`;
 }
 
-/** Zenoti appointment enum/progress -> the local lifecycle enum. */
+/**
+ * Is Zenoti's check-in stamp from the appointment's own clinic day?
+ *
+ * When either side cannot be read, the stamp is trusted (the earlier
+ * behaviour) — this only filters out a stamp that is provably from another day.
+ */
+function checkinOnVisitDay(appointment) {
+  if (!appointment?.checkinTime) return false;
+  const stamp = clinicDate(appointment.checkinTime);
+  if (!stamp) return true;
+  const visitDay = appointmentLocalParts(appointment.startTime, appointment.startTimeUtc).day;
+  if (!visitDay) return true;
+  return clinicDay(stamp) === visitDay;
+}
+
+/**
+ * Zenoti appointment enum/progress -> the local lifecycle enum.
+ *
+ * Status says where the appointment stands (0 new, 4 confirmed, 2 checked in,
+ * 1 closed, -1 cancelled, -2 no-show); PROGRESS says whether the service has
+ * started (1) or finished (2).
+ *
+ * Until 2026-09-11 status 4 was read as "In service", so every appointment the
+ * clinic had confirmed in Zenoti showed as a session under way — 17 on prod
+ * that day, some weeks ahead — and the panels offered "Complete session" for
+ * guests who had not arrived. Only progress 1 (or is_started) is a session.
+ */
 function localStatus(appointment) {
   const status = String(appointment.status ?? '').toLowerCase();
   const progress = Number(appointment.progress);
   if (status === '-2' || status === 'no show') return 'No Show';
   if (status === '-1' || status === '21' || /cancel|void/.test(status)) return 'Cancelled';
   if (appointment.isCompleted || progress === 2 || status === '1' || status === 'closed' || status === 'completed') return 'Completed';
-  // Zenoti separates "In service" (4, progress 1) from "Checked in" (2): the
-  // guest is here versus the guest is in the room. We mirror both, so the day
-  // book and the Zenoti mobile app agree on who is actually being treated.
-  if (appointment.isStarted || progress === 1 || status === '4' || status === 'in service') return 'In Progress';
+  // In the room: the service has started. Zenoti's normalizer sets isStarted from progress 1 too.
+  if (appointment.isStarted || progress === 1 || status === 'in service') return 'In Progress';
   if (status === '2' || status === 'checkin' || status === 'checked in') return 'Checked In';
   /*
    * Zenoti does not always move the status when a guest arrives: a check-in
@@ -102,10 +130,22 @@ function localStatus(appointment) {
    * still reading "Confirmed", so the desk could not see the guest was here.
    * The stamp is the fact; the enum is just where Zenoti happened to leave it.
    */
-  if (appointment.checkinTime) return 'Checked In';
+  // …but only a stamp from this visit's own day: Zenoti can leave an older one
+  // on the appointment (an earlier visit, a reschedule).
+  if (checkinOnVisitDay(appointment)) return 'Checked In';
   // A row in the center appointment book is a real reserved appointment even
-  // when Zenoti uses its default/new status (0).
+  // when Zenoti uses its default/new status (0) or has confirmed it (4).
   return 'Confirmed';
+}
+
+/**
+ * Did someone here — the desk, a dermatologist, the app — move this booking
+ * into `status`? The lifecycle service is the only path into Checked In and In
+ * Progress, and it logs every move (via 'panel' or 'app'). A state with no such
+ * entry was written by this sync from Zenoti's data.
+ */
+function movedHere(booking, status) {
+  return (booking?.statusLog || []).some((entry) => entry && entry.to === status && entry.via !== 'zenoti' && entry.via !== 'system');
 }
 
 /**
@@ -134,7 +174,17 @@ function mergeStatus(booking, appointment, zenotiStatus, isNew) {
   if (zenotiChanged) return zenotiStatus;
   const local = booking.status;
   if (local === 'Cancelled' || local === 'No Show') return local; // desk decision, Zenoti unchanged
-  if ((STATUS_RANK[local] ?? 0) > (STATUS_RANK[zenotiStatus] ?? 0)) return local;
+  if ((STATUS_RANK[local] ?? 0) > (STATUS_RANK[zenotiStatus] ?? 0)) {
+    /*
+     * An arrival or a session is kept over an unchanged Zenoti only when
+     * someone here recorded it. With no lifecycle entry it came from this sync
+     * misreading Zenoti (status 4 as "In service", an old check-in stamp), and
+     * it follows Zenoti now that Zenoti is read correctly. Completed is left
+     * as it is — closed history is not reopened by a read.
+     */
+    if ((local === 'Checked In' || local === 'In Progress') && !movedHere(booking, local)) return zenotiStatus;
+    return local;
+  }
   return zenotiStatus;
 }
 
@@ -541,7 +591,22 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
     booking.paidAt = clinicDate(appointment.actualCompletedTime) || parts.date || new Date();
   }
   booking.room = appointment.roomName || booking.room || '';
-  booking.checkInTime = clinicDate(appointment.checkinTime) || booking.checkInTime;
+  /*
+   * Only a check-in stamp from the appointment's own clinic day is this visit's
+   * arrival. Zenoti can leave an older stamp on an appointment (an earlier
+   * visit, a reschedule) — one sat on a 16 Sep 2026 visit dated 3 Aug — and
+   * mirroring it made a guest who had not come look checked in. A stale stamp
+   * this sync copied earlier is taken back, unless someone here checked the
+   * guest in.
+   */
+  const zenotiCheckIn = clinicDate(appointment.checkinTime);
+  if (zenotiCheckIn && checkinOnVisitDay(appointment)) {
+    booking.checkInTime = zenotiCheckIn;
+  } else if (zenotiCheckIn && booking.checkInTime
+      && new Date(booking.checkInTime).getTime() === zenotiCheckIn.getTime()
+      && !movedHere(booking, 'Checked In')) {
+    booking.checkInTime = null;
+  }
   booking.checkOutTime = clinicDate(appointment.actualCompletedTime) || booking.checkOutTime;
   if (appointment.actualStartTime && !booking.checkInTime) booking.checkInTime = clinicDate(appointment.actualStartTime);
   if (status === 'Cancelled' && !booking.cancelledAt) booking.cancelledAt = new Date();
@@ -598,7 +663,7 @@ async function upsertAppointment(appointment, { user = null, context = null, ver
   // Zenoti records when the guest was checked in at the clinic; without it the
   // day book cannot show a Zenoti visit as "arrived 10:42".
   const zCheckIn = clinicDate(appointment.checkinTime);
-  if (zCheckIn && !booking.checkInTime) booking.checkInTime = zCheckIn;
+  if (zCheckIn && checkinOnVisitDay(appointment) && !booking.checkInTime) booking.checkInTime = zCheckIn;
   if (zCheckIn && !booking.zenotiSource.checkinTime) booking.zenotiSource.checkinTime = appointment.checkinTime;
   booking.zenotiSyncStatus = 'synced';
   booking.zenotiSyncError = null;
