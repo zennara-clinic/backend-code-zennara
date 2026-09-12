@@ -112,7 +112,8 @@ for (const template of TEMPLATES) {
       assert.ok(html.includes('</html>'));
       assert.ok(html.includes('fonts.googleapis.com'), 'loads Cormorant Garamond + Manrope');
       assert.ok(html.includes('@page'), 'has print CSS');
-      assert.ok(html.includes('ZENNARA'), 'wordmark is text');
+      assert.ok(/<img class="rx-logo" src="data:image\/png;base64,/.test(html), 'the clinic logo heads the page, inlined');
+      assert.ok(html.includes('alt="Zennara"'), 'the logo names the clinic when images are off');
     }
     assert.ok(full.includes('Asha Rao'), 'guest name');
     assert.ok(full.includes('ZENFD637'), 'guest code');

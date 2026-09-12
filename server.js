@@ -237,6 +237,16 @@ app.use('/api/bookings', checkBookingStatus);
 app.use('/api', require('./middleware/doctorContactRedaction'));
 
 /* --------------------------------- Routes ---------------------------------- */
+/*
+ * The only static files this API serves: the Zennara logo, in green and in
+ * white. A prescription is printed, downloaded and emailed with the clinic's
+ * logo on it; the email needs an image an inbox can fetch by URL, and the
+ * panel's preview needs one that renders offline (it is inlined there). Kept
+ * to one folder with no directory listing, so this never grows into a way of
+ * serving arbitrary files off the box.
+ */
+app.use('/assets', express.static(require('path').join(__dirname, 'public'), { index: false, maxAge: '7d', immutable: false }));
+
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/privacy', require('./routes/privacy'));
 app.use('/api/admin/auth', require('./routes/adminAuth'));

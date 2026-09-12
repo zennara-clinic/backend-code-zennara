@@ -17,7 +17,14 @@ const { buildView, renderPrescriptionHtml } = require('../utils/prescriptionTemp
  */
 function buildPrescriptionDocument({ note, patient, booking, doctorName }) {
   const view = buildView({ note, patient, booking, doctorName });
-  return renderPrescriptionHtml(view, { template: note?.prescriptionTemplate, draft: false });
+  // In an inbox the logo must be a URL the mail client can fetch; a data URI
+  // is stripped by most of them and the head of the slip would go blank.
+  const { logoUrl } = require('../utils/prescriptionTemplates');
+  return renderPrescriptionHtml(view, {
+    template: note?.prescriptionTemplate,
+    draft: false,
+    logo: { green: logoUrl('green'), white: logoUrl('white') },
+  });
 }
 
 function getPrescriptionEmailBody({ patientName, doctorName, location, docHtml }) {

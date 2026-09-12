@@ -22,8 +22,11 @@
  * never triggers the Zenoti note mirror (the model's `_clinicalChanged`).
  *
  * Brand: forest green on white, extended only with green-family neutrals.
- * Manrope for the interface, Cormorant Garamond for the wordmark alone. The
- * API serves no static files, so the wordmark is text, never an image.
+ * Manrope for the interface. The clinic's logo — the real one, not a typed
+ * wordmark — heads every layout: inlined as a data URI for the panel preview,
+ * download and print (so they render with no network), and fetched from the
+ * API's /assets route in the email, where inboxes need an image they can load
+ * by URL.
  */
 
 const { guestCodeOf } = require('./guestCode');
@@ -195,6 +198,42 @@ function buildView({ note = {}, patient = null, booking = null, doctorName = nul
 const FONTS_LINK = '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
   + '<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">';
 
+
+/* ------------------------------------------------------------------------ *
+ * The logo.
+ *
+ * `logoDataUri(variant)` reads public/zennara-logo[-white].png once and returns
+ * it as a data URI — right for anything rendered in a browser or printed.
+ * `logoUrl(variant)` is the same file on the API's /assets route — right for
+ * email, where most inboxes refuse data URIs but will fetch an https image.
+ * Both fall back to the other so a missing env var or file never blanks the
+ * header; the alt text carries the name if no image can be shown at all.
+ * ------------------------------------------------------------------------ */
+const LOGO_FILES = { green: 'zennara-logo.png', white: 'zennara-logo-white.png' };
+const logoCache = new Map();
+function logoDataUri(variant = 'green') {
+  const key = LOGO_FILES[variant] ? variant : 'green';
+  if (logoCache.has(key)) return logoCache.get(key);
+  let uri = null;
+  try {
+    const file = require('path').join(__dirname, '..', 'public', LOGO_FILES[key]);
+    uri = `data:image/png;base64,${require('fs').readFileSync(file).toString('base64')}`;
+  } catch (_) { uri = null; }
+  logoCache.set(key, uri);
+  return uri;
+}
+function logoUrl(variant = 'green') {
+  const base = String(process.env.API_PUBLIC_URL || '').trim().replace(/\/+$/, '');
+  const key = LOGO_FILES[variant] ? variant : 'green';
+  return base ? `${base}/assets/${LOGO_FILES[key]}` : logoDataUri(key);
+}
+/** The <img> every template puts where the wordmark used to be. */
+function logoTag(src, cls = 'rx-logo') {
+  return src
+    ? `<img class="${cls}" src="${src}" alt="Zennara" width="150">`
+    : `<span class="${cls} rx-logo--text">Zennara</span>`;
+}
+
 const SERIF = "'Cormorant Garamond', 'Cormorant', Garamond, 'Times New Roman', serif";
 const SANS = "'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
 
@@ -298,13 +337,15 @@ const page = ({ title, css, body, draft }) => `<!DOCTYPE html>
 
 /* --- Classic ----------------------------------------------------------- */
 
-function classic(view, { draft }) {
+function classic(view, { draft, logo }) {
   const css = `
 html,body{margin:0;background:${BRAND.sage}}
 body{font:14px/1.5 ${SANS};color:${BRAND.ink}}
 .rx-page{background:${BRAND.cream};max-width:760px;min-height:1000px;margin:24px auto;padding:44px 52px 36px;box-shadow:0 2px 14px rgba(31,42,34,.08);position:relative;overflow:hidden}
 .rx-head{text-align:center;margin-bottom:22px}
 .rx-mark{font:600 36px/1 ${SERIF};letter-spacing:.32em;color:${BRAND.forest};margin:0 0 8px;padding-left:.32em}
+.rx-logo{display:block;width:150px;height:auto;margin:0 auto 10px}
+.rx-logo--text{font:600 36px/1 ${SERIF};letter-spacing:.2em;color:${BRAND.forest}}
 .rx-tag-line{font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:${BRAND.muted};margin:0}
 .rx-centre{font-size:12px;color:${BRAND.muted};margin:6px 0 0}
 .rx-guest{border-top:1px solid ${BRAND.forest};border-bottom:1px solid ${BRAND.forest};padding:12px 0;display:grid;grid-template-columns:1fr 1fr;gap:6px 24px;font-size:13px}
@@ -334,7 +375,7 @@ h3{font:600 11px/1.4 ${SANS};letter-spacing:.16em;text-transform:uppercase;color
 
   const body = `<main class="rx-page">
   <header class="rx-head">
-    <h1 class="rx-mark">ZENNARA</h1>
+    ${logoTag(logo.green)}
     <p class="rx-tag-line">Skin · Aesthetics · Wellness</p>
     ${view.centre ? `<p class="rx-centre">${esc(view.centre)}</p>` : ''}
   </header>
@@ -362,13 +403,15 @@ h3{font:600 11px/1.4 ${SANS};letter-spacing:.16em;text-transform:uppercase;color
 
 /* --- Modern ------------------------------------------------------------ */
 
-function modern(view, { draft }) {
+function modern(view, { draft, logo }) {
   const css = `
 html,body{margin:0;background:${BRAND.sage}}
 body{font:14px/1.5 ${SANS};color:${BRAND.ink}}
 .rx-page{background:#fff;max-width:760px;min-height:1000px;margin:24px auto;box-shadow:0 2px 14px rgba(31,42,34,.08);position:relative;overflow:hidden}
 .rx-band{background:${BRAND.forest};color:#fff;padding:26px 44px;display:flex;justify-content:space-between;align-items:flex-end;gap:16px}
 .rx-mark{font:600 30px/1 ${SERIF};letter-spacing:.3em;margin:0;padding-left:.3em}
+.rx-logo{display:block;width:132px;height:auto;margin:0}
+.rx-logo--text{font:600 30px/1 ${SERIF};letter-spacing:.2em;color:#fff}
 .rx-tag-line{font-size:10.5px;letter-spacing:.2em;text-transform:uppercase;opacity:.8;margin:8px 0 0}
 .rx-band__right{text-align:right;font-size:12.5px;line-height:1.6;opacity:.95}
 .rx-body{padding:26px 44px 32px}
@@ -398,7 +441,7 @@ h3,.rx-findings dt{font:700 10.5px/1.4 ${SANS};letter-spacing:.18em;text-transfo
 
   const body = `<main class="rx-page">
   <header class="rx-band">
-    <div><h1 class="rx-mark">ZENNARA</h1><p class="rx-tag-line">Skin · Aesthetics · Wellness</p></div>
+    <div>${logoTag(logo.white)}<p class="rx-tag-line">Skin · Aesthetics · Wellness</p></div>
     <div class="rx-band__right">${view.centre ? `${esc(view.centre)}<br>` : ''}${esc(fmtDate(view.issuedAt || view.visitDate) || '')}</div>
   </header>
   <div class="rx-body">
@@ -427,13 +470,15 @@ h3,.rx-findings dt{font:700 10.5px/1.4 ${SANS};letter-spacing:.18em;text-transfo
 
 /* --- Minimal ----------------------------------------------------------- */
 
-function minimal(view, { draft }) {
+function minimal(view, { draft, logo }) {
   const css = `
 html,body{margin:0;background:#fff}
 body{font:12.5px/1.45 ${SANS};color:${BRAND.ink}}
 .rx-page{max-width:720px;margin:0 auto;padding:28px 32px;position:relative;overflow:hidden}
 .rx-top{display:flex;justify-content:space-between;align-items:baseline;border-bottom:1px solid ${BRAND.ink};padding-bottom:8px}
 .rx-mark{font:600 20px/1 ${SERIF};letter-spacing:.28em;margin:0}
+.rx-logo{display:block;width:96px;height:auto;margin:0}
+.rx-logo--text{font:600 20px/1 ${SERIF};letter-spacing:.2em;color:${BRAND.ink}}
 .rx-top__right{font-size:11.5px;color:${BRAND.muted};text-align:right}
 .rx-guest{display:flex;flex-wrap:wrap;gap:4px 18px;padding:8px 0;border-bottom:1px solid ${BRAND.ink};font-size:12px}
 .rx-guest b{font-weight:600}
@@ -463,7 +508,7 @@ h3{font:600 11px/1.4 ${SANS};letter-spacing:.12em;text-transform:uppercase;margi
 
   const body = `<main class="rx-page">
   <header class="rx-top">
-    <h1 class="rx-mark">ZENNARA</h1>
+    ${logoTag(logo.green)}
     <div class="rx-top__right">${view.centre ? `${esc(view.centre)} · ` : ''}${esc(fmtDate(view.issuedAt || view.visitDate) || '')}</div>
   </header>
   <section class="rx-guest">
@@ -494,9 +539,15 @@ const RENDERERS = { classic, modern, minimal };
  * choice; `draft` defaults to "not yet signed" and stamps the preview ribbon,
  * so an unsigned sheet can never be mistaken for a prescription.
  */
-function renderPrescriptionHtml(view, { template = view && view.template, draft = !(view && view.signed) } = {}) {
+function renderPrescriptionHtml(view, {
+  template = view && view.template,
+  draft = !(view && view.signed),
+  // Inlined by default, so a preview, a download or a print job needs no
+  // network. The email passes the hosted URLs instead (see logoUrl).
+  logo = { green: logoDataUri('green'), white: logoDataUri('white') },
+} = {}) {
   const key = TEMPLATES.includes(template) ? template : 'classic';
-  return RENDERERS[key](view || buildView({}), { draft: Boolean(draft) });
+  return RENDERERS[key](view || buildView({}), { draft: Boolean(draft), logo: logo || {} });
 }
 
 module.exports = {
@@ -504,6 +555,8 @@ module.exports = {
   templateMeta,
   buildView,
   renderPrescriptionHtml,
+  logoDataUri,
+  logoUrl,
   esc,
   fmtDate,
   daysFromDuration,
