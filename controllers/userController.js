@@ -444,6 +444,23 @@ exports.updateUserStatistics = async (req, res) => {
 // @access  Private (Admin only)
 exports.createUser = async (req, res) => {
   try {
+    /*
+     * The desk does not create guests — since 2026-09-12 by clinic rule.
+     *
+     * A new guest checks in on the walk-in tablet (which collects consent, the
+     * pre-consult intake and a verified phone) or signs up in the app. A guest
+     * typed in here by reception has none of that, so the record would start
+     * incomplete and stay so. The admin panel books for guests already on
+     * file; it never opens a record. The function stays exported and its body
+     * intact so scripts that import it keep resolving.
+     */
+    return res.status(409).json({
+      success: false,
+      code: 'GUEST_CREATION_VIA_WALKIN',
+      message: 'New guests are created on the walk-in tablet or by signing up in the app. Book for an existing guest here.',
+    });
+
+    // eslint-disable-next-line no-unreachable
     const { email, fullName, phone, location, dateOfBirth, gender, memberType, referralSource, referredByUserId } = req.body;
 
     // Validate required fields

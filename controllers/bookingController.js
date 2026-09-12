@@ -1851,35 +1851,27 @@ exports.createBookingAdmin = async (req, res) => {
       }
     }
 
-    // Resolve the guest: explicit id, then phone, then email, else create one.
+    // Resolve the guest: explicit id, then phone, then email. Never create one.
     let user = null;
     if (userId) user = await User.findById(userId);
     if (!user) user = await User.findOne({ phone: mobileNumber });
     if (!user && email) user = await User.findOne({ email: String(email).toLowerCase() });
 
-    let createdUser = false;
     if (!user) {
-      // A walk-in has no email until they give one; synthesise a unique
-      // placeholder so the account can exist and be claimed later.
-      const safeEmail = email
-        ? String(email).toLowerCase()
-        : `walkin.${mobileNumber.replace(/\D/g, '')}@zennara.local`;
-
-      user = await User.create({
-        fullName,
-        email: safeEmail,
-        phone: mobileNumber,
-        location: preferredLocation,
-        dateOfBirth: req.body.dateOfBirth || undefined,
-        gender: req.body.gender || undefined,
-        referralSource: referralSource ? String(referralSource).trim() : null,
-        referredByUserId: referredByUserId || null,
-        source: 'reception',
-        isVerified: false,
-        isActive: true,
+      /*
+       * Guests are created on the walk-in tablet (or by app sign-up), never by
+       * the desk — clinic rule since 2026-09-12. Until then an unknown number
+       * here opened a bare record with a placeholder email, no consent and no
+       * intake, which the tablet would otherwise have collected. The desk
+       * books for guests on file; a new guest checks in first.
+       */
+      return res.status(404).json({
+        success: false,
+        code: 'GUEST_NOT_FOUND',
+        message: 'No guest on file for that number. New guests check in on the walk-in tablet first, then the desk can book for them.',
       });
-      createdUser = true;
-    } else if (referralSource && !user.referralSource) {
+    }
+    if (referralSource && !user.referralSource) {
       // First time the desk records how an existing guest found us.
       await User.updateOne({ _id: user._id }, { $set: { referralSource: String(referralSource).trim(), ...(referredByUserId ? { referredByUserId } : {}) } }).catch(() => {});
     }
@@ -2066,12 +2058,10 @@ exports.createBookingAdmin = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: createdUser
-        ? `Booking created and a new patient record was opened for ${fullName}.`
-        : created.length > 1 ? `${created.length} services booked for ${fullName}.` : 'Booking created successfully',
+      message: created.length > 1 ? `${created.length} services booked for ${fullName}.` : 'Booking created successfully',
       data: booking,
       bookings: created.map((c) => c.booking),
-      meta: { createdUser, patientId: guestCodeOf(user), guestCode: user.guestCode || null, visitGroupId },
+      meta: { patientId: guestCodeOf(user), guestCode: user.guestCode || null, visitGroupId },
     });
   } catch (error) {
     console.error('❌ Admin create booking error:', error);

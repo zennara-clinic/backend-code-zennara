@@ -117,6 +117,15 @@ const consultationNoteSchema = new mongoose.Schema(
 
     followUpDate: { type: Date, default: null },
 
+    /*
+     * Which printed design the dermatologist chose (utils/prescriptionTemplates).
+     * A layout choice, not clinical content: it is absent from the signed
+     * fields (utils/noteSignature) and from `_clinicalChanged` below, so
+     * switching the design neither revokes a signature nor re-mirrors the
+     * note to Zenoti. The guest sees the same design in the app and the email.
+     */
+    prescriptionTemplate: { type: String, enum: ['classic', 'modern', 'minimal'], default: 'classic' },
+
     status: {
       type: String,
       enum: ['Draft', 'Completed'],

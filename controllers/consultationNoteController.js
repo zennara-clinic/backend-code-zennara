@@ -33,6 +33,7 @@ async function emailPrescription(note, booking) {
 }
 
 const { canonical, signedContent, plainOf } = require('../utils/noteSignature');
+const { TEMPLATES, buildView, renderPrescriptionHtml } = require('../utils/prescriptionTemplates');
 
 // Everything a revision must be able to show: the clinical text, and who had signed it.
 const SNAPSHOT_FIELDS = [
@@ -113,7 +114,16 @@ exports.saveNote = async (req, res) => {
       prescription, assignedServices, followUpDate, status,
       primaryDiagnosis, secondaryDiagnosis,
       skinCareAdvice, lifestyleAdvice, precautions,
+      prescriptionTemplate,
     } = req.body;
+
+    if (prescriptionTemplate !== undefined && !TEMPLATES.includes(prescriptionTemplate)) {
+      return res.status(400).json({
+        success: false,
+        code: 'UNKNOWN_TEMPLATE',
+        message: `Choose one of the prescription designs: ${TEMPLATES.join(', ')}.`,
+      });
+    }
 
     /*
      * Signing is a clinical act.
@@ -178,6 +188,9 @@ exports.saveNote = async (req, res) => {
     if (skinCareAdvice !== undefined) note.skinCareAdvice = skinCareAdvice;
     if (lifestyleAdvice !== undefined) note.lifestyleAdvice = lifestyleAdvice;
     if (precautions !== undefined) note.precautions = precautions;
+    // The printed design. Not a signed field, so changing it on a signed note
+    // keeps the signature — the text the dermatologist approved is unchanged.
+    if (prescriptionTemplate !== undefined) note.prescriptionTemplate = prescriptionTemplate;
 
     /*
      * An edit to a signed prescription revokes the signature.
@@ -318,6 +331,44 @@ exports.sendPrescription = async (req, res) => {
   } catch (error) {
     console.error('Send prescription error:', error);
     return res.status(500).json({ success: false, message: 'Failed to send the prescription' });
+  }
+};
+
+// @desc    The prescription as a printable page, in a chosen design
+// @route   GET /api/consultation-notes/:id/prescription.html?template=&draft=
+// @access  Admin (a dermatologist only for their own guests, enforced on the route)
+//
+// `template` overrides the design stored on the note so the panel can show
+// the options before the dermatologist saves one; `draft=1` forces the
+// preview ribbon. An unsigned note is always stamped as a preview, whatever
+// the query says — only a signed sheet may pass as a prescription.
+exports.renderPrescription = async (req, res) => {
+  try {
+    const { template, draft } = req.query;
+    if (template !== undefined && !TEMPLATES.includes(template)) {
+      return res.status(400).json({ success: false, code: 'UNKNOWN_TEMPLATE', message: `Choose one of the prescription designs: ${TEMPLATES.join(', ')}.` });
+    }
+
+    const note = await ConsultationNote.findById(req.params.id)
+      .populate('userId', 'fullName patientId guestCode dateOfBirth gender drugAllergies hasDrugAllergy');
+    if (!note) return res.status(404).json({ success: false, message: 'Consultation note not found' });
+
+    const booking = note.bookingId
+      ? await Booking.findById(note.bookingId)
+        .select('preferredLocation preferredDate confirmedDate externalServiceName consultationId')
+        .populate('consultationId', 'name')
+        .lean()
+      : null;
+
+    const view = buildView({ note, patient: note.userId, booking, doctorName: note.doctorName });
+    const forceDraft = draft === '1' || draft === 'true';
+    const html = renderPrescriptionHtml(view, { template: template || view.template, draft: forceDraft || !view.signed });
+
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).type('html').send(html);
+  } catch (error) {
+    console.error('Render prescription error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to render the prescription' });
   }
 };
 

@@ -22,6 +22,9 @@ router.get('/', scope.scopedList({ doctorKey: 'doctorId' }), getNotes);
 router.get('/booking/:bookingId', scope.ownBooking((req) => req.params.bookingId), getNoteForBooking);
 router.post('/', scope.ownBooking((req) => req.body?.bookingId), auditLog('PRESCRIPTION_SAVED', 'CLINICAL'), saveNote);
 router.post('/:id/send', OWN_NOTE, auditLog('PRESCRIPTION_SAVED', 'CLINICAL'), require('../controllers/consultationNoteController').sendPrescription);
+// The printable sheet in one of the branded designs (?template= previews an
+// option before it is saved; ?draft=1 forces the preview ribbon).
+router.get('/:id/prescription.html', OWN_NOTE, require('../controllers/consultationNoteController').renderPrescription);
 router.delete('/:id', requirePermission('consultationNotes.manage'), OWN_NOTE, deleteNote);
 
 module.exports = router;

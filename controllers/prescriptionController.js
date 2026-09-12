@@ -10,24 +10,14 @@
 const ConsultationNote = require('../models/ConsultationNote');
 const { getGuestEligibility } = require('../utils/guestEligibility');
 
-/** "14 days", "2 weeks", "1 month", "10 days x 2" → days; null when unparseable. */
-function daysFromDuration(text) {
-  const m = String(text || '').match(/(\d+(?:\.\d+)?)\s*(day|week|month|wk|mo)/i);
-  if (!m) return null;
-  const n = Number(m[1]);
-  const unit = m[2].toLowerCase();
-  if (unit.startsWith('w')) return Math.round(n * 7);
-  if (unit.startsWith('m')) return Math.round(n * 30);
-  return Math.round(n);
-}
+/*
+ * Duration → days and the refill date live in utils/prescriptionTemplates
+ * (the printed sheet's view carries a refill date per line); re-exported here
+ * because utils/bookingScheduler reads them from this module.
+ */
+const { daysFromDuration, refillDueAt, buildView, renderPrescriptionHtml } = require('../utils/prescriptionTemplates');
+const { guestCodeOf } = require('../utils/guestCode');
 exports.daysFromDuration = daysFromDuration;
-
-function refillDueAt(note, item) {
-  const days = Number(item.refillAfterDays) > 0 ? Number(item.refillAfterDays) : daysFromDuration(item.duration);
-  if (!days) return null;
-  const from = note.completedAt || note.createdAt;
-  return from ? new Date(new Date(from).getTime() + days * 86400000) : null;
-}
 exports.refillDueAt = refillDueAt;
 
 const PRODUCT_FIELDS = '_id name description formulation OrgName price gstPercentage image stock trackStock isActive isPopular sku';
@@ -35,13 +25,26 @@ const PRODUCT_FIELDS = '_id name description formulation OrgName price gstPercen
 function shape(note) {
   const booking = note.bookingId && typeof note.bookingId === 'object' ? note.bookingId : null;
   const service = booking?.consultationId && typeof booking.consultationId === 'object' ? booking.consultationId : null;
+  // The caller is the guest, so these are their own details — the app's card
+  // shows the same guest block the printed sheet carries.
+  const guest = note.userId && typeof note.userId === 'object' ? note.userId : null;
+  const view = buildView({ note, patient: guest });
   return {
     _id: note._id,
     date: note.completedAt || note.createdAt,
     doctorName: note.doctorName || null,
     doctorId: note.doctorId || null,
+    doctorRegistration: note.prescriptionSignedByRegistration || null,
     signed: Boolean(note.prescriptionSigned),
     signedBy: note.prescriptionSignedByName || null,
+    signedAt: note.prescriptionSignedAt || null,
+    template: view.template,
+    patient: guest ? {
+      name: guest.fullName || null,
+      guestCode: guestCodeOf(guest),
+      age: view.age,
+      gender: guest.gender || null,
+    } : null,
     centre: booking?.preferredLocation || null,
     service: service?.name || booking?.externalServiceName || null,
     visitDate: booking?.confirmedDate || booking?.preferredDate || null,
@@ -78,6 +81,7 @@ function shape(note) {
 
 const populate = (q) => q
   .populate({ path: 'bookingId', select: 'preferredLocation preferredDate confirmedDate externalServiceName consultationId', populate: { path: 'consultationId', select: 'name category' } })
+  .populate('userId', 'fullName patientId guestCode dateOfBirth gender drugAllergies hasDrugAllergy')
   .populate('prescription.productId', PRODUCT_FIELDS);
 
 /**
@@ -169,6 +173,24 @@ exports.getMine = async (req, res) => {
     return res.json({ success: true, data: shape(note) });
   } catch (error) {
     console.error('Get prescription failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not load this prescription right now.' });
+  }
+};
+
+// GET /api/prescriptions/:id/html — the guest's own SIGNED prescription as the
+// printable page, in the design the dermatologist chose. Never a draft: an
+// unsigned note is not a prescription and is not theirs to see yet.
+exports.getMineHtml = async (req, res) => {
+  try {
+    const note = await populate(ConsultationNote.findOne({
+      _id: req.params.id, userId: req.user._id, status: 'Completed', prescriptionSigned: true,
+    })).lean();
+    if (!note) return res.status(404).json({ success: false, message: 'This prescription is not available.' });
+    const view = buildView({ note, patient: note.userId, booking: note.bookingId, doctorName: note.doctorName });
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).type('html').send(renderPrescriptionHtml(view, { template: view.template, draft: false }));
+  } catch (error) {
+    console.error('Render prescription failed:', error);
     return res.status(500).json({ success: false, message: 'Could not load this prescription right now.' });
   }
 };

@@ -2,40 +2,22 @@
  * The signed prescription, as the guest receives it.
  *
  * `buildPrescriptionDocument` renders the standalone prescription — the same
- * layout the panel's Download button produces — used both inside the email
+ * design the panel prints and the app shows — used both inside the email
  * body and as the attached, downloadable file. Zennara is a clinic: this is a
  * record of what the dermatologist prescribed, sent right after they sign.
  */
 
-const { guestCodeOf } = require('../utils/guestCode');
+const { buildView, renderPrescriptionHtml } = require('../utils/prescriptionTemplates');
 
-const esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
-const fmtDate = (d) => {
-  const date = d ? new Date(d) : new Date();
-  return date.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric', timeZone: 'Asia/Kolkata' });
-};
-
+/*
+ * Since 2026-09 the document is drawn by utils/prescriptionTemplates in the
+ * design the dermatologist chose on the note, so the attachment, the panel's
+ * print and the guest's in-app copy are the same page. The email only ever
+ * carries a signed prescription, so the preview ribbon is never stamped here.
+ */
 function buildPrescriptionDocument({ note, patient, booking, doctorName }) {
-  const age = patient?.dateOfBirth
-    ? Math.floor((Date.now() - new Date(patient.dateOfBirth).getTime()) / (365.25 * 86400000))
-    : null;
-  const items = (note.prescription || []).map((r) => {
-    const bits = [r.dosage, r.frequency, r.duration, r.instructions].filter(Boolean).map(esc).join(' · ');
-    return `<li>${esc(r.medicine)}${bits ? ` — ${bits}` : ''}${r.isScheduleH ? ' <b>(Sch H)</b>' : ''}</li>`;
-  }).join('');
-
-  return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Prescription — ${esc(patient?.fullName)}</title>
-<style>body{font-family:Georgia,serif;max-width:640px;margin:40px auto;color:#111;padding:0 16px}h1{font-size:20px;letter-spacing:2px}hr{border:0;border-top:1px solid #ccc}li{margin:8px 0}</style></head>
-<body><h1>ZENNARA</h1><p>Skin · Aesthetics · Wellness${booking?.preferredLocation ? ` — ${esc(booking.preferredLocation)}` : ''}</p><hr>
-<p><b>Patient:</b> ${esc(patient?.fullName)}${age ? ` · ${age} ${esc(patient?.gender || '')}` : ''}${guestCodeOf(patient) ? `<br><b>Guest code:</b> ${esc(guestCodeOf(patient))}` : ''}<br><b>Date:</b> ${fmtDate(note.completedAt)}</p>
-<p><b>Complaint:</b> ${esc(note.complaint) || '—'}</p><p><b>Examination:</b> ${esc(note.examination) || '—'}</p>
-<p><b>Assessment:</b> ${esc(note.assessment) || '—'}</p><p><b>Plan:</b> ${esc(note.plan) || '—'}</p>
-<h3>Rx</h3><ol>${items || '<li>—</li>'}</ol>
-${note.followUpDate ? `<p><b>Review on:</b> ${fmtDate(note.followUpDate)}</p>` : ''}<hr>
-<p><b>${esc(doctorName || note.doctorName || '')}</b></p>
-<p style="font-size:11px;color:#777">This prescription was issued electronically by Zennara Clinics after your consultation. Keep it for your records; a pharmacy can dispense from the printed or displayed copy.</p>
-</body></html>`;
+  const view = buildView({ note, patient, booking, doctorName });
+  return renderPrescriptionHtml(view, { template: note?.prescriptionTemplate, draft: false });
 }
 
 function getPrescriptionEmailBody({ patientName, doctorName, location, docHtml }) {
