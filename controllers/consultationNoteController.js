@@ -1,39 +1,174 @@
 const ConsultationNote = require('../models/ConsultationNote');
 const Booking = require('../models/Booking');
+const { canonical, signedContent, plainOf } = require('../utils/noteSignature');
+const { TEMPLATES, buildView, renderPrescriptionHtml, fmtDate } = require('../utils/prescriptionTemplates');
+const {
+  renderPrescriptionPdf, prescriptionFilename, makeShareToken, shareUrl,
+} = require('../utils/prescriptionPdf');
+
+/* ------------------------------------------------------------------------ *
+ * Delivery on signature.
+ *
+ * The clinic's rule (2026-09-12): there is no "send" button anywhere. The
+ * dermatologist signs, and the prescription goes to the guest as a PDF — by
+ * email as an attachment and by WhatsApp as a document — wherever the guest
+ * has an address. A failure is recorded on the note, never raised: a Twilio
+ * outage must not undo a clinical signature, and the desk can read on the
+ * note exactly what reached the guest and what did not.
+ * ------------------------------------------------------------------------ */
+
+/** Addresses minted for walk-ins and WhatsApp-only guests — real to the database, not to a mailbox. */
+const PLACEHOLDER_EMAIL = /@(zennara\.local|guest\.zennara\.in)$/i;
+const realEmail = (email) => {
+  const e = String(email || '').trim();
+  return e && e.includes('@') && !PLACEHOLDER_EMAIL.test(e) ? e : null;
+};
+/** Digits only; whatsappService adds +91 to a bare ten-digit Indian number. */
+const realPhone = (phone) => {
+  const digits = String(phone || '').replace(/\D/g, '');
+  return digits.length >= 10 ? digits : null;
+};
+
+const channel = () => ({ ok: false, to: null, at: null, error: null });
+const plainChannel = (c) => (c && typeof c.toObject === 'function' ? c.toObject() : c);
+
+/** The booking fields the printed sheet reads, with the service name populated. */
+const bookingForSheet = (bookingId) => (bookingId
+  ? Booking.findById(bookingId)
+    .select('preferredLocation preferredDate confirmedDate externalServiceName consultationId')
+    .populate('consultationId', 'name')
+    .lean()
+  : null);
 
 /**
- * Email the signed prescription to the guest. Never throws — a mail outage
- * must not fail the clinical save; the panel can always resend.
+ * Has this signature reached the guest yet? True before the first attempt,
+ * and again when a channel that HAD an address failed — a later Completed
+ * save retries only those. A channel with no address is not retried: the
+ * guest's record has to change first, and that is a different save.
  */
-async function emailPrescription(note, booking) {
-  try {
-    const patient = note.userId && note.userId.fullName
-      ? note.userId
-      : await require('../models/User').findById(note.userId).select('fullName email phone patientId guestCode dateOfBirth gender').lean();
-    const email = patient?.email;
-    if (!email || /@zennara\.local$/i.test(email)) return false; // walk-in placeholder, nowhere to send
-    if (!(note.prescription || []).length) return false;
-
-    const { buildPrescriptionDocument } = require('../Email Templates/prescriptionEmailTemplate');
-    const docHtml = buildPrescriptionDocument({ note, patient, booking, doctorName: note.doctorName });
-    await require('../utils/emailService').sendPrescriptionEmail(email, patient.fullName, {
-      docHtml,
-      doctorName: note.doctorName,
-      location: booking?.preferredLocation || null,
-    });
-    await ConsultationNote.updateOne(
-      { _id: note._id },
-      { $set: { prescriptionEmailedAt: new Date(), prescriptionEmailedTo: email } },
-    );
-    return true;
-  } catch (error) {
-    console.error('❌ Prescription email failed (note saved regardless):', error.message);
-    return false;
-  }
+function needsDelivery(delivery) {
+  if (!delivery || !delivery.at) return true;
+  const failed = (c) => c && c.to && !c.ok;
+  return failed(delivery.email) || failed(delivery.whatsapp);
 }
 
-const { canonical, signedContent, plainOf } = require('../utils/noteSignature');
-const { TEMPLATES, buildView, renderPrescriptionHtml } = require('../utils/prescriptionTemplates');
+/** The WhatsApp caption under the document. */
+function whatsappCaption(view, guestFirstName) {
+  const who = view.doctorName ? `Dr ${String(view.doctorName).replace(/^dr\.?\s*/i, '')}` : 'your dermatologist';
+  const where = view.centre ? ` (${view.centre})` : '';
+  const when = view.signedAt ? `, signed ${fmtDate(view.signedAt)}` : '';
+  return `Hi ${guestFirstName}, here is your prescription from ${who} at Zennara${where}${when}. Keep it for your records — a pharmacy can dispense from it.`;
+}
+
+/**
+ * Render the PDF once and send it down both channels. Returns the delivery
+ * record; `prior` (the note's existing record) keeps a channel that already
+ * succeeded so a retry never sends the guest the same file twice.
+ */
+async function deliverPrescription(note, booking, prior = null) {
+  const previous = prior && typeof prior.toObject === 'function' ? prior.toObject() : prior;
+  const delivery = {
+    at: new Date(),
+    pdfBytes: previous?.pdfBytes || 0,
+    email: previous?.email?.ok ? plainChannel(previous.email) : channel(),
+    whatsapp: previous?.whatsapp?.ok ? plainChannel(previous.whatsapp) : channel(),
+  };
+  const stamp = (which, patch) => { delivery[which] = { ...delivery[which], at: new Date(), ...patch }; };
+
+  let patient;
+  let view;
+  let pdf;
+  try {
+    patient = note.userId && note.userId.fullName !== undefined
+      ? note.userId
+      : await require('../models/User').findById(note.userId)
+        .select('fullName email phone patientId guestCode dateOfBirth gender drugAllergies hasDrugAllergy').lean();
+    view = buildView({ note, patient, booking: await bookingForSheet(note.bookingId) || booking, doctorName: note.doctorName });
+    pdf = await renderPrescriptionPdf(view, { draft: false });
+    delivery.pdfBytes = pdf.length;
+  } catch (error) {
+    // Nothing can go out without the file; both channels carry the reason.
+    console.error('❌ Prescription PDF failed (note saved regardless):', error.message);
+    const reason = `PDF could not be rendered: ${error.message}`;
+    if (!delivery.email.ok) stamp('email', { error: reason });
+    if (!delivery.whatsapp.ok) stamp('whatsapp', { error: reason });
+    return delivery;
+  }
+
+  const firstName = String(patient?.fullName || 'there').trim().split(/\s+/)[0] || 'there';
+
+  if (!delivery.email.ok) {
+    const email = realEmail(patient?.email);
+    if (!email) {
+      stamp('email', { error: 'No email on file' });
+    } else {
+      try {
+        await require('../utils/emailService').sendPrescriptionEmail(email, patient.fullName, {
+          pdf,
+          filename: prescriptionFilename(view),
+          doctorName: note.doctorName,
+          location: view.centre,
+          signedAt: view.signedAt,
+        });
+        stamp('email', { ok: true, to: email, error: null });
+      } catch (error) {
+        console.error('❌ Prescription email failed (note saved regardless):', error.message);
+        stamp('email', { ok: false, to: email, error: error.message });
+      }
+    }
+  }
+
+  if (!delivery.whatsapp.ok) {
+    const phone = realPhone(patient?.phone);
+    if (!phone) {
+      stamp('whatsapp', { error: 'No phone on file' });
+    } else {
+      try {
+        // Twilio fetches the document itself, so it gets a signed link that
+        // outlives the send by a week and nothing else.
+        const { token } = makeShareToken(note._id);
+        const url = shareUrl(token);
+        if (!url) throw new Error('API_PUBLIC_URL is not set; WhatsApp cannot fetch the PDF');
+        const result = await require('../services/whatsappService').sendDocument(phone, whatsappCaption(view, firstName), url);
+        if (result && result.success) stamp('whatsapp', { ok: true, to: phone, error: null });
+        else stamp('whatsapp', { ok: false, to: phone, error: (result && result.error) || 'WhatsApp send failed' });
+      } catch (error) {
+        console.error('❌ Prescription WhatsApp failed (note saved regardless):', error.message);
+        stamp('whatsapp', { ok: false, to: phone, error: error.message });
+      }
+    }
+  }
+
+  return delivery;
+}
+
+/**
+ * What the panel shows after signing: which channel the prescription went
+ * out on, which failed, and which had nowhere to go.
+ */
+function deliveryMessage(delivery) {
+  const sent = [];
+  const failed = [];
+  const missing = [];
+  const judge = (c, name, address) => {
+    if (c.ok) sent.push(name);
+    else if (c.to) failed.push(name);
+    else missing.push(address);
+  };
+  judge(delivery.whatsapp, 'WhatsApp', 'phone');
+  judge(delivery.email, 'email', 'email');
+  if (sent.length === 2) return 'Signed — sent by WhatsApp and email';
+  if (missing.length === 2) return 'Signed — no phone or email on file; nothing sent';
+  const parts = [];
+  if (sent.length) parts.push(`${sent[0]} sent`);
+  if (failed.length) parts.push(`${failed.join(' and ')} failed`);
+  if (missing.length) parts.push(`no ${missing[0]} on file`);
+  return `Signed — ${parts.join('; ')}`;
+}
+
+exports.deliverPrescription = deliverPrescription;
+exports.deliveryMessage = deliveryMessage;
+exports.needsDelivery = needsDelivery;
 
 // Everything a revision must be able to show: the clinical text, and who had signed it.
 const SNAPSHOT_FIELDS = [
@@ -213,6 +348,7 @@ exports.saveNote = async (req, res) => {
       // The guest holds the old version; the next signature must reach them again.
       note.prescriptionEmailedAt = null;
       note.prescriptionEmailedTo = null;
+      note.prescriptionDelivery = null;
       note.guestNotifiedAt = null;
     }
 
@@ -242,7 +378,7 @@ exports.saveNote = async (req, res) => {
     }
 
     await note.save();
-    await note.populate('userId', 'fullName email phone patientId guestCode dateOfBirth gender drugAllergies');
+    await note.populate('userId', 'fullName email phone patientId guestCode dateOfBirth gender drugAllergies hasDrugAllergy');
 
     // Tell the guest in-app (and on their phone) the moment it is signed — once.
     if (note.status === 'Completed' && !note.guestNotifiedAt) {
@@ -267,25 +403,41 @@ exports.saveNote = async (req, res) => {
       }
     }
 
-    // Signing sends the prescription to the guest's inbox in the same breath —
-    // viewable in the body, downloadable as the attachment.
-    let emailed = false;
-    if (note.status === 'Completed' && (note.prescription || []).length && !note.prescriptionEmailedAt) {
-      emailed = await emailPrescription(note, booking);
-      if (emailed) {
-        note.prescriptionEmailedAt = new Date();
-        note.prescriptionEmailedTo = note.userId?.email || null;
+    /*
+     * Signing delivers the prescription in the same breath — the PDF by
+     * email and by WhatsApp, wherever the guest has an address. This is the
+     * only path a prescription takes to a guest (no send button exists), so
+     * the outcome is written on the note and reported back to the panel.
+     */
+    const hasItems = (note.prescription || []).length > 0;
+    let delivery = null;
+    if (note.status === 'Completed' && hasItems && needsDelivery(note.prescriptionDelivery)) {
+      delivery = await deliverPrescription(note, booking, note.prescriptionDelivery);
+      note.prescriptionDelivery = delivery;
+      if (delivery.email.ok) {
+        note.prescriptionEmailedAt = delivery.email.at;
+        note.prescriptionEmailedTo = delivery.email.to;
       }
+      try {
+        note.$locals.skipZenotiWrite = true;
+        await note.save({ validateModifiedOnly: true });
+      } catch (recordError) {
+        console.error('Prescription delivery record failed:', recordError.message);
+      }
+    }
+
+    let message = 'Draft saved';
+    if (note.status === 'Completed') {
+      if (delivery) message = deliveryMessage(delivery);
+      else if (!hasItems) message = 'Signed — no medicines on the prescription, nothing to send';
+      else message = 'Consultation completed and saved';
     }
 
     return res.status(200).json({
       success: true,
-      message: note.status === 'Completed'
-        ? (emailed
-            ? `Consultation completed — prescription emailed to ${note.prescriptionEmailedTo}`
-            : 'Consultation completed and saved')
-        : 'Draft saved',
-      prescriptionEmailed: emailed,
+      message,
+      prescriptionEmailed: Boolean(delivery && delivery.email.ok),
+      delivery,
       data: note,
     });
   } catch (error) {
@@ -304,70 +456,61 @@ exports.saveNote = async (req, res) => {
   }
 };
 
-// @desc    Email the signed prescription to the guest (first send or resend)
-// @route   POST /api/consultation-notes/:id/send
-// @access  Admin (any staff — audited by the route)
-exports.sendPrescription = async (req, res) => {
-  try {
-    const note = await ConsultationNote.findById(req.params.id)
-      .populate('userId', 'fullName email phone patientId guestCode dateOfBirth gender');
-    if (!note) return res.status(404).json({ success: false, message: 'Consultation note not found' });
-    if (note.status !== 'Completed' || !note.prescriptionSigned) {
-      return res.status(400).json({ success: false, message: 'Sign the consultation first — only a signed prescription can be sent.' });
-    }
-    if (!(note.prescription || []).length) {
-      return res.status(400).json({ success: false, message: 'There is no prescription on this note.' });
-    }
-    const email = note.userId?.email;
-    if (!email || /@zennara\.local$/i.test(email)) {
-      return res.status(400).json({ success: false, message: 'The guest has no email on file — add one to their profile first.' });
-    }
-
-    const booking = note.bookingId ? await Booking.findById(note.bookingId).select('preferredLocation').lean() : null;
-    const ok = await emailPrescription(note, booking);
-    if (!ok) return res.status(502).json({ success: false, message: 'The email could not be sent. Try again in a moment.' });
-
-    return res.status(200).json({ success: true, message: `Prescription emailed to ${email}` });
-  } catch (error) {
-    console.error('Send prescription error:', error);
-    return res.status(500).json({ success: false, message: 'Failed to send the prescription' });
+/*
+ * The two render endpoints share one loader and one reading of the query.
+ * `template` overrides the design stored on the note so the panel can show
+ * the options before the dermatologist saves one; `draft=1` forces the
+ * preview ribbon. An unsigned note is always stamped as a preview, whatever
+ * the query says — only a signed sheet may pass as a prescription.
+ */
+async function loadSheet(req, res) {
+  const { template, draft } = req.query;
+  if (template !== undefined && !TEMPLATES.includes(template)) {
+    res.status(400).json({ success: false, code: 'UNKNOWN_TEMPLATE', message: `Choose one of the prescription designs: ${TEMPLATES.join(', ')}.` });
+    return null;
   }
-};
+  const note = await ConsultationNote.findById(req.params.id)
+    .populate('userId', 'fullName patientId guestCode dateOfBirth gender drugAllergies hasDrugAllergy');
+  if (!note) {
+    res.status(404).json({ success: false, message: 'Consultation note not found' });
+    return null;
+  }
+  const booking = await bookingForSheet(note.bookingId);
+  const view = buildView({ note, patient: note.userId, booking, doctorName: note.doctorName });
+  const forceDraft = draft === '1' || draft === 'true';
+  return { view, template: template || view.template, draft: forceDraft || !view.signed };
+}
 
 // @desc    The prescription as a printable page, in a chosen design
 // @route   GET /api/consultation-notes/:id/prescription.html?template=&draft=
 // @access  Admin (a dermatologist only for their own guests, enforced on the route)
-//
-// `template` overrides the design stored on the note so the panel can show
-// the options before the dermatologist saves one; `draft=1` forces the
-// preview ribbon. An unsigned note is always stamped as a preview, whatever
-// the query says — only a signed sheet may pass as a prescription.
 exports.renderPrescription = async (req, res) => {
   try {
-    const { template, draft } = req.query;
-    if (template !== undefined && !TEMPLATES.includes(template)) {
-      return res.status(400).json({ success: false, code: 'UNKNOWN_TEMPLATE', message: `Choose one of the prescription designs: ${TEMPLATES.join(', ')}.` });
-    }
-
-    const note = await ConsultationNote.findById(req.params.id)
-      .populate('userId', 'fullName patientId guestCode dateOfBirth gender drugAllergies hasDrugAllergy');
-    if (!note) return res.status(404).json({ success: false, message: 'Consultation note not found' });
-
-    const booking = note.bookingId
-      ? await Booking.findById(note.bookingId)
-        .select('preferredLocation preferredDate confirmedDate externalServiceName consultationId')
-        .populate('consultationId', 'name')
-        .lean()
-      : null;
-
-    const view = buildView({ note, patient: note.userId, booking, doctorName: note.doctorName });
-    const forceDraft = draft === '1' || draft === 'true';
-    const html = renderPrescriptionHtml(view, { template: template || view.template, draft: forceDraft || !view.signed });
-
+    const sheet = await loadSheet(req, res);
+    if (!sheet) return undefined;
+    const html = renderPrescriptionHtml(sheet.view, { template: sheet.template, draft: sheet.draft });
     res.setHeader('Cache-Control', 'no-store');
     return res.status(200).type('html').send(html);
   } catch (error) {
     console.error('Render prescription error:', error);
+    return res.status(500).json({ success: false, message: 'Failed to render the prescription' });
+  }
+};
+
+// @desc    The same sheet as the PDF the guest receives
+// @route   GET /api/consultation-notes/:id/prescription.pdf?template=&draft=
+// @access  Admin (a dermatologist only for their own guests, enforced on the route)
+exports.renderPrescriptionPdf = async (req, res) => {
+  try {
+    const sheet = await loadSheet(req, res);
+    if (!sheet) return undefined;
+    const pdf = await renderPrescriptionPdf(sheet.view, { template: sheet.template, draft: sheet.draft });
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${prescriptionFilename(sheet.view)}"`);
+    return res.status(200).send(pdf);
+  } catch (error) {
+    console.error('Render prescription PDF error:', error);
     return res.status(500).json({ success: false, message: 'Failed to render the prescription' });
   }
 };

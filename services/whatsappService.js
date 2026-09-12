@@ -65,6 +65,46 @@ class WhatsAppService {
   }
 
   /**
+   * Send a document (a PDF) with a caption.
+   *
+   * Twilio does not accept file bytes: it fetches `mediaUrl` itself over
+   * https, so the URL must be public and reachable from outside — the
+   * prescription uses a signed, expiring link (utils/prescriptionPdf) for
+   * exactly that. Same number normalisation and result shape as sendMessage,
+   * so a failure is reported, never thrown.
+   */
+  async sendDocument(to, caption, mediaUrl) {
+    try {
+      const formattedTo = this.formatPhoneNumber(to);
+
+      console.log(`Sending WhatsApp document to: ${formattedTo}`);
+
+      const message = await this.client.messages.create({
+        from: this.fromNumber,
+        to: formattedTo,
+        body: caption,
+        mediaUrl: [mediaUrl],
+      });
+
+      console.log(`WhatsApp document sent. SID: ${message.sid}`);
+
+      return {
+        success: true,
+        messageSid: message.sid,
+        status: message.status,
+      };
+    } catch (error) {
+      console.error('WhatsApp document failed:', error.message);
+
+      return {
+        success: false,
+        error: error.message,
+        code: error.code,
+      };
+    }
+  }
+
+  /**
    * Send message using approved Twilio Content Template
    * Use this method when you have approved WhatsApp templates
    */

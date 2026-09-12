@@ -22,11 +22,15 @@
  * never triggers the Zenoti note mirror (the model's `_clinicalChanged`).
  *
  * Brand: forest green on white, extended only with green-family neutrals.
- * Manrope for the interface. The clinic's logo — the real one, not a typed
- * wordmark — heads every layout: inlined as a data URI for the panel preview,
- * download and print (so they render with no network), and fetched from the
- * API's /assets route in the email, where inboxes need an image they can load
- * by URL.
+ * Every word of a prescription is set in Poppins — the clinic's rule since
+ * 2026-09-12, so the HTML sheet and the PDF (utils/prescriptionPdf, which
+ * embeds the same faces from public/fonts) look like one document. The only
+ * other face is Dancing Script, used for exactly one thing: the signing
+ * dermatologist's name drawn as a signature above their printed name. The
+ * clinic's logo — the real one, not a typed wordmark — heads every layout:
+ * inlined as a data URI for the panel preview, download and print (so they
+ * render with no network), and fetched from the API's /assets route in the
+ * email, where inboxes need an image they can load by URL.
  */
 
 const { guestCodeOf } = require('./guestCode');
@@ -171,6 +175,14 @@ function buildView({ note = {}, patient = null, booking = null, doctorName = nul
     doctorName: str(doctorName) || str(n.doctorName) || null,
     signedBy: str(n.prescriptionSignedByName) || null,
     registration: str(n.prescriptionSignedByRegistration) || null,
+    /*
+     * What the generated signature says. There is no drawn or uploaded
+     * signature image anywhere in the clinic: the signing dermatologist's
+     * name is set in a script face above their printed name, on paper and in
+     * the PDF alike. Renderers draw it only when the note is signed — a draft
+     * carries the "not signed" state instead.
+     */
+    signatureText: str(n.prescriptionSignedByName) || str(doctorName) || str(n.doctorName) || null,
     signed: Boolean(n.prescriptionSigned),
     signedAt: n.prescriptionSignedAt || null,
     diagnosis: { primary: str(n.primaryDiagnosis), secondary: str(n.secondaryDiagnosis) },
@@ -196,7 +208,8 @@ function buildView({ note = {}, patient = null, booking = null, doctorName = nul
 /* --- Shared fragments -------------------------------------------------- */
 
 const FONTS_LINK = '<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>'
-  + '<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,500;0,600;1,500&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">';
+  + '<link href="https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&display=swap" rel="stylesheet">'
+  + '<link href="https://fonts.googleapis.com/css2?family=Dancing+Script:wght@400;600&display=swap" rel="stylesheet">';
 
 
 /* ------------------------------------------------------------------------ *
@@ -222,8 +235,25 @@ function logoDataUri(variant = 'green') {
   logoCache.set(key, uri);
   return uri;
 }
+
+/*
+ * Where this API can be reached from outside.
+ *
+ * Share links and the WhatsApp document URL must be fetchable by Twilio and by
+ * a guest's phone, so they need the public origin, not the bind address. It
+ * comes from API_PUBLIC_URL; in production, when that is unset, the same origin
+ * the mobile app is built against is assumed rather than failing every
+ * delivery over one missing variable. Outside production there is no safe
+ * guess, so the caller gets an empty string and decides.
+ */
+function publicApiOrigin() {
+  const configured = String(process.env.API_PUBLIC_URL || '').trim().replace(/\/+$/, '');
+  if (configured) return configured;
+  return process.env.NODE_ENV === 'production' ? 'https://api.zennara.in' : '';
+}
+
 function logoUrl(variant = 'green') {
-  const base = String(process.env.API_PUBLIC_URL || '').trim().replace(/\/+$/, '');
+  const base = publicApiOrigin();
   const key = LOGO_FILES[variant] ? variant : 'green';
   return base ? `${base}/assets/${LOGO_FILES[key]}` : logoDataUri(key);
 }
@@ -234,8 +264,16 @@ function logoTag(src, cls = 'rx-logo') {
     : `<span class="${cls} rx-logo--text">Zennara</span>`;
 }
 
-const SERIF = "'Cormorant Garamond', 'Cormorant', Garamond, 'Times New Roman', serif";
-const SANS = "'Manrope', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
+/*
+ * Poppins for everything, with the same sans fallbacks the PDF cannot need.
+ * `SERIF` keeps its name so the template CSS reads unchanged, but it IS
+ * Poppins: the clinic wants no second typeface on a prescription, and the
+ * wordmark it once styled is the logo image now anyway.
+ */
+const SANS = "'Poppins', -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif";
+const SERIF = SANS;
+/** The signature face — for the dermatologist's name and nothing else. */
+const SCRIPT = "'Dancing Script', 'Segoe Script', 'Brush Script MT', cursive";
 
 /**
  * Print rules every design shares: A4, sane margins, and the Rx table never
@@ -257,6 +295,17 @@ const RIBBON_CSS = `
 
 const ribbon = (draft) => (draft ? '<div class="rx-ribbon" role="note">Preview — not signed</div>' : '');
 
+/**
+ * The generated signature, shared by every design: the dermatologist's name
+ * in the script face, sitting on the signature rule. Declared before each
+ * template's own CSS so a design may recolour it (minimal keeps it in ink).
+ */
+const SIGN_CSS = `
+.rx-sign__script{font:400 30px/1.15 ${SCRIPT};color:${BRAND.forest};margin:0 0 2px;white-space:nowrap}`;
+
+/** The mark on a Schedule H line — spelled out, never abbreviated to "Sch H". */
+const SCHEDULE_H_TAG = 'Schedule H · prescription only';
+
 /** A guest-facing line: "Guest code · Age/Gender" style fragments. */
 const ageGender = (view) => [view.age !== null && view.age !== undefined ? `${view.age} yrs` : null, view.gender].filter(Boolean).join(' / ');
 
@@ -271,7 +320,7 @@ function itemsTable(view) {
     const second = joinDots([it.timing, it.instructions]);
     return `<tr>
       <td class="rx-n">${i + 1}</td>
-      <td class="rx-med"><b>${title || '&mdash;'}</b>${it.isScheduleH ? ' <span class="rx-tag">Sch H</span>' : ''}${second ? `<div class="rx-sub">${second}</div>` : ''}</td>
+      <td class="rx-med"><b>${title || '&mdash;'}</b>${it.isScheduleH ? ` <span class="rx-tag">${SCHEDULE_H_TAG}</span>` : ''}${second ? `<div class="rx-sub">${second}</div>` : ''}</td>
       <td class="rx-reg">${regimen || '&mdash;'}</td>
     </tr>`;
   }).join('');
@@ -309,14 +358,23 @@ function advice(view) {
 
 const review = (view) => (view.followUpDate ? `<div class="rx-block rx-review"><h3>Review</h3><p>${esc(fmtDate(view.followUpDate))}</p></div>` : '');
 
-function signature(view) {
+/**
+ * The signature block. On a signed sheet the dermatologist's name is drawn
+ * in the script face above the rule — the generated signature — and the
+ * printed name, title and registration sit beneath it. A draft (or a signed
+ * note rendered as a preview) shows the rule and "Unsigned" instead, so no
+ * preview can pass for a signed prescription.
+ */
+function signature(view, draft = !view.signed) {
   const name = view.signedBy || view.doctorName || 'Dermatologist';
+  const signed = view.signed && !draft;
   return `<div class="rx-sign rx-block">
+    ${signed && view.signatureText ? `<div class="rx-sign__script" aria-label="Signature">${esc(view.signatureText)}</div>` : ''}
     <div class="rx-sign__rule"></div>
     <b>${esc(name)}</b>
     <div>Consultant Dermatologist, Zennara</div>
-    ${view.registration ? `<div>Reg. no. ${esc(view.registration)}</div>` : ''}
-    ${view.signed && view.signedAt ? `<div class="rx-dim">Signed ${esc(fmtDateTime(view.signedAt))}</div>` : '<div class="rx-dim">Unsigned</div>'}
+    ${view.registration ? `<div>Reg. No. ${esc(view.registration)}</div>` : ''}
+    ${signed && view.signedAt ? `<div class="rx-dim">Signed ${esc(fmtDateTime(view.signedAt))}</div>` : '<div class="rx-dim">Unsigned</div>'}
   </div>`;
 }
 
@@ -332,7 +390,7 @@ const allergyLine = (view) => (view.allergies ? `<div class="rx-allergy"><b>Drug
 const page = ({ title, css, body, draft }) => `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(title)}</title>${FONTS_LINK}
-<style>${css}${RIBBON_CSS}${PRINT_CSS}</style></head>
+<style>${SIGN_CSS}${css}${RIBBON_CSS}${PRINT_CSS}</style></head>
 <body>${ribbon(draft)}${body}</body></html>`;
 
 /* --- Classic ----------------------------------------------------------- */
@@ -376,7 +434,6 @@ h3{font:600 11px/1.4 ${SANS};letter-spacing:.16em;text-transform:uppercase;color
   const body = `<main class="rx-page">
   <header class="rx-head">
     ${logoTag(logo.green)}
-    <p class="rx-tag-line">Skin · Aesthetics · Wellness</p>
     ${view.centre ? `<p class="rx-centre">${esc(view.centre)}</p>` : ''}
   </header>
   <section class="rx-guest">
@@ -394,7 +451,7 @@ h3{font:600 11px/1.4 ${SANS};letter-spacing:.16em;text-transform:uppercase;color
   ${treatments(view)}
   ${advice(view)}
   ${review(view)}
-  ${signature(view)}
+  ${signature(view, draft)}
   ${footer(view)}
 </main>`;
 
@@ -441,7 +498,7 @@ h3,.rx-findings dt{font:700 10.5px/1.4 ${SANS};letter-spacing:.18em;text-transfo
 
   const body = `<main class="rx-page">
   <header class="rx-band">
-    <div>${logoTag(logo.white)}<p class="rx-tag-line">Skin · Aesthetics · Wellness</p></div>
+    <div>${logoTag(logo.white)}</div>
     <div class="rx-band__right">${view.centre ? `${esc(view.centre)}<br>` : ''}${esc(fmtDate(view.issuedAt || view.visitDate) || '')}</div>
   </header>
   <div class="rx-body">
@@ -460,7 +517,7 @@ h3,.rx-findings dt{font:700 10.5px/1.4 ${SANS};letter-spacing:.18em;text-transfo
     ${treatments(view)}
     ${advice(view)}
     ${review(view)}
-    ${signature(view)}
+    ${signature(view, draft)}
     ${footer(view)}
   </div>
 </main>`;
@@ -502,6 +559,7 @@ h3{font:600 11px/1.4 ${SANS};letter-spacing:.12em;text-transform:uppercase;margi
 .rx-dim{color:${BRAND.muted}}
 .rx-sign{margin-top:28px;text-align:right;font-size:12px}
 .rx-sign__rule{width:200px;margin:0 0 4px auto;border-top:1px solid ${BRAND.ink}}
+.rx-sign__script{color:${BRAND.ink};font-size:26px}
 .rx-foot{margin-top:20px;padding-top:6px;border-top:1px solid rgba(31,42,34,.2);font-size:10px;color:${BRAND.muted}}
 .rx-foot p{margin:0 0 3px}
 .rx-schh{color:${BRAND.ink};font-weight:600}`;
@@ -525,7 +583,7 @@ h3{font:600 11px/1.4 ${SANS};letter-spacing:.12em;text-transform:uppercase;margi
   ${treatments(view)}
   ${advice(view)}
   ${review(view)}
-  ${signature(view)}
+  ${signature(view, draft)}
   ${footer(view)}
 </main>`;
 
@@ -557,8 +615,12 @@ module.exports = {
   renderPrescriptionHtml,
   logoDataUri,
   logoUrl,
+  publicApiOrigin,
   esc,
   fmtDate,
+  fmtDateTime,
   daysFromDuration,
   refillDueAt,
+  SCHEDULE_H_TAG,
+  BRAND,
 };

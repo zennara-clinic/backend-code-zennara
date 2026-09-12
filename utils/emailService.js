@@ -102,11 +102,24 @@ const sendEmail = async (to, subject, htmlContent) => {
  * Send an email with one HTML file attached. SendEmailCommand cannot carry
  * attachments, so this builds the MIME message by hand for SendRawEmail.
  */
-const sendEmailWithAttachment = async (to, subject, htmlBody, { filename, content }) => {
+/*
+ * One HTML body plus ONE attachment, as a raw MIME message (SES's templated
+ * send has no room for attachments). `content` may be a string — sent as
+ * text/html, the original behaviour — or a Buffer with a `contentType`, which
+ * is how the prescription PDF travels. Base64 is folded at 76 columns: RFC
+ * 2045 requires it, and SES rejects raw lines over 1,000 characters, which a
+ * PDF's unfolded base64 would exceed on the first line.
+ */
+const fold76 = (b64) => b64.replace(/.{1,76}/g, '$&\r\n').trimEnd();
+
+const sendEmailWithAttachment = async (to, subject, htmlBody, { filename, content, contentType }) => {
   if (!isAWSConfigured || !sesClient) {
     throw new Error('AWS SES client not initialized. Check your credentials in .env file');
   }
   const boundary = `zennara-${Date.now().toString(36)}`;
+  const isBinary = Buffer.isBuffer(content);
+  const type = contentType || 'text/html; charset=UTF-8';
+  const bytes = isBinary ? content : Buffer.from(String(content ?? ''), 'utf8');
   const raw = [
     `From: ${process.env.FROM_NAME} <${process.env.FROM_EMAIL}>`,
     `To: ${to}`,
@@ -118,14 +131,14 @@ const sendEmailWithAttachment = async (to, subject, htmlBody, { filename, conten
     'Content-Type: text/html; charset=UTF-8',
     'Content-Transfer-Encoding: base64',
     '',
-    Buffer.from(htmlBody, 'utf8').toString('base64'),
+    fold76(Buffer.from(htmlBody, 'utf8').toString('base64')),
     '',
     `--${boundary}`,
-    `Content-Type: text/html; charset=UTF-8; name="${filename}"`,
+    `Content-Type: ${type}; name="${filename}"`,
     `Content-Disposition: attachment; filename="${filename}"`,
     'Content-Transfer-Encoding: base64',
     '',
-    Buffer.from(content, 'utf8').toString('base64'),
+    fold76(bytes.toString('base64')),
     '',
     `--${boundary}--`,
     '',
@@ -137,12 +150,19 @@ const sendEmailWithAttachment = async (to, subject, htmlBody, { filename, conten
   }));
 };
 
-/** The signed prescription — in the body AND attached as a downloadable file. */
-exports.sendPrescriptionEmail = async (email, patientName, { docHtml, doctorName, location }) => {
+/**
+ * The signed prescription as a PDF attachment, with a short note in the body.
+ * The document itself is no longer pasted into the email — inboxes mangled
+ * the sheet's CSS and the guest could not print it; the PDF is the record.
+ */
+exports.sendPrescriptionEmail = async (email, patientName, { pdf, filename, doctorName, location, signedAt }) => {
   const { getPrescriptionEmailBody } = require('../Email Templates/prescriptionEmailTemplate');
-  const body = getPrescriptionEmailBody({ patientName, doctorName, location, docHtml });
-  const filename = `prescription-${String(patientName || 'guest').toLowerCase().replace(/[^a-z0-9]+/g, '-')}.html`;
-  const response = await sendEmailWithAttachment(email, 'Zennara — your prescription', body, { filename, content: docHtml });
+  const body = getPrescriptionEmailBody({ patientName, doctorName, location, signedAt });
+  const response = await sendEmailWithAttachment(email, 'Zennara — your prescription', body, {
+    filename: filename || 'prescription.pdf',
+    content: pdf,
+    contentType: 'application/pdf',
+  });
   console.log('✅ Prescription email sent');
   return response;
 };

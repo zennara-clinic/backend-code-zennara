@@ -68,6 +68,7 @@ test('buildView derives age, guest code, allergies, service and hasScheduleH', (
   assert.strictEqual(v.service, 'Dermatology consultation');
   assert.strictEqual(v.doctorName, 'Dr Rickson');
   assert.strictEqual(v.registration, 'TSMC 12345');
+  assert.strictEqual(v.signatureText, 'Dr Rickson');
   assert.strictEqual(v.signed, true);
   assert.strictEqual(v.template, 'modern');
   assert.strictEqual(v.hasScheduleH, true);
@@ -100,7 +101,14 @@ test('an empty view has every key and no Schedule H', () => {
   assert.strictEqual(v.hasScheduleH, false);
   assert.deepStrictEqual(v.items, []);
   assert.strictEqual(v.signed, false);
+  assert.strictEqual(v.signatureText, null);
   assert.strictEqual(v.template, 'classic');
+});
+
+test('signatureText prefers the signer, then the doctor on the note', () => {
+  assert.strictEqual(buildView({ note: { doctorName: 'Dr A', prescriptionSignedByName: 'Dr B' } }).signatureText, 'Dr B');
+  assert.strictEqual(buildView({ note: { doctorName: 'Dr A' } }).signatureText, 'Dr A');
+  assert.strictEqual(buildView({ note: {}, doctorName: 'Dr C' }).signatureText, 'Dr C');
 });
 
 for (const template of TEMPLATES) {
@@ -110,7 +118,10 @@ for (const template of TEMPLATES) {
     for (const html of [full, empty]) {
       assert.ok(html.startsWith('<!DOCTYPE html>'));
       assert.ok(html.includes('</html>'));
-      assert.ok(html.includes('fonts.googleapis.com'), 'loads Cormorant Garamond + Manrope');
+      assert.ok(/fonts\.googleapis\.com\/css2\?family=Poppins/.test(html), 'loads Poppins from Google Fonts');
+      assert.ok(/family=Dancing\+Script/.test(html), 'loads Dancing Script for the signature');
+      assert.ok(!/Cormorant|Manrope/.test(html), 'no second typeface on a prescription');
+      assert.ok(html.includes("'Poppins'"), 'Poppins is the CSS family');
       assert.ok(html.includes('@page'), 'has print CSS');
       assert.ok(/<img class="rx-logo" src="data:image\/png;base64,/.test(html), 'the clinic logo heads the page, inlined');
       assert.ok(html.includes('alt="Zennara"'), 'the logo names the clinic when images are off');
@@ -119,8 +130,27 @@ for (const template of TEMPLATES) {
     assert.ok(full.includes('ZENFD637'), 'guest code');
     assert.ok(full.includes('TSMC 12345'), 'registration');
     assert.ok(full.includes('Chemical peel'), 'treatments advised');
-    assert.ok(full.includes('Schedule H'), 'Schedule H footer when a line is Sch H');
+    assert.ok(full.includes('Schedule H — Warning'), 'Schedule H footer when a line is Schedule H');
+    assert.ok(full.includes('Schedule H · prescription only'), 'the line mark is spelled out');
+    assert.ok(!/>Sch H</.test(full), 'never the "Sch H" abbreviation');
     assert.ok(!empty.includes('Schedule H'), 'no Schedule H footer without one');
+    // Only the Schedule H line carries the mark.
+    const marks = full.split('Schedule H · prescription only').length - 1;
+    assert.strictEqual(marks, 1, 'one mark for the one Schedule H line');
+  });
+
+  test(`${template}: the generated signature appears only on a signed sheet`, () => {
+    const signed = renderPrescriptionHtml(fullView(), { template });
+    assert.ok(signed.includes('class="rx-sign__script"'), 'signed → script signature');
+    assert.ok(signed.includes('>Dr Rickson</div>'), 'the signing dermatologist\'s name is the signature');
+    assert.ok(signed.includes('Reg. No. TSMC 12345'));
+    assert.ok(!signed.includes('Unsigned'));
+    const preview = renderPrescriptionHtml(fullView(), { template, draft: true });
+    assert.ok(!preview.includes('class="rx-sign__script"'), 'a forced preview never looks signed');
+    assert.ok(preview.includes('Unsigned'));
+    const unsigned = renderPrescriptionHtml(buildView({ note: { ...fullNote(), prescriptionSigned: false } }), { template });
+    assert.ok(!unsigned.includes('class="rx-sign__script"'), 'unsigned → no signature');
+    assert.ok(unsigned.includes('Unsigned'));
   });
 
   test(`${template}: escapes every value`, () => {

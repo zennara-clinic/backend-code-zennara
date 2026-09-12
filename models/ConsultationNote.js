@@ -44,6 +44,29 @@ const prescriptionItemSchema = new mongoose.Schema(
   { _id: false },
 );
 
+const deliveryChannelSchema = new mongoose.Schema(
+  {
+    ok: { type: Boolean, default: false },
+    /** The address it went to; null when the guest has none on file. */
+    to: { type: String, default: null },
+    at: { type: Date, default: null },
+    error: { type: String, default: null },
+  },
+  { _id: false },
+);
+
+const deliverySchema = new mongoose.Schema(
+  {
+    /** When the delivery was attempted. */
+    at: { type: Date, default: null },
+    /** Size of the PDF that was rendered, for the audit trail. */
+    pdfBytes: { type: Number, default: 0 },
+    email: { type: deliveryChannelSchema, default: () => ({}) },
+    whatsapp: { type: deliveryChannelSchema, default: () => ({}) },
+  },
+  { _id: false },
+);
+
 const consultationNoteSchema = new mongoose.Schema(
   {
     bookingId: {
@@ -90,6 +113,17 @@ const consultationNoteSchema = new mongoose.Schema(
     /** When (and where) the signed prescription was emailed to the guest. */
     prescriptionEmailedAt: { type: Date, default: null },
     prescriptionEmailedTo: { type: String, default: null },
+    /*
+     * What happened when the signature delivered the PDF (2026-09-12).
+     *
+     * Signing sends the prescription by email and by WhatsApp with no manual
+     * send anywhere, so the outcome has to be readable afterwards: which
+     * channel reached the guest, where, and why one did not. `to` is null
+     * when the guest simply has no address on file; `error` holds the
+     * provider's reason when an attempt failed. Cleared when an edit revokes
+     * the signature — the next signature delivers again.
+     */
+    prescriptionDelivery: { type: deliverySchema, default: null },
     /** When the guest was told in-app that this prescription is ready. */
     guestNotifiedAt: { type: Date, default: null },
 

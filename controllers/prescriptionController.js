@@ -16,6 +16,9 @@ const { getGuestEligibility } = require('../utils/guestEligibility');
  * because utils/bookingScheduler reads them from this module.
  */
 const { daysFromDuration, refillDueAt, buildView, renderPrescriptionHtml } = require('../utils/prescriptionTemplates');
+const {
+  renderPrescriptionPdf, prescriptionFilename, makeShareToken, verifyShareToken, shareUrl,
+} = require('../utils/prescriptionPdf');
 const { guestCodeOf } = require('../utils/guestCode');
 exports.daysFromDuration = daysFromDuration;
 exports.refillDueAt = refillDueAt;
@@ -192,6 +195,72 @@ exports.getMineHtml = async (req, res) => {
   } catch (error) {
     console.error('Render prescription failed:', error);
     return res.status(500).json({ success: false, message: 'Could not load this prescription right now.' });
+  }
+};
+
+/* ------------------------------------------------------------------------ *
+ * The PDF — the document the guest received on signing — and the share link.
+ *
+ * All three readers below serve only a SIGNED, completed note: an unsigned
+ * note is not a prescription and is not the guest's to see or forward. The
+ * shared route is public (Twilio fetches it, guests forward it) and trusts
+ * the token alone; every failure there is a bare 404 so a probe learns
+ * nothing about which ids exist.
+ * ------------------------------------------------------------------------ */
+
+const signedNote = (filter) => populate(ConsultationNote.findOne({ ...filter, status: 'Completed', prescriptionSigned: true })).lean();
+
+async function sendSignedPdf(res, note) {
+  const view = buildView({ note, patient: note.userId, booking: note.bookingId, doctorName: note.doctorName });
+  const pdf = await renderPrescriptionPdf(view, { template: view.template, draft: false });
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="${prescriptionFilename(view)}"`);
+  return res.status(200).send(pdf);
+}
+
+// GET /api/prescriptions/:id/pdf — the guest's own signed prescription as the PDF.
+exports.getMinePdf = async (req, res) => {
+  try {
+    const note = await signedNote({ _id: req.params.id, userId: req.user._id });
+    if (!note) return res.status(404).json({ success: false, message: 'This prescription is not available.' });
+    return await sendSignedPdf(res, note);
+  } catch (error) {
+    console.error('Render prescription PDF failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not load this prescription right now.' });
+  }
+};
+
+// GET /api/prescriptions/:id/share-link — a signed, 7-day link to that PDF
+// for the app's share sheet: `{ url, expiresAt }`.
+exports.shareLink = async (req, res) => {
+  try {
+    const note = await ConsultationNote.findOne({
+      _id: req.params.id, userId: req.user._id, status: 'Completed', prescriptionSigned: true,
+    }).select('_id').lean();
+    if (!note) return res.status(404).json({ success: false, message: 'This prescription is not available.' });
+    const { token, expiresAt } = makeShareToken(note._id);
+    const url = shareUrl(token);
+    if (!url) return res.status(503).json({ success: false, message: 'Sharing is not available right now.' });
+    return res.json({ success: true, url, expiresAt });
+  } catch (error) {
+    console.error('Prescription share link failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not create a share link right now.' });
+  }
+};
+
+// GET /api/prescriptions/shared/:token.pdf — PUBLIC. The PDF behind a valid,
+// unexpired token; 404 for anything else, with no detail.
+exports.sharedPdf = async (req, res) => {
+  try {
+    const claim = verifyShareToken(req.params.token);
+    if (!claim) return res.status(404).json({ success: false, message: 'Not found' });
+    const note = await signedNote({ _id: claim.noteId });
+    if (!note) return res.status(404).json({ success: false, message: 'Not found' });
+    return await sendSignedPdf(res, note);
+  } catch (error) {
+    console.error('Shared prescription PDF failed:', error);
+    return res.status(404).json({ success: false, message: 'Not found' });
   }
 };
 
