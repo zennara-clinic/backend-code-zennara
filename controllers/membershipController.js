@@ -7,6 +7,8 @@ const MembershipAssignment = require('../models/MembershipAssignment');
 const User = require('../models/User');
 const Consultation = require('../models/Consultation');
 const { syncUserMembership, currentMembership } = require('../utils/membershipRules');
+const { resolveZenPricing, pricingSummary, zenPlanRow } = require('../utils/zenMembership');
+const { isZenMembership, isActiveMembershipStatus, clinicCenterIdForBranch } = require('../config/zenoti');
 
 const isId = (v) => mongoose.Types.ObjectId.isValid(String(v || ''));
 const fail = (res, status, message, extra = {}) => res.status(status).json({ success: false, message, ...extra });
@@ -27,13 +29,52 @@ const PLAN_FIELDS = ['name', 'description', 'membershipType', 'prefix', 'price',
 
 /* ------------------------------ plans ------------------------------ */
 
+/*
+ * The clinic sells ONE membership. By default the list is exactly that plan;
+ * the retired Zenoti variants (MVP, MVP-2026 …) and anything else ever created
+ * come back only with includeInactive=true. The Zen row carries `live` — the
+ * price the app charges right now (utils/zenMembership) — beside the stored
+ * one, so the panel can see when the two disagree instead of finding out from
+ * a guest's receipt.
+ */
 exports.list = async (req, res) => {
-  const q = {};
-  if (req.query.includeInactive !== 'true') q.isActive = true;
-  const rows = await Membership.find(q).sort({ isActive: -1, name: 1 }).lean();
+  const all = req.query.includeInactive === 'true';
+  const plan = await zenPlanRow().catch(() => null);
+  let rows;
+  if (all) rows = await Membership.find({}).sort({ isActive: -1, name: 1 }).lean();
+  else rows = plan ? [plan.toObject ? plan.toObject() : plan] : await Membership.find({ isActive: true }).sort({ name: 1 }).lean();
   const counts = await MembershipAssignment.aggregate([{ $match: { status: 'Active' } }, { $group: { _id: '$membershipId', n: { $sum: 1 } } }]);
   const byId = new Map(counts.map((c) => [String(c._id), c.n]));
-  return res.json({ success: true, data: rows.map((r) => ({ ...r, membersCount: byId.get(String(r._id)) || 0 })) });
+  const live = pricingSummary(await resolveZenPricing().catch(() => null));
+  const zenId = plan ? String(plan._id) : null;
+  return res.json({ success: true, data: rows.map((r) => ({ ...r, membersCount: byId.get(String(r._id)) || 0, ...(zenId && String(r._id) === zenId ? { live } : {}) })) });
+};
+
+/**
+ * GET /api/memberships/zen — the Zen membership as the app's card shows it:
+ * one price (from Zenoti when it can be read, App Studio otherwise), copy,
+ * benefits and terms from App Studio. The same figure Razorpay charges.
+ */
+exports.zen = async (_req, res) => {
+  const p = await resolveZenPricing();
+  return res.json({ success: true, data: {
+    name: p.name || 'Zen Membership',
+    tagline: p.tagline,
+    description: p.description,
+    price: {
+      amount: p.amount, currency: p.currency, source: p.source,
+      zenotiListPrice: p.zenotiListPrice, zenotiName: p.zenotiName,
+      basePriceInr: p.basePriceInr, salePriceInr: p.salePriceInr, renewalPriceInr: p.renewalPriceInr,
+      taxPercent: p.taxPercent,
+    },
+    validityMonths: p.validityMonths,
+    discountPercent: p.discountPercent,
+    benefits: p.benefits,
+    terms: p.terms,
+    isActive: p.isActive,
+    image: p.image,
+    ctaText: p.ctaText,
+  } });
 };
 
 exports.get = async (req, res) => {
@@ -133,9 +174,35 @@ async function createMemberAssignment(plan, user, { branchId = null, startDate =
   });
   await Membership.updateOne({ _id: plan._id }, { $inc: { membersCount: 1 } });
   await syncUserMembership(user._id);
+  /*
+   * Every sale made HERE — in the app, at the desk, or as a bill line — is
+   * pushed into Zenoti as a membership sale, so the clinic's own register and
+   * ours agree. Fire-and-forget: the write service is mode-gated and never
+   * throws, and a Zenoti hiccup must not fail a sale the guest has paid for.
+   * A row mirrored FROM Zenoti is never pushed back (it would sell it twice).
+   */
+  if (source !== 'zenoti') {
+    setImmediate(() => {
+      try {
+        require('../services/zenotiWriteService').syncMembership(user._id, { assignmentId: pa._id }).catch(() => {});
+      } catch (_) { /* best-effort */ }
+    });
+  }
   return pa;
 }
 exports.createMemberAssignment = createMemberAssignment;
+
+/** POST /api/memberships/members/:id/zenoti-push — (re)run the Zenoti sale for one row. */
+exports.zenotiPush = async (req, res) => {
+  try {
+    const pa = await MembershipAssignment.findById(req.params.id);
+    if (!pa) return fail(res, 404, 'Membership not found');
+    if (pa.source === 'zenoti') return fail(res, 409, 'This membership was sold in Zenoti — there is nothing to push.');
+    const sync = await require('../services/zenotiWriteService').syncMembership(pa.userId, { assignmentId: pa._id });
+    const fresh = await MembershipAssignment.findById(pa._id).populate('userId', 'fullName phone email patientId guestCode').populate('membershipId', 'name code prefix').lean();
+    return res.json({ success: sync.status !== 'failed', data: fresh, sync, message: sync.error || (sync.status === 'synced' ? 'Sold in Zenoti' : sync.status) });
+  } catch (e) { return fail(res, 500, e.message); }
+};
 
 exports.getMember = async (req, res) => {
   const pa = await MembershipAssignment.findById(req.params.id).populate('userId', 'fullName phone email patientId guestCode').populate('membershipId', 'name code prefix').lean();
@@ -173,12 +240,74 @@ exports.cancelMember = async (req, res) => {
   } catch (e) { return fail(res, 500, e.message); }
 };
 
+/**
+ * The guest's Zen membership as Zenoti holds it right now — credits, expiry,
+ * guest passes — mapped for the member screen. Zenoti computes the balances
+ * when the desk redeems, so a live read is the only copy that is never stale.
+ */
+function liveMembershipView(rows, at = new Date()) {
+  const zen = (Array.isArray(rows) ? rows : []).filter((m) => m && (isZenMembership(m.name) || isZenMembership(m.code)));
+  if (!zen.length) return null;
+  const expired = (m) => m.expiryDate && !Number.isNaN(Date.parse(m.expiryDate)) && Date.parse(m.expiryDate) <= at.getTime();
+  const usable = zen.find((m) => m.redeemable === true) || zen.find((m) => !m.isRefunded && !expired(m) && isActiveMembershipStatus(m.status));
+  const pick = usable || [...zen].sort((a, b) => (Date.parse(b.expiryDate || '') || 0) - (Date.parse(a.expiryDate || '') || 0))[0];
+  const line = (x) => ({ name: x.name, total: x.total, used: x.used, balance: x.balance, expiryDate: x.expiryDate || null });
+  return {
+    status: pick.isRefunded ? 'Cancelled' : expired(pick) ? 'Expired' : isActiveMembershipStatus(pick.status) ? 'Active' : 'Expired',
+    redeemable: pick.redeemable ?? null,
+    memberSince: pick.memberSince || null,
+    expiryDate: pick.expiryDate || null,
+    invoiceNumber: pick.invoice?.number || null,
+    creditBalance: pick.creditBalance ?? null,
+    creditAmount: pick.creditAmount ?? null,
+    services: (pick.services || []).filter((x) => x?.name).map(line),
+    products: (pick.products || []).filter((x) => x?.name).map(line),
+    guestPassTotal: pick.guestPassTotal ?? null,
+    guestPassBalance: pick.guestPassBalance ?? null,
+    htmlBenefits: pick.htmlBenefits || null,
+    terms: pick.terms || null,
+    centerName: pick.centerName || null,
+    liveAt: at.toISOString(),
+  };
+}
+exports.liveMembershipView = liveMembershipView;
+
+/** A live Zenoti read for one screen must not hang the app behind the rate-limit queue. */
+const withTimeout = (promise, ms) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error('Zenoti read timed out')), ms).unref?.())]);
+
 /** GET /api/memberships/me — the signed-in guest's own membership (app). */
 exports.me = async (req, res) => {
   const m = await currentMembership(req.user._id);
   if (!m) return res.json({ success: true, data: null });
-  const plan = m.assignment ? await Membership.findById(m.assignment.membershipId).select('name benefits terms').lean() : null;
-  return res.json({ success: true, data: { kind: m.kind, name: m.name, memberNumber: m.memberNumber, validUntil: m.validUntil, discounts: m.discounts, credits: m.credits, benefits: plan?.benefits || [], terms: plan?.terms || '', validFrom: m.assignment?.validFrom || null, redemptions: (m.assignment?.redemptions || []).filter((r) => !r.reversed).slice(-20).reverse() } });
+  const a = m.assignment;
+  const plan = a ? await Membership.findById(a.membershipId).select('name benefits terms').lean() : null;
+  const pricing = await resolveZenPricing().catch(() => null);
+
+  // The live copy from Zenoti, when this guest is a Zenoti guest. Our row is
+  // returned whatever happens here; `liveUnavailable` says the read failed.
+  let zenoti = null;
+  let liveUnavailable = false;
+  const guest = await User.findById(req.user._id).select('zenotiGuestId zenotiCenterId location').lean().catch(() => null);
+  if (guest?.zenotiGuestId) {
+    try {
+      const z = require('../services/zenotiService');
+      if (!z.isConfigured()) throw new Error('Zenoti is not configured');
+      const rows = await withTimeout(z.getGuestMemberships(guest.zenotiGuestId, guest.zenotiCenterId || clinicCenterIdForBranch(guest.location)), 8000);
+      zenoti = liveMembershipView(rows);
+    } catch (_) { liveUnavailable = true; }
+  }
+
+  return res.json({ success: true, data: {
+    kind: m.kind, name: m.name, memberNumber: m.memberNumber, validUntil: m.validUntil, discounts: m.discounts, credits: m.credits,
+    benefits: plan?.benefits || [], terms: plan?.terms || '', validFrom: a?.validFrom || null,
+    redemptions: (a?.redemptions || []).filter((r) => !r.reversed).slice(-20).reverse(),
+    status: a?.status || (m.kind === 'legacy' ? 'Active' : null),
+    source: a?.source || (m.kind === 'legacy' ? 'legacy' : null),
+    zenotiSync: a && (a.zenotiSyncStatus || a.zenotiInvoiceId) ? { status: a.zenotiSyncStatus || null, invoiceId: a.zenotiInvoiceId || null, invoiceNumber: a.zenotiInvoiceNumber || null, error: a.zenotiSyncError || null } : null,
+    zenoti,
+    liveUnavailable,
+    pricing: pricing ? { amount: pricing.amount, currency: pricing.currency, source: pricing.source, renewalPriceInr: pricing.renewalPriceInr, validityMonths: pricing.validityMonths } : null,
+  } });
 };
 
 /** The guest's current membership as the bill and the profile see it. */

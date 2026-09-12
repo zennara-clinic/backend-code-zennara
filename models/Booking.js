@@ -282,6 +282,19 @@ const bookingSchema = new mongoose.Schema({
   isPackageIncluded: { type: Boolean, default: false },
   packageAssignmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'PackageAssignment', default: null, index: true },
   packageSessionId: { type: mongoose.Schema.Types.ObjectId, default: null },
+  /**
+   * Why this consultation was raised, when it is not an ordinary paid one.
+   *
+   * 'package_support' = a FREE dermatologist consultation the guest asked for
+   * from an ongoing treatment package (a check-in with the dermatologist
+   * treating them under it). It carries `packageAssignmentId` so the desk can
+   * see which package it belongs to, but deliberately NO `packageSessionId`
+   * and `isPackageIncluded: false`: it is not one of the package's sessions,
+   * so the lifecycle side-effects (bookingLifecycleService
+   * applyPackageSessionSideEffect returns early without a session id) never
+   * touch the package's balance. Null for every other booking.
+   */
+  consultContext: { type: String, enum: ['package_support', null], default: null, index: true },
 
   // Cancellation & Reschedule Info
   cancellationReason: String,

@@ -216,12 +216,15 @@ const appCustomizationSchema = new mongoose.Schema({
   /**
    * The Zen membership card, editable end to end from the panel.
    *
-   * `priceInr` remains the ONE authority for what Razorpay charges — see
-   * resolveMembershipAmount() in controllers/paymentController.js. `basePrice`
-   * and `salePrice` below are presentation: a struck-through "was" figure and
-   * the offer beside it. Deriving the charge from a second field is exactly
-   * the four-way price drift that had to be undone for consultations, so the
-   * charge is read from `priceInr` and nowhere else.
+   * What Razorpay charges is decided in ONE place: resolveZenPricing() in
+   * utils/zenMembership.js. It reads Zenoti's list price for the variant named
+   * by `zenotiMembershipVersionId` (the clinic sells "MVP Jh", ₹1,35,000) and
+   * falls back to `priceInr` when `priceSource` is 'manual', Zenoti is not
+   * configured, or the read fails. `basePrice` and `salePrice` below are
+   * presentation: a struck-through "was" figure and the offer beside it.
+   * Deriving the charge from a second field is exactly the four-way price
+   * drift that had to be undone for consultations, so nothing else reads
+   * `priceInr` directly.
    */
   membership: {
     /** Card name, e.g. "Zen Membership". Empty = the app's bundled wording. */
@@ -244,7 +247,24 @@ const appCustomizationSchema = new mongoose.Schema({
      */
     zenotiMembershipVersionId: { type: String, default: '', trim: true, lowercase: true },
     zenotiMembershipName: { type: String, default: '', trim: true },
-    /** AUTHORITATIVE. What the member is actually charged, in rupees. */
+    /**
+     * Where the charge comes from. 'zenoti' (default) = the list price of the
+     * Zenoti row above, so a price change made in Zenoti reaches the app
+     * without anyone retyping it here; 'manual' = `priceInr` below, for the
+     * day the two must differ on purpose (an app-only offer).
+     */
+    priceSource: { type: String, enum: ['zenoti', 'manual'], default: 'zenoti' },
+    /**
+     * Closing the Zenoti sale needs two ids the API cannot look up for us
+     * (probed 2026-09-12: there is no endpoint that lists custom payment
+     * types, and closing an invoice requires an employee id). Until both are
+     * set, an app/desk sale still reaches Zenoti as an OPEN invoice and the
+     * member row says so (zenotiSyncStatus 'invoice_open').
+     */
+    zenotiCustomPaymentId: { type: String, default: '', trim: true, lowercase: true },
+    zenotiClosedByEmployeeId: { type: String, default: '', trim: true, lowercase: true },
+    zenotiClosedByEmployeeName: { type: String, default: '', trim: true },
+    /** The manual charge, in rupees — used when priceSource is 'manual' or Zenoti cannot be read. */
     priceInr: { type: Number, default: 135000, min: 0 },
     /** Struck-through "was" price. 0/absent = show nothing. */
     basePriceInr: { type: Number, default: 0, min: 0 },

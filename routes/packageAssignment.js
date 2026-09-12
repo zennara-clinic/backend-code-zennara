@@ -26,6 +26,10 @@ const upload = multer({
 router.get('/user/my-packages', protect, packageAssignmentController.getUserPackages);
 router.get('/user/my-packages/:id', protect, packageAssignmentController.getUserPackageById);
 router.get('/user/my-packages/:id/service-cards', protect, packageAssignmentController.getUserServiceCards);
+// The free consultation an ongoing package includes: who it is with, and
+// whether the package still includes one. The booking itself goes through
+// POST /api/bookings with consultContext 'package_support'.
+router.get('/user/my-packages/:id/consult-doctor', protect, packageAssignmentController.getUserConsultDoctor);
 // The customer books one of their package sessions (arrives at the desk as Awaiting Confirmation).
 // By treatment is the route the app uses — a package needs no pre-set dates for
 // the customer to book. The by-session route stays for a clinic-suggested date.

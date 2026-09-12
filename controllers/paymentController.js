@@ -667,19 +667,21 @@ exports.verifyProductPayment = async (req, res) => {
 exports.createMembershipPayment = async (req, res) => {
   try {
     /*
-     * The membership price is a clinic setting (App Studio → Membership).
-     *
-     * `priceInr` is the ONE authority for the charge. The card also carries
-     * basePriceInr / salePriceInr, but those are presentation — a struck-through
-     * "was" figure and the offer beside it. Charging from a second field is how
-     * consultation pricing ended up living in four places that only agreed by
-     * accident, so the amount is read from `priceInr` and nowhere else.
+     * ONE price. resolveZenPricing() (utils/zenMembership.js) is the single
+     * authority for what the membership costs: Zenoti's list price for the
+     * variant the clinic sells, or App Studio's `priceInr` when the card is
+     * set to manual or Zenoti cannot be read. The app card, the panel and this
+     * charge all read that one function, so a guest is charged exactly the
+     * figure they were shown. Charging from a second field is how consultation
+     * pricing ended up living in four places that only agreed by accident.
+     * The 135000 literal is the last resort only if the resolver returns
+     * nothing sane — it never throws, so that path should not be reachable.
      */
-    const AppCustomization = require('../models/AppCustomization');
-    const settings = await AppCustomization.getSettings();
-    const amount = Number(settings?.membership?.priceInr) > 0 ? Number(settings.membership.priceInr) : 135000;
+    const { resolveZenPricing } = require('../utils/zenMembership');
+    const pricing = await resolveZenPricing().catch(() => null);
+    const amount = Number(pricing?.amount) > 0 ? Number(pricing.amount) : 135000;
 
-    if (settings?.membership?.isActive === false) {
+    if (pricing?.isActive === false) {
       return res.status(409).json({
         success: false,
         message: 'The membership is not on sale at the moment. Please speak to the clinic.',
@@ -740,7 +742,14 @@ exports.createMembershipPayment = async (req, res) => {
         amount: razorpayOrder.amount,
         currency: razorpayOrder.currency,
         keyId: process.env.RAZORPAY_KEY_ID,
-        paymentId: payment._id
+        paymentId: payment._id,
+        // What was charged and where the figure came from, in rupees.
+        membership: {
+          amount,
+          source: pricing?.source || 'manual',
+          zenotiName: pricing?.zenotiName || null,
+          validityMonths: pricing?.validityMonths || 12,
+        }
       }
     });
   } catch (error) {
@@ -1215,8 +1224,10 @@ async function activateMembership(userId, payment) {
     return user;
   }
 
-  const AppCustomizationM = require('../models/AppCustomization');
-  const months = Number((await AppCustomizationM.getSettings())?.membership?.durationMonths) || 12;
+  // Validity comes from the same resolver as the price (App Studio's
+  // durationMonths — Zenoti reports 0 months for this membership).
+  const pricing = await require('../utils/zenMembership').resolveZenPricing().catch(() => null);
+  const months = Number(pricing?.validityMonths) || 12;
   const now = new Date();
   const stillActive = user.memberType === 'Zen Member' && user.zenMembershipExpiryDate && new Date(user.zenMembershipExpiryDate) > now;
   // Renewing early extends from the current expiry — the guest never loses paid time.

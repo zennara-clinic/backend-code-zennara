@@ -133,9 +133,25 @@ async function mirrorGuestMemberships(userId, memberships, { plan = null } = {})
       };
       if (status === 'Cancelled') set['cancellation.reason'] = 'Refunded in Zenoti';
 
+      /*
+       * A row we sold keeps saying so.
+       *
+       * Once an app or desk sale has been pushed into Zenoti it carries a
+       * user_membership_id, so this mirror finds it and would otherwise $set
+       * source:'zenoti', paymentMethod:'Zenoti' and the list price over the
+       * row — erasing "sold in the app via Razorpay for ₹X", which is exactly
+       * what the Members register exists to show. Zenoti is the authority on
+       * what the guest HOLDS (status, dates, credits, invoice number); it is
+       * not the authority on how we sold it. So provenance is written only
+       * when the mirror is the one creating the row.
+       */
+      const { source, payment, price: listPrice, notes, ...facts } = set;
       await MembershipAssignment.updateOne(
         { zenotiUserMembershipId: m.id },
-        { $set: set, $setOnInsert: { memberNumber: null, autoRenew: false } },
+        {
+          $set: facts,
+          $setOnInsert: { memberNumber: null, autoRenew: false, source, payment, price: listPrice, notes },
+        },
         { upsert: true },
       );
       upserted += 1;

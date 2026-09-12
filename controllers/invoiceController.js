@@ -74,7 +74,18 @@ async function lineFromBooking(bk, branch) {
     qty: 1, unitPrice, priceIncludesTax: priced ? priced.priceIncludesTax !== false : true,
     taxPercent: priced ? priced.taxPercent : DEFAULT_SERVICE_TAX,
     discount: 0, discountPercent: 0,
-    redeemed: redeemed ? { kind: 'package', packageAssignmentId: bk.packageAssignmentId || null, sessionId: bk.packageSessionId || null, label: 'Package session' } : { kind: null },
+    // A free consultation raised from an ongoing package is redeemed against
+    // that package too, but it is not one of its sessions — the bill must say
+    // so, or the desk reads a ₹0 line labelled "Package session" as a session
+    // consumed and goes looking for the balance it never touched.
+    redeemed: redeemed
+      ? {
+        kind: 'package',
+        packageAssignmentId: bk.packageAssignmentId || null,
+        sessionId: bk.packageSessionId || null,
+        label: bk.consultContext === 'package_support' ? 'Package consultation (included)' : 'Package session',
+      }
+      : { kind: null },
     soldById, soldByName, soldByModel: soldById ? 'Doctor' : null,
   };
 }

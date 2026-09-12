@@ -626,6 +626,10 @@ function normalizeMembership(m) {
     guestPassTotal: m.guestpass_total ?? null,
     guestPassBalance: m.guestpass_balance ?? null,
     htmlBenefits: m.html_benefits || null,
+    // The member screen in the app shows the agreement wording and the rupee
+    // credit balance beside the per-service counts; both come only from here.
+    terms: m.terms_and_conditions || null,
+    creditAmount: m.credit_amount ?? null,
     invoice: {
       id: pick(invoice, 'id'),
       number: pick(invoice, 'no', 'invoice_number'),
@@ -715,6 +719,19 @@ async function cachedPaged(key, fetchPage) {
   }
   catalogCache.set(key, { at: Date.now(), data: all });
   return all;
+}
+
+/**
+ * Drop every cached catalog page whose key starts with `prefix` (e.g.
+ * 'memberships:'). The hour-long cache is right for a booking that only needs
+ * a service id, but the panel's "refresh price" on the membership card must
+ * see a price change the clinic just made in Zenoti — without this, the app
+ * kept charging the old figure for up to an hour after the desk had changed it.
+ */
+function forgetCatalog(prefix = '') {
+  for (const key of [...catalogCache.keys()]) {
+    if (!prefix || key.startsWith(prefix)) catalogCache.delete(key);
+  }
 }
 
 /** All services for a centre → [{ id, code, name, canBook, price, categoryName }]. */
@@ -870,6 +887,20 @@ async function getCenterMemberships(centerId) {
       isRecurring: m.is_recurring_membership ?? null,
       membershipType: m.membership_type ?? null,
       imagePaths: Array.isArray(m.image_paths) ? m.image_paths : (m.image_paths ? [m.image_paths] : []),
+      /*
+       * Probed live 2026-09-12 for the Zen family (MVP, MVP-2026, MVP Jh, Zen
+       * Membership): is_active is FALSE on every row, duration_in_months is 0
+       * and html_benefits / terms_and_conditions are null. Zenoti therefore
+       * holds only the PRICE of this membership; validity, benefits and terms
+       * stay panel-configured (App Studio → Membership). The fields are still
+       * carried so the panel can show what Zenoti has and utils/zenMembership
+       * can pick the sold variant by code.
+       */
+      code: pick(m, 'code', 'Code') || null,
+      isActive: typeof m.is_active === 'boolean' ? m.is_active : null,
+      durationMonths: Number.isFinite(Number(m.duration_in_months)) ? Number(m.duration_in_months) : null,
+      htmlBenefits: m.html_benefits || null,
+      terms: m.terms_and_conditions || null,
     }));
   });
 }
@@ -1156,6 +1187,7 @@ module.exports = {
   PRIORITY: { FOREGROUND, BACKGROUND },
   getCenterMemberships,
   getCenterTherapists,
+  forgetCatalog,
   isConfigured,
   ZenotiError,
   request,

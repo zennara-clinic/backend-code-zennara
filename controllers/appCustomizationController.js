@@ -9,10 +9,26 @@ const { sanitizeAppearance } = require('../utils/appAppearance');
 exports.getCustomizationSettings = async (req, res) => {
   try {
     const settings = await AppCustomization.getSettings();
-    
+
+    /*
+     * The public copy leaves out how the clinic closes a membership sale in
+     * Zenoti. The custom-payment-type id and the closing employee's id are
+     * settings for the server's write-back, not for a phone: nothing in the
+     * app reads them, and publishing internal Zenoti identifiers to every
+     * client is one more thing to explain in an audit for no benefit.
+     */
+    const data = typeof settings?.toObject === 'function' ? settings.toObject() : { ...settings };
+    if (data.membership) {
+      const {
+        zenotiCustomPaymentId, zenotiClosedByEmployeeId, zenotiClosedByEmployeeName,
+        ...publicMembership
+      } = data.membership;
+      data.membership = publicMembership;
+    }
+
     res.status(200).json({
       success: true,
-      data: settings,
+      data,
       version: settings.version
     });
   } catch (error) {
@@ -98,6 +114,17 @@ exports.updateCustomizationSettings = async (req, res) => {
       ipAddress: req.ip,
       userAgent: req.get('user-agent')
     });
+
+    /*
+     * The membership price is resolved through a five-minute cache so the
+     * app card, the panel and the payment path all read one figure. A save
+     * from App Studio is the one moment that figure is meant to change, so
+     * the cache is dropped here rather than leaving the desk to explain why
+     * the app still shows the old price for a few minutes.
+     */
+    if (updates.membership !== undefined) {
+      try { require('../utils/zenMembership').resetPricingCache(); } catch (_) { /* pricing simply refreshes on its own timer */ }
+    }
 
     res.status(200).json({
       success: true,

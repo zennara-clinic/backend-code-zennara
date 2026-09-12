@@ -106,11 +106,37 @@ exports.createBooking = async (req, res) => {
       email,
       preferredLocation,
       preferredDate,
-      preferredTimeSlots
+      preferredTimeSlots,
+      // Only read for the free package consultation below; every other call
+      // ignores them.
+      consultContext,
+      packageAssignmentId,
+      specialistId,
+      slotTime,
     } = req.body;
 
-    if (!preferredDate || !Array.isArray(preferredTimeSlots) || !preferredTimeSlots.length
-      || preferredTimeSlots.some((time) => parseClockMinutes(time) === null)) {
+    /*
+     * A free consultation raised from an ongoing package (utils/packageConsult).
+     *
+     * It books one real slot off the treating dermatologist's calendar, like
+     * the paid consultation path in paymentController, rather than the
+     * "up to three preferred times" a treatment offers — so the time comes in
+     * as `slotTime` and stands in for the preferred list from here on. For a
+     * normal call `requestedTimes` IS `preferredTimeSlots`, untouched.
+     */
+    const isPackageConsult = consultContext === 'package_support';
+    const consultSlot = isPackageConsult ? clock24(slotTime) : null;
+    if (isPackageConsult && !consultSlot) {
+      return res.status(400).json({
+        success: false,
+        code: 'PACKAGE_CONSULT_SLOT_REQUIRED',
+        message: 'Choose a time for the consultation.',
+      });
+    }
+    const requestedTimes = isPackageConsult ? [consultSlot] : preferredTimeSlots;
+
+    if (!preferredDate || !Array.isArray(requestedTimes) || !requestedTimes.length
+      || requestedTimes.some((time) => parseClockMinutes(time) === null)) {
       return res.status(400).json({
         success: false,
         code: 'INVALID_BOOKING_TIME',
@@ -124,6 +150,16 @@ exports.createBooking = async (req, res) => {
       return res.status(404).json({
         success: false,
         message: 'Consultation not found'
+      });
+    }
+
+    // The package benefit is a dermatologist consultation and nothing else —
+    // a treatment row under this context would be a free treatment.
+    if (isPackageConsult && !isConsultationEntry(consultation)) {
+      return res.status(400).json({
+        success: false,
+        code: 'PACKAGE_CONSULT_NOT_A_CONSULTATION',
+        message: 'Only a dermatologist consultation is included with your package.',
       });
     }
 
@@ -159,7 +195,9 @@ exports.createBooking = async (req, res) => {
     // A treatment set to charge for online booking must go through payment —
     // this direct, pay-at-clinic path is only for those with the toggle off
     // (or no price). Prevents bypassing the payment gate from a client.
-    if (consultation.chargeOnlineBooking !== false && consultation.price > 0) {
+    // The package consultation is the one deliberate exception: the package
+    // was paid for at purchase and this visit is part of it (checked below).
+    if (!isPackageConsult && consultation.chargeOnlineBooking !== false && consultation.price > 0) {
       return res.status(400).json({
         success: false,
         message: 'This treatment requires online payment. Please complete checkout to book.'
@@ -175,21 +213,74 @@ exports.createBooking = async (req, res) => {
       });
     }
 
-    const liveBranch = await require('../services/zenotiAvailabilityService').branchSlots(
-      branch._id,
-      clinicDateKey(preferredDate),
-    );
-    const liveMinutes = new Set(liveBranch.slots.map(parseClockMinutes).filter((value) => value !== null));
-    const unavailableTime = preferredTimeSlots.find((time) => !liveMinutes.has(parseClockMinutes(time)));
-    const scheduleCheck = unavailableTime
-      ? { ok: false, code: 'ZENOTI_SLOT_UNAVAILABLE', message: `${unavailableTime} is not available in Zenoti for this clinic.` }
-      : { ok: true };
-    if (!scheduleCheck.ok) {
-      return res.status(409).json({
-        success: false,
-        code: scheduleCheck.code,
-        message: scheduleCheck.message
-      });
+    /*
+     * The package behind a free consultation, and who it is with.
+     *
+     * The package must be the guest's own, still ongoing (Active, redeemable
+     * at this centre, sessions owed), and the dermatologist asked for must be
+     * the one treating them under it — the benefit is a check-in with YOUR
+     * dermatologist, not a free slot with any of them. Only when the package
+     * names nobody (sessions without a specialist, or theirs has left) is any
+     * active dermatologist accepted; the consult-doctor endpoint tells the
+     * app which case it is in before the guest picks.
+     */
+    let packageAssignment = null;
+    let packageDoctor = null;
+    if (isPackageConsult) {
+      const consult = require('../utils/packageConsult');
+      packageAssignment = await PackageAssignment.findOne({ _id: packageAssignmentId, userId: req.user._id }).catch(() => null);
+      if (!packageAssignment) {
+        return res.status(404).json({ success: false, code: 'PACKAGE_NOT_FOUND', message: 'We could not find this package on your account.' });
+      }
+      const eligibility = consult.packageConsultEligibility(packageAssignment, { branchId: branch._id });
+      if (!eligibility.ok) {
+        return res.status(409).json({ success: false, code: 'PACKAGE_CONSULT_NOT_ELIGIBLE', reason: eligibility.code, message: eligibility.message });
+      }
+      packageDoctor = await Doctor.findOne({ doctorId: String(specialistId || '').trim().toLowerCase(), isActive: { $ne: false } });
+      if (!packageDoctor) {
+        return res.status(404).json({ success: false, code: 'DERMATOLOGIST_NOT_FOUND', message: 'That dermatologist is not available to book.' });
+      }
+      const treating = await consult.treatingDoctorFor(packageAssignment, { userId: req.user._id });
+      if (treating.doctor && String(treating.doctor.doctorId) !== String(packageDoctor.doctorId)) {
+        return res.status(409).json({
+          success: false,
+          code: 'PACKAGE_CONSULT_DOCTOR_MISMATCH',
+          message: `Your package is with ${treating.doctor.name} — please request the consultation with them.`,
+          data: { doctor: { id: treating.doctor.doctorId, name: treating.doctor.name, tier: treating.doctor.tier, level: treating.doctor.level } },
+        });
+      }
+    }
+
+    if (isPackageConsult) {
+      // A real slot off the dermatologist's own calendar, checked the way the
+      // paid consultation path checks it (utils/slotGuard: live Zenoti first).
+      const { isSlotBookable } = require('../utils/slotGuard');
+      const slotCheck = await isSlotBookable(packageDoctor.doctorId, clinicDateKey(preferredDate), consultSlot, { branchId: branch._id });
+      if (!slotCheck.ok) {
+        return res.status(409).json({
+          success: false,
+          code: 'DERMATOLOGIST_SLOT_UNAVAILABLE',
+          message: `${consultSlot} is no longer available with ${packageDoctor.name}. Please choose another time.`,
+          data: { reason: slotCheck.reason || null },
+        });
+      }
+    } else {
+      const liveBranch = await require('../services/zenotiAvailabilityService').branchSlots(
+        branch._id,
+        clinicDateKey(preferredDate),
+      );
+      const liveMinutes = new Set(liveBranch.slots.map(parseClockMinutes).filter((value) => value !== null));
+      const unavailableTime = requestedTimes.find((time) => !liveMinutes.has(parseClockMinutes(time)));
+      const scheduleCheck = unavailableTime
+        ? { ok: false, code: 'ZENOTI_SLOT_UNAVAILABLE', message: `${unavailableTime} is not available in Zenoti for this clinic.` }
+        : { ok: true };
+      if (!scheduleCheck.ok) {
+        return res.status(409).json({
+          success: false,
+          code: scheduleCheck.code,
+          message: scheduleCheck.message
+        });
+      }
     }
 
     // Create booking with pre-save hook for reference number.
@@ -205,13 +296,48 @@ exports.createBooking = async (req, res) => {
       branchId: branch._id,
       preferredLocation,
       preferredDate: clinicDayStart(preferredDate),
-      preferredTimeSlots,
+      preferredTimeSlots: requestedTimes,
       amount: consultation.price || 0,
-      status: 'Awaiting Confirmation'
+      status: 'Awaiting Confirmation',
+      /*
+       * The free package consultation: nothing to pay, one held slot with the
+       * treating dermatologist, and linked to the package for the desk. Same
+       * "Awaiting Confirmation → desk confirms → Zenoti" lifecycle as any
+       * consultation. It is NOT a package session (no packageSessionId, not
+       * "included"), so the package's balance is left alone — see
+       * Booking.consultContext.
+       */
+      ...(isPackageConsult ? {
+        specialistId: packageDoctor.doctorId,
+        specialistName: packageDoctor.name,
+        specialistTier: packageDoctor.tier,
+        slotTime: consultSlot,
+        amount: 0,
+        paymentStatus: 'pending',
+        consultContext: 'package_support',
+        packageAssignmentId: packageAssignment._id,
+        packageSessionId: null,
+        isPackageIncluded: false,
+      } : {}),
     });
 
     console.log('💾 Attempting to save booking with userId:', req.user._id);
-    await booking.save();
+    try {
+      await booking.save();
+    } catch (err) {
+      // The slot index (one_live_booking_per_slot) is the real guard: two
+      // requests for the same dermatologist slot both pass the check above and
+      // only one can insert. Losing that race is "slot unavailable", not a 500.
+      if (isPackageConsult && err?.code === 11000 && err?.keyPattern?.specialistId) {
+        return res.status(409).json({
+          success: false,
+          code: 'DERMATOLOGIST_SLOT_UNAVAILABLE',
+          message: `${consultSlot} was taken a moment ago. Please choose another time.`,
+          data: { reason: 'race' },
+        });
+      }
+      throw err;
+    }
     console.log('✅ Booking saved successfully with reference:', booking.referenceNumber);
 
     // Populate consultation details

@@ -305,10 +305,14 @@ function zenotiAmount(price) {
  * so this now keeps exactly one plan — the app-default "Zen Membership" — and
  * retires every other mirrored row.
  *
- * Price, name, discounts and credits belong to the panel (App Studio → the
- * membership card, and the plan editor). Zenoti's own list price is recorded
- * in zenotiRaw for reference but never overwrites ours: the live selling price
- * is a clinic decision, and Zenoti's rows disagree with each other.
+ * Name, discounts and credits belong to the panel (App Studio → the
+ * membership card, and the plan editor). The PRICE follows App Studio's
+ * `priceSource`: 'zenoti' (default) writes the anchor row's list price onto the
+ * plan so the stored figure tracks Zenoti — the same figure the app charges
+ * via utils/zenMembership — and 'manual' leaves the plan's price alone.
+ * Zenoti's rows disagree with each other, so the anchor is the row App Studio
+ * names (zenotiMembershipVersionId — the clinic sells "MVP Jh"), and only when
+ * none is named do we fall back to the row literally called "Zen Membership".
  */
 const ZEN_PLAN_CODE = 'ZEN-MEMBERSHIP';
 
@@ -336,15 +340,25 @@ async function syncMemberships(stats) {
     } else stats.memberships.updated += 1;
     doc.isAppDefault = true;
     doc.isActive = true;
-    // Prefer the Zenoti row literally named "Zen Membership" as the link; fall
-    // back to whichever zen row the centres list first.
-    const anchor = zenRows.find((m) => /^zen membership$/i.test(String(m.name || '').trim())) || zenRows[0] || null;
+    // The row App Studio sells (by version id, then product id) is the link;
+    // without one, the row literally named "Zen Membership", then whichever
+    // zen row the centres list first.
+    const card = (await require('../models/AppCustomization').getSettings().catch(() => null))?.membership || {};
+    const wantedVersion = String(card.zenotiMembershipVersionId || '').trim().toLowerCase();
+    const anchor = (wantedVersion && (
+      rows.find((m) => String(m.versionId || '').toLowerCase() === wantedVersion)
+      || rows.find((m) => String(m.id || '').toLowerCase() === wantedVersion)
+    ))
+      || zenRows.find((m) => /^zen membership$/i.test(String(m.name || '').trim())) || zenRows[0] || null;
     if (anchor) {
       doc.zenotiMembershipId = anchor.id;
       doc.zenotiVersionId = anchor.versionId || doc.zenotiVersionId;
       doc.zenotiRaw = {
         name: anchor.name,
         displayName: anchor.displayName,
+        code: anchor.code || null,
+        durationMonths: anchor.durationMonths ?? null,
+        isActive: anchor.isActive ?? null,
         zenotiListPrice: zenotiAmount(anchor.price),
         price: anchor.price,
         discountedPrice: anchor.discountedPrice,
@@ -353,8 +367,11 @@ async function syncMemberships(stats) {
         showPrice: anchor.showPrice,
         imagePaths: anchor.imagePaths,
         // Every Zenoti row that counts as this one membership, with its list price.
-        variants: zenRows.map((m) => ({ id: m.id, name: m.name, listPrice: zenotiAmount(m.price) })),
+        variants: zenRows.map((m) => ({ id: m.id, versionId: m.versionId || null, code: m.code || null, name: m.name, listPrice: zenotiAmount(m.price) })),
       };
+      // The stored plan price tracks Zenoti unless the card is set to manual.
+      const zenotiPrice = zenotiAmount(anchor.price);
+      if (card.priceSource !== 'manual' && zenotiPrice > 0) doc.price = zenotiPrice;
     }
     doc.zenotiSyncedAt = new Date();
     await doc.save();

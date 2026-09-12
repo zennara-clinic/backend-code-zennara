@@ -523,45 +523,212 @@ async function syncConsultationNote(noteId) {
   }
 }
 
-/** Create the Zenoti membership-sale invoice for an in-app Zen upgrade. */
-async function syncMembership(userId) {
+/* ------------------------------ Membership sale ----------------------------- *
+ * A Zen membership sold in the app (Razorpay), at the desk, or as a bill line
+ * is one MembershipAssignment row here and must become one membership sale in
+ * Zenoti, which is what the clinic reconciles against. Zenoti's sale is three
+ * calls (all verified live 2026-09-12):
+ *   1. POST /v1/invoices/memberships { center_id, user_id, membership_version_ids }
+ *      → the invoice. (The legacy /api/Catalog/Memberships/CreateInvoice route
+ *      answers 200 with an Error envelope and is no longer used.)
+ *   2. POST /v1/invoices/{id}/payment/custom { custom_payment_id, amount }
+ *      → records what the guest paid. There is NO API listing custom payment
+ *      types, so the id is configured by hand in App Studio → Membership.
+ *   3. POST /v1/invoices/{id}/close { closed_by_id } → the membership goes live
+ *      on the guest. Needs an employee id, also configured by hand.
+ * Until 2 and 3 are configured the sale still reaches Zenoti as an OPEN
+ * invoice and the row says 'invoice_open' with what to configure. The invoice
+ * id is saved the moment step 1 answers so a retry can never raise a second
+ * invoice; the payment step is guarded the same way (zenotiPaymentPostedAt).
+ * ------------------------------------------------------------------------- */
+
+/** The three Zenoti payloads for one sale. Pure — the dryrun log and the tests read this. */
+function membershipSalePlan({ guestId, versionId, centerId, amount, customPaymentId = '', closedById = '' } = {}) {
+  const rupees = Number(amount);
+  return {
+    invoice: { center_id: centerId || null, user_id: guestId || null, membership_version_ids: versionId ? [versionId] : [] },
+    payment: customPaymentId ? { custom_payment_id: customPaymentId, amount: Number.isFinite(rupees) ? rupees : 0 } : null,
+    close: closedById ? { closed_by_id: closedById } : null,
+  };
+}
+
+/** 'synced' only when the invoice was paid AND closed; otherwise 'invoice_open' with what the panel must configure. */
+function membershipSaleOutcome(plan, { paid = false, closed = false } = {}) {
+  const missing = [];
+  if (!plan?.payment) missing.push('no custom payment type');
+  if (!plan?.close) missing.push('no closing employee');
+  if (!missing.length && paid && closed) return { status: 'synced', error: null };
+  const why = missing.length ? missing.join(' / ') : (!paid ? 'payment was not recorded' : 'it was not closed');
+  return { status: 'invoice_open', error: `Invoice created in Zenoti but left open: ${why} configured in App Studio → Membership.` };
+}
+
+/** Zenoti's invoice id / number out of whichever casing the endpoint answers with. */
+function invoiceIdFrom(result) {
+  return result?.invoice_id || result?.id || result?.Invoice?.Id || result?.Invoice?.id || result?.invoice?.id || null;
+}
+function invoiceNumberFrom(result) {
+  return result?.invoice_number || result?.invoice_no || result?.Invoice?.InvoiceNumber || result?.invoice?.invoice_number || null;
+}
+
+/** The one Zenoti membership row that is this sale: by invoice, else the newest. */
+function pickSoldMembership(rows, { invoiceId = null, invoiceNumber = null } = {}) {
+  const { isZenMembership } = require('../config/zenoti');
+  const zen = (Array.isArray(rows) ? rows : []).filter((m) => m?.id && (isZenMembership(m.name) || isZenMembership(m.code)));
+  if (!zen.length) return null;
+  const byInvoice = zen.find((m) => (invoiceId && String(m.invoice?.id || '').toLowerCase() === String(invoiceId).toLowerCase())
+    || (invoiceNumber && String(m.invoice?.number || '') === String(invoiceNumber)));
+  if (byInvoice) return byInvoice;
+  const stamp = (m) => Math.max(Date.parse(m.memberSince || '') || 0, Date.parse(m.expiryDate || '') || 0);
+  return [...zen].sort((a, b) => stamp(b) - stamp(a))[0];
+}
+
+/**
+ * Push one membership sale into Zenoti. Never throws; returns
+ * { status, error, invoiceId } and leaves the same on the assignment row.
+ *
+ * @param userId        the guest
+ * @param assignmentId  the MembershipAssignment to push; when absent, the
+ *                      guest's current Active app/desk row that Zenoti does
+ *                      not know yet (the User post-save hook calls it this way)
+ */
+async function syncMembership(userId, { assignmentId = null } = {}) {
   const User = require('../models/User');
+  const MembershipAssignment = require('../models/MembershipAssignment');
   const user = await User.findById(userId);
-  if (!user || user.memberType !== 'Zen Member' || user.zenotiMembershipInvoiceId || isOff()) return;
+  if (!user) return { status: 'skipped', error: 'Guest not found.' };
+
+  let assignment = assignmentId ? await MembershipAssignment.findById(assignmentId) : null;
+  if (!assignmentId) {
+    assignment = await MembershipAssignment.findOne({
+      userId: user._id, status: 'Active', source: { $ne: 'zenoti' },
+      $or: [{ zenotiUserMembershipId: null }, { zenotiUserMembershipId: { $exists: false } }],
+    }).sort({ createdAt: -1 });
+  }
+  // A row mirrored FROM Zenoti is Zenoti's own sale — pushing it back would sell it twice.
+  if (!assignment || assignment.source === 'zenoti') return { status: 'skipped', error: 'No app or desk membership sale is waiting for Zenoti.' };
+
+  const finish = async (status, error = null, extra = {}) => {
+    assignment.zenotiSyncStatus = status;
+    assignment.zenotiSyncError = error;
+    Object.assign(assignment, extra);
+    if (status === 'synced') assignment.zenotiSyncedAt = new Date();
+    assignment.$locals.skipZenotiWrite = true;
+    await assignment.save({ validateModifiedOnly: true }).catch((e) => logger.warn('membership sync row save failed', { assignmentId: assignment._id, error: e.message }));
+    // The User summary the older app builds and the profile still read.
+    // 'invoice_open' is not in the User enum; it is 'pending' there.
+    user.zenotiMembershipInvoiceId = assignment.zenotiInvoiceId || user.zenotiMembershipInvoiceId || null;
+    user.zenotiMembershipSyncStatus = status === 'invoice_open' ? 'pending' : status;
+    user.zenotiMembershipSyncError = error;
+    user.$locals.skipZenotiWrite = true;
+    await user.save({ validateModifiedOnly: true }).catch(() => {});
+    return { status, error, invoiceId: assignment.zenotiInvoiceId || null };
+  };
+
+  // Already fully in Zenoti: nothing to do, whichever path called us — and
+  // a later flip of the write mode must not relabel a completed sale.
+  if (assignment.zenotiInvoiceId && assignment.zenotiSyncStatus === 'synced') return { status: 'synced', error: null, invoiceId: assignment.zenotiInvoiceId };
+
+  if (isOff()) return finish('skipped', 'Zenoti write mode is off — will sync when enabled.');
+
+  /*
+   * Claim the row. The User hook and createMemberAssignment can both fire for
+   * the same sale within a tick; whoever loses this atomic update backs off
+   * instead of raising a second invoice. A claim older than ten minutes is a
+   * crashed run and may be taken over.
+   */
+  const claimed = await MembershipAssignment.findOneAndUpdate(
+    { _id: assignment._id, $or: [{ zenotiSyncStatus: { $ne: 'pending' } }, { updatedAt: { $lt: new Date(Date.now() - 10 * 60 * 1000) } }] },
+    { $set: { zenotiSyncStatus: 'pending' } },
+    { new: true },
+  );
+  if (!claimed) return { status: 'pending', error: 'Another push for this sale is in progress.', invoiceId: assignment.zenotiInvoiceId || null };
+  assignment = claimed;
+
   try {
     const guestId = await ensureGuest(user);
     // The panel's membership card names the Zenoti membership it sells;
     // the env is only a fallback for installs that never set it.
     const settings = await require('../models/AppCustomization').getSettings().catch(() => null);
-    const membershipVersionIds = settings?.membership?.zenotiMembershipVersionId
-      || process.env.ZENOTI_MEMBERSHIP_VERSION_IDS || process.env.ZENOTI_MEMBERSHIP_ID;
-    const payload = {
-      center_id: user.zenotiCenterId || clinicCenterIdForBranch(user.location),
-      user_id: guestId,
-      membership_version_ids: membershipVersionIds,
-    };
-    if (!guestId || !membershipVersionIds) {
-      user.zenotiMembershipSyncStatus = isLive() ? 'skipped' : 'dryrun';
-      user.zenotiMembershipSyncError = `unresolved: ${!guestId ? 'guestId' : 'ZENOTI_MEMBERSHIP_VERSION_IDS'}`;
-    } else if (!isLive()) {
-      user.zenotiMembershipSyncStatus = 'dryrun';
-      user.zenotiMembershipSyncError = null;
-      logWrite('createMembershipInvoice', payload, { userId: user._id });
-    } else {
-      const result = await liveWrite('createMembershipInvoice', () => zenoti.request('/api/Catalog/Memberships/CreateInvoice', { method: 'POST', body: payload }));
-      user.zenotiMembershipInvoiceId = result?.invoice_id || result?.id || result?.Invoice?.Id || result?.Invoice?.id || null;
-      if (!user.zenotiMembershipInvoiceId) throw new Error('Zenoti membership invoice returned no id.');
-      user.zenotiMembershipSyncStatus = 'synced';
-      user.zenotiMembershipSyncError = null;
+    const card = settings?.membership || {};
+    const versionId = String(card.zenotiMembershipVersionId || process.env.ZENOTI_MEMBERSHIP_VERSION_IDS || process.env.ZENOTI_MEMBERSHIP_ID || '')
+      .split(',')[0].trim().toLowerCase();
+    const centerId = user.zenotiCenterId || clinicCenterIdForBranch(user.location);
+    const plan = membershipSalePlan({
+      guestId, versionId, centerId,
+      // The rupees the guest actually paid — a desk discount is a real discount.
+      amount: Number(assignment.price) || 0,
+      customPaymentId: String(card.zenotiCustomPaymentId || '').trim().toLowerCase(),
+      closedById: String(card.zenotiClosedByEmployeeId || '').trim().toLowerCase(),
+    });
+
+    if (!guestId || !versionId) {
+      const why = !guestId ? 'the guest is not in Zenoti yet' : 'no Zenoti membership is chosen in App Studio → Membership';
+      return finish(isLive() ? 'skipped' : 'dryrun', `unresolved: ${why}`);
     }
-    user.$locals.skipZenotiWrite = true;
-    await user.save({ validateModifiedOnly: true });
+
+    if (!isLive()) {
+      logWrite('createMembershipInvoice', plan.invoice, { assignmentId: assignment._id, userId: user._id });
+      logWrite('addMembershipPayment', plan.payment || { skipped: 'no custom payment type configured' }, { assignmentId: assignment._id });
+      logWrite('closeMembershipInvoice', plan.close || { skipped: 'no closing employee configured' }, { assignmentId: assignment._id });
+      return finish('dryrun', null);
+    }
+
+    // 1. The invoice — created once, ever.
+    if (!assignment.zenotiInvoiceId) {
+      const result = await liveWrite('createMembershipInvoice', () => zenoti.request('/v1/invoices/memberships', { method: 'POST', body: plan.invoice }));
+      const invoiceId = invoiceIdFrom(result);
+      if (!invoiceId) throw new Error(result?.Error?.Message || result?.error?.message || 'Zenoti membership invoice returned no id.');
+      assignment.zenotiInvoiceId = String(invoiceId);
+      assignment.zenotiInvoiceNumber = invoiceNumberFrom(result) || assignment.zenotiInvoiceNumber || null;
+      assignment.$locals.skipZenotiWrite = true;
+      await assignment.save({ validateModifiedOnly: true });
+    }
+    const invoiceId = assignment.zenotiInvoiceId;
+
+    // 2. The payment — once per invoice.
+    let paid = !!assignment.zenotiPaymentPostedAt;
+    if (plan.payment && !paid) {
+      await liveWrite('addMembershipPayment', () => zenoti.request(`/v1/invoices/${invoiceId}/payment/custom`, { method: 'POST', body: plan.payment }));
+      assignment.zenotiPaymentPostedAt = new Date();
+      assignment.$locals.skipZenotiWrite = true;
+      await assignment.save({ validateModifiedOnly: true });
+      paid = true;
+    }
+
+    // 3. Close — only after a payment, or Zenoti refuses the unpaid balance.
+    let closed = false;
+    if (plan.close && paid) {
+      await liveWrite('closeMembershipInvoice', () => zenoti.request(`/v1/invoices/${invoiceId}/close`, { method: 'POST', body: plan.close }));
+      closed = true;
+    }
+
+    const outcome = membershipSaleOutcome(plan, { paid, closed });
+    if (outcome.status !== 'synced') return finish(outcome.status, outcome.error);
+
+    /*
+     * Closed: the membership now exists on the Zenoti guest. Link our row to
+     * it and let the mirror land the credits and expiry Zenoti computed, so
+     * the register shows the same balances the desk sees in Zenoti.
+     */
+    const extra = {};
+    try {
+      const rows = await zenoti.getGuestMemberships(guestId, centerId);
+      const sold = pickSoldMembership(rows, { invoiceId, invoiceNumber: assignment.zenotiInvoiceNumber });
+      if (sold) {
+        extra.zenotiUserMembershipId = sold.id;
+        if (sold.invoice?.number) extra.zenotiInvoiceNumber = sold.invoice.number;
+        assignment.zenotiUserMembershipId = sold.id;
+        assignment.$locals.skipZenotiWrite = true;
+        await assignment.save({ validateModifiedOnly: true });
+        await require('./zenotiMembershipMirror').mirrorGuestMemberships(user._id, rows).catch((e) => logger.warn('membership mirror after sale failed', { userId: user._id, error: e.message }));
+      }
+    } catch (e) {
+      logger.warn('could not read the guest memberships back after the sale', { userId: user._id, error: e.message });
+    }
+    return finish('synced', null, extra);
   } catch (error) {
-    user.zenotiMembershipSyncStatus = 'failed';
-    user.zenotiMembershipSyncError = error.message;
-    user.$locals.skipZenotiWrite = true;
-    await user.save({ validateModifiedOnly: true }).catch(() => {});
-    logger.error('Zenoti membership invoice sync failed', { userId, error: error.message });
+    logger.error('Zenoti membership sale sync failed', { userId, assignmentId: assignment._id, error: error.message });
+    return finish('failed', error.message);
   }
 }
 
@@ -1411,6 +1578,9 @@ module.exports = {
   syncGuestProfile,
   syncConsultationNote,
   syncMembership,
+  membershipSalePlan,
+  membershipSaleOutcome,
+  pickSoldMembership,
   syncPackageAssignment,
   syncPackageExpiry,
   syncBooking,

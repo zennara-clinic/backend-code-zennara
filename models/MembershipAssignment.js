@@ -47,6 +47,22 @@ const membershipAssignmentSchema = new mongoose.Schema({
   source: { type: String, enum: ['panel', 'app', 'zenoti'], default: 'panel', index: true },
   zenotiUserMembershipId: { type: String, default: null, index: true },
   zenotiInvoiceNumber: { type: String, default: null },
+  /*
+   * Outbound sale into Zenoti (services/zenotiWriteService.syncMembership).
+   * A sale made in the app or at the desk is invoiced in Zenoti in three
+   * steps — create the membership invoice, post the payment, close it. The
+   * invoice id is written the moment step one answers, so a crash or a retry
+   * can never raise a second invoice for the same sale; 'invoice_open' means
+   * the invoice exists but the panel has not yet configured the payment type
+   * or closing employee (App Studio → Membership). zenotiPaymentPostedAt is
+   * the same guard for step two: a retry after a failed close must not pay
+   * the invoice twice.
+   */
+  zenotiInvoiceId: { type: String, default: null, index: true },
+  zenotiSyncStatus: { type: String, enum: ['pending', 'synced', 'invoice_open', 'failed', 'skipped', 'dryrun', null], default: null },
+  zenotiSyncError: { type: String, default: null },
+  zenotiSyncedAt: { type: Date, default: null },
+  zenotiPaymentPostedAt: { type: Date, default: null },
   soldByName: { type: String, default: null },
 }, { timestamps: true });
 

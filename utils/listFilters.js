@@ -161,6 +161,10 @@ async function buildBookingQuery(q) {
   if (q.room) query.room = q.room;
   if (q.packageIncluded === 'true') query.isPackageIncluded = true;
   if (q.packageIncluded === 'false') query.isPackageIncluded = { $ne: true };
+  // Free consultations raised from an ongoing package (Booking.consultContext);
+  // 'none' = ordinary bookings only.
+  if (q.consultContext === 'none') query.consultContext = null;
+  else if (q.consultContext) { const s = list(q.consultContext); query.consultContext = s.length > 1 ? { $in: s } : s[0]; }
   if (q.hasRating === 'true') query.rating = { $gt: 0 };
 
   const amountMin = num(q.amountMin); const amountMax = num(q.amountMax);

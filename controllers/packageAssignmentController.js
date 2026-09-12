@@ -1187,6 +1187,51 @@ exports.getUserPackageById = async (req, res) => {
   }
 };
 
+// @desc    Who the guest's free package consultation would be with, and whether
+//          the package still includes one. The app reads this before it offers
+//          the "Talk to your dermatologist" button on the package page.
+// @route   GET /api/package-assignments/user/my-packages/:id/consult-doctor
+// @access  Private (User)
+exports.getUserConsultDoctor = async (req, res) => {
+  try {
+    const assignment = await PackageAssignment.findOne({ _id: req.params.id, userId: req.user._id })
+      .populate('packageId', 'name');
+    if (!assignment) return res.status(404).json({ success: false, message: 'Treatment package not found' });
+
+    const consult = require('../utils/packageConsult');
+    const eligibility = consult.packageConsultEligibility(assignment, { branchId: assignment.branchId || null });
+    const packageName = consult.describe(assignment);
+
+    if (!eligibility.ok) {
+      return res.status(200).json({
+        success: true,
+        data: { eligible: false, reason: eligibility.message, doctor: null, packageName },
+      });
+    }
+
+    // Eligible but nobody resolvable (sessions never had a dermatologist set,
+    // or theirs has left) is still a yes: the guest picks a dermatologist and
+    // createBooking accepts any active one when nobody is on record.
+    const { doctor } = await consult.treatingDoctorFor(assignment, { userId: req.user._id });
+    return res.status(200).json({
+      success: true,
+      data: {
+        eligible: true,
+        reason: doctor ? null : "We couldn't tell which dermatologist is treating you — pick any dermatologist and we'll route it.",
+        doctor: doctor ? { id: doctor.doctorId, name: doctor.name, tier: doctor.tier, level: doctor.level } : null,
+        packageName,
+      },
+    });
+  } catch (error) {
+    console.error('Get user consult doctor error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to work out your package consultation',
+      error: error.message
+    });
+  }
+};
+
 // @desc    Get service cards for user's completed services
 // @route   GET /api/user/package-assignments/:id/service-cards
 // @access  Private (User)

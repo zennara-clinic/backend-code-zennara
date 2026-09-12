@@ -647,17 +647,32 @@ exports.syncCategories = async (req, res) => {
   catch (error) { return res.status(500).json({ success: false, message: error.message || 'Category sync failed' }); }
 };
 
-/** GET /api/admin/zenoti/catalog/memberships — Zenoti's membership products (name, price, images). */
-exports.listCatalogMemberships = async (_req, res) => {
+/**
+ * GET /api/admin/zenoti/catalog/memberships — Zenoti's membership products for
+ * the App Studio picker. `price` is the numeric final amount (the figure the
+ * app will charge when the card points at that row); `isZenFamily` marks the
+ * rows that are the one membership the clinic sells (MVP, MVP Jh, …) so the
+ * picker can list them first. ?fresh=true drops the hour-long catalogue cache
+ * — the panel's "refresh price" after a change made in Zenoti.
+ */
+exports.listCatalogMemberships = async (req, res) => {
   try {
     const zenoti = require('../services/zenotiService');
-    const { CENTERS } = require('../config/zenoti');
+    const { CENTERS, isZenMembership } = require('../config/zenoti');
+    const { zenotiAmount } = require('../utils/zenMembership');
+    if (req.query?.fresh === 'true') zenoti.forgetCatalog('memberships:');
     const byId = new Map();
     for (const [centerId, c] of Object.entries(CENTERS)) {
       if (!c.isClinic) continue;
       for (const m of await zenoti.getCenterMemberships(centerId).catch(() => [])) if (m.id && !byId.has(m.id)) byId.set(m.id, m);
     }
-    return res.json({ success: true, data: [...byId.values()] });
+    const data = [...byId.values()].map((m) => ({
+      ...m,
+      price: zenotiAmount(m.price) || null,
+      priceDetail: m.price && typeof m.price === 'object' ? m.price : null,
+      isZenFamily: Boolean(isZenMembership(m.name) || isZenMembership(m.code)),
+    }));
+    return res.json({ success: true, data });
   } catch (error) {
     return res.status(500).json({ success: false, message: error.message || 'Could not read Zenoti memberships' });
   }
