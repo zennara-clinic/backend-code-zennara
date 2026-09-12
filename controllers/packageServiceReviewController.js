@@ -373,7 +373,7 @@ exports.getAllServiceReviews = async (req, res) => {
     if (serviceId) filter.serviceId = serviceId;
 
     const reviews = await PackageServiceReview.find(filter)
-      .populate('userId', 'fullName name email profilePicture patientId')
+      .populate('userId', 'fullName name email profilePicture patientId guestCode')
       .sort({ createdAt: -1 });
 
     res.status(200).json({

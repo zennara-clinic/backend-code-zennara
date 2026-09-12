@@ -7,6 +7,8 @@
  * record of what the dermatologist prescribed, sent right after they sign.
  */
 
+const { guestCodeOf } = require('../utils/guestCode');
+
 const esc = (v) => String(v ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 const fmtDate = (d) => {
@@ -26,7 +28,7 @@ function buildPrescriptionDocument({ note, patient, booking, doctorName }) {
   return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Prescription — ${esc(patient?.fullName)}</title>
 <style>body{font-family:Georgia,serif;max-width:640px;margin:40px auto;color:#111;padding:0 16px}h1{font-size:20px;letter-spacing:2px}hr{border:0;border-top:1px solid #ccc}li{margin:8px 0}</style></head>
 <body><h1>ZENNARA</h1><p>Skin · Aesthetics · Wellness${booking?.preferredLocation ? ` — ${esc(booking.preferredLocation)}` : ''}</p><hr>
-<p><b>Patient:</b> ${esc(patient?.fullName)}${age ? ` · ${age} ${esc(patient?.gender || '')}` : ''}${patient?.patientId ? `<br><b>Patient ID:</b> ${esc(patient.patientId)}` : ''}<br><b>Date:</b> ${fmtDate(note.completedAt)}</p>
+<p><b>Patient:</b> ${esc(patient?.fullName)}${age ? ` · ${age} ${esc(patient?.gender || '')}` : ''}${guestCodeOf(patient) ? `<br><b>Guest code:</b> ${esc(guestCodeOf(patient))}` : ''}<br><b>Date:</b> ${fmtDate(note.completedAt)}</p>
 <p><b>Complaint:</b> ${esc(note.complaint) || '—'}</p><p><b>Examination:</b> ${esc(note.examination) || '—'}</p>
 <p><b>Assessment:</b> ${esc(note.assessment) || '—'}</p><p><b>Plan:</b> ${esc(note.plan) || '—'}</p>
 <h3>Rx</h3><ol>${items || '<li>—</li>'}</ol>

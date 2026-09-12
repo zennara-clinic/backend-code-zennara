@@ -11,6 +11,7 @@ const Booking = require('../models/Booking');
 const Consultation = require('../models/Consultation');
 const { UPCOMING } = require('./bookingStatuses');
 const { clinicDayStart } = require('./bookingTime');
+const { guestCodeOf } = require('./guestCode');
 
 const escapeRx = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -87,7 +88,7 @@ async function listDoctorPatients(doctor, params = {}) {
     {
       $project: {
         bookingName: 1, bookings: 1, visits: 1, lastVisit: 1, lastSeen: 1, nextVisit: 1, consultationIds: 1, serviceNames: 1,
-        'u.fullName': 1, 'u.phone': 1, 'u.patientId': 1, 'u.email': 1, 'u.gender': 1, 'u.dateOfBirth': 1,
+        'u.fullName': 1, 'u.phone': 1, 'u.patientId': 1, 'u.guestCode': 1, 'u.email': 1, 'u.gender': 1, 'u.dateOfBirth': 1,
         'u.drugAllergies': 1, 'u.hasDrugAllergy': 1, 'u.memberType': 1,
       },
     },
@@ -98,7 +99,7 @@ async function listDoctorPatients(doctor, params = {}) {
         recency: { $ifNull: ['$lastSeen', '$nextVisit'] },
       },
     },
-    ...(rx ? [{ $match: { $or: [{ fullName: rx }, { bookingName: rx }, { 'u.phone': rx }, { 'u.patientId': rx }, { 'u.email': rx }] } }] : []),
+    ...(rx ? [{ $match: { $or: [{ fullName: rx }, { bookingName: rx }, { 'u.phone': rx }, { 'u.patientId': rx }, { 'u.guestCode': rx }, { 'u.email': rx }] } }] : []),
     { $addFields: { sortName: { $toLower: { $ifNull: ['$fullName', ''] } } } },
     {
       $facet: {
@@ -129,7 +130,8 @@ async function listDoctorPatients(doctor, params = {}) {
         userId: r._id,
         fullName: r.fullName || 'Guest',
         phone: r.u?.phone || null,
-        patientId: r.u?.patientId || null,
+        patientId: guestCodeOf(r.u),
+        guestCode: r.u?.guestCode || null,
         gender: r.u?.gender || null,
         dateOfBirth: r.u?.dateOfBirth || null,
         memberType: r.u?.memberType || null,

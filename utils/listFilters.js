@@ -379,7 +379,7 @@ async function buildUserFilter(q) {
 
   if (q.search) {
     const rx = { $regex: escapeRx(q.search), $options: 'i' };
-    and.push({ $or: [{ fullName: rx }, { email: rx }, { phone: rx }, { patientId: rx }] });
+    and.push({ $or: [{ fullName: rx }, { email: rx }, { phone: rx }, { guestCode: rx }, { patientId: rx }] });
   }
   if (and.length) filter.$and = and;
 

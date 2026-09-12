@@ -845,7 +845,7 @@ async function refreshAppointment(bookingId) {
   const context = { ...(await lookupContext()), changed: [] };
   const result = await upsertAppointment(detail, { user: owner, context, verified: true });
   notifyPanels(context.changed);
-  return { result, booking: await Booking.findById(bookingId).populate('consultationId', 'name category price image').populate('userId', 'fullName email phone patientId') };
+  return { result, booking: await Booking.findById(bookingId).populate('consultationId', 'name category price image').populate('userId', 'fullName email phone patientId guestCode') };
 }
 
 /** Backfill/update every appointment already fetched for one patient. */

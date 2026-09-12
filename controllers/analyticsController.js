@@ -13,6 +13,7 @@ const {
   addClinicDays, clinicDateKey, clinicDayEnd, clinicDayStart, formatClinicDate, parseClockMinutes,
 } = require('../utils/bookingTime');
 const { COUNTABLE: BOOKING_COUNTABLE, ATTENDED: BOOKING_PRESENT_OR_DONE } = require('../utils/bookingStatuses');
+const { guestCodeOf } = require('../utils/guestCode');
 
 // Get Financial Dashboard Analytics
 
@@ -1494,15 +1495,15 @@ exports.getTodaysSales = async (req, res) => {
         .sort({ issuedAt: -1 }).lean(),
       // Visits paid without a bill (app / Razorpay, legacy desk "mark paid", Zenoti-mirrored).
       Booking.find({ ...scope, invoiceId: null, paymentStatus: 'paid', amount: { $gt: 0 }, $or: [inDay('paidAt'), { paidAt: null, ...inDay('checkOutTime') }] })
-        .populate('consultationId', 'name').populate('userId', 'fullName phone patientId')
+        .populate('consultationId', 'name').populate('userId', 'fullName phone patientId guestCode')
         .select('referenceNumber fullName mobileNumber amount paymentMethod paidAt checkOutTime status specialistName consultationId externalServiceName userId preferredLocation zenotiSource source')
         .sort({ paidAt: -1 }).lean(),
       ProductOrder.find({ ...(scope.branchId ? { branchId: scope.branchId } : {}), paymentStatus: { $in: ['paid', 'Paid', 'completed'] }, $or: [inDay('paidAt'), { paidAt: null, ...inDay('updatedAt') }] })
-        .populate('userId', 'fullName phone patientId')
+        .populate('userId', 'fullName phone patientId guestCode')
         .select('orderNumber userId items totalAmount finalAmount paymentMethod paymentStatus orderStatus paidAt createdAt')
         .sort({ createdAt: -1 }).lean().catch(() => []),
       PackageAssignment.find({ ...(scope.branchId ? { branchId: scope.branchId } : {}), invoiceId: null, 'payment.isReceived': true, ...inDay('payment.receivedDate') })
-        .populate('userId', 'fullName phone patientId')
+        .populate('userId', 'fullName phone patientId guestCode')
         .select('assignmentId packageDetails.packageName pricing.finalAmount payment userId createdAt')
         .sort({ 'payment.receivedDate': -1 }).lean(),
     ]);
@@ -1513,26 +1514,26 @@ exports.getTodaysSales = async (req, res) => {
         const m = methodsOf(i);
         return {
           kind: 'invoice', id: i._id, ref: i.invoiceNumber, receipt: i.receiptNumber || null,
-          customer: i.guest?.name || null, phone: i.guest?.phone || null, patientId: i.guest?.patientId || null, userId: i.userId || null,
+          customer: i.guest?.name || null, phone: i.guest?.phone || null, patientId: guestCodeOf(i.guest), guestCode: i.guest?.guestCode || null, userId: i.userId || null,
           items: (i.lines || []).map((l) => `${l.name} (${l.qty})`), amount: i.status === 'void' ? 0 : (i.totals?.total || 0), due: i.status === 'void' ? 0 : (i.totals?.due || 0),
           method: Object.keys(m).join(' + ') || null, methods: m, at: i.closedAt || i.issuedAt, status: i.status.toUpperCase(), source: i.source === 'zenoti' ? 'Zenoti' : i.source === 'app' ? 'App' : 'Desk', staff: i.closedByName || i.createdByName || null,
         };
       }),
       ...visits.map((b) => ({
         kind: 'visit', id: b._id, ref: b.referenceNumber || b.zenotiSource?.invoiceNumber || null, receipt: b.zenotiSource?.receiptNumber || null,
-        customer: b.userId?.fullName || b.fullName, phone: b.userId?.phone || b.mobileNumber || null, patientId: b.userId?.patientId || null, userId: b.userId?._id || null,
+        customer: b.userId?.fullName || b.fullName, phone: b.userId?.phone || b.mobileNumber || null, patientId: guestCodeOf(b.userId), guestCode: b.userId?.guestCode || null, userId: b.userId?._id || null,
         items: [`${b.consultationId?.name || b.externalServiceName || 'Service'} (1)`], amount: b.amount || 0, due: 0,
         method: b.paymentMethod || 'Clinic', methods: { [b.paymentMethod || 'Clinic']: b.amount || 0 }, at: b.paidAt || b.checkOutTime || null, status: 'CLOSED', source: b.source === 'zenoti' ? 'Zenoti' : b.source === 'app' ? 'App' : 'Desk', staff: b.specialistName || null,
       })),
       ...orders.map((o) => ({
         kind: 'order', id: o._id, ref: o.orderNumber || null, receipt: null,
-        customer: o.userId?.fullName || null, phone: o.userId?.phone || null, patientId: o.userId?.patientId || null, userId: o.userId?._id || null,
+        customer: o.userId?.fullName || null, phone: o.userId?.phone || null, patientId: guestCodeOf(o.userId), guestCode: o.userId?.guestCode || null, userId: o.userId?._id || null,
         items: (o.items || []).map((i) => `${i.name || i.productName || 'Product'} (${i.quantity || 1})`), amount: o.finalAmount ?? o.totalAmount ?? 0, due: 0,
         method: o.paymentMethod || null, methods: { [o.paymentMethod || 'Online']: o.finalAmount ?? o.totalAmount ?? 0 }, at: o.paidAt || o.createdAt || null, status: String(o.orderStatus || '').toUpperCase() || 'PAID', source: 'App', staff: null,
       })),
       ...packages.map((p) => ({
         kind: 'package', id: p._id, ref: p.assignmentId || null, receipt: null,
-        customer: p.userId?.fullName || null, phone: p.userId?.phone || null, patientId: p.userId?.patientId || null, userId: p.userId?._id || null,
+        customer: p.userId?.fullName || null, phone: p.userId?.phone || null, patientId: guestCodeOf(p.userId), guestCode: p.userId?.guestCode || null, userId: p.userId?._id || null,
         items: [`${p.packageDetails?.packageName || 'Package'} (1)`], amount: p.pricing?.finalAmount || 0, due: 0,
         method: p.payment?.paymentMethod || null, methods: { [p.payment?.paymentMethod || 'Other']: p.pricing?.finalAmount || 0 }, at: p.payment?.receivedDate || p.createdAt || null, status: 'CLOSED', source: 'Desk', staff: null,
       })),

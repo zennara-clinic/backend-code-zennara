@@ -13,6 +13,7 @@ const ContactChangeRequest = require('../models/ContactChangeRequest');
 const { sendOTPEmail } = require('../utils/emailService');
 const whatsappService = require('../services/whatsappService');
 const logger = require('../utils/logger');
+const { guestCodeOf } = require('../utils/guestCode');
 
 const DELAY_HOURS = Number(process.env.CONTACT_CHANGE_DELAY_HOURS || 2);
 const isPlaceholderEmail = (e) => !e || /@guest\.zennara\.in$/i.test(e);
@@ -234,11 +235,11 @@ exports.adminList = async (req, res) => {
     const requests = await ContactChangeRequest.find(filter)
       .sort({ createdAt: -1 })
       .limit(200)
-      .populate('userId', 'fullName email phone patientId')
+      .populate('userId', 'fullName email phone patientId guestCode')
       .lean();
     const data = requests.map((r) => ({
       id: r._id,
-      customer: r.userId ? { id: r.userId._id, fullName: r.userId.fullName, patientId: r.userId.patientId } : null,
+      customer: r.userId ? { id: r.userId._id, fullName: r.userId.fullName, patientId: guestCodeOf(r.userId), guestCode: r.userId.guestCode || null } : null,
       type: r.type,
       status: r.status,
       from: r.currentValue,

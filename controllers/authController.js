@@ -1413,6 +1413,7 @@ const buildUserExport = async (userId) => {
       },
       personalInformation: {
         patientId: user.patientId,
+        guestCode: user.guestCode || null,
         fullName: user.fullName,
         email: publicEmail(user.email),
         phone: user.phone,

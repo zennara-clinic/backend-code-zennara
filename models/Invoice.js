@@ -117,6 +117,8 @@ const invoiceSchema = new mongoose.Schema({
     phone: { type: String, default: null, trim: true },
     email: { type: String, default: null, trim: true },
     patientId: { type: String, default: null },
+    /** Zenoti's guest code — the identifier printed on the receipt. */
+    guestCode: { type: String, default: null },
     gender: { type: String, default: null },
     stateCode: { type: String, default: null },
     gstin: { type: String, default: null },

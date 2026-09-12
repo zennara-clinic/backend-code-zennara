@@ -9,6 +9,8 @@
  * one translation here means neither side has to know about the other.
  */
 
+const { guestCodeOf } = require('./guestCode');
+
 const SKIN_CONCERNS = {
   'Acne / Pimple': 'acnePimple',
   Scar: 'scar',
@@ -72,7 +74,7 @@ function toPreConsultDocument(values, { user, ipAddress, bookingId } = {}) {
 
   return {
     ...(bookingId ? { bookingId } : {}),
-    clientId: user?.patientId || null,
+    clientId: guestCodeOf(user),
     name: values.name || user?.fullName || null,
     dateOfBirth: values.dob ? new Date(values.dob) : (user?.dateOfBirth || null),
     gender: values.gender || user?.gender || 'Other',

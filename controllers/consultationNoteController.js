@@ -9,7 +9,7 @@ async function emailPrescription(note, booking) {
   try {
     const patient = note.userId && note.userId.fullName
       ? note.userId
-      : await require('../models/User').findById(note.userId).select('fullName email phone patientId dateOfBirth gender').lean();
+      : await require('../models/User').findById(note.userId).select('fullName email phone patientId guestCode dateOfBirth gender').lean();
     const email = patient?.email;
     if (!email || /@zennara\.local$/i.test(email)) return false; // walk-in placeholder, nowhere to send
     if (!(note.prescription || []).length) return false;
@@ -64,7 +64,7 @@ exports.getNotes = async (req, res) => {
     if (status) filter.status = status;
 
     const notes = await ConsultationNote.find(filter)
-      .populate('userId', 'fullName email phone patientId dateOfBirth gender drugAllergies')
+      .populate('userId', 'fullName email phone patientId guestCode dateOfBirth gender drugAllergies')
       .populate('bookingId', 'referenceNumber preferredDate confirmedDate confirmedTime status preferredLocation')
       .sort({ createdAt: -1 })
       .limit(Math.min(500, parseInt(limit, 10) || 100))
@@ -87,7 +87,7 @@ exports.getNotes = async (req, res) => {
 exports.getNoteForBooking = async (req, res) => {
   try {
     const note = await ConsultationNote.findOne({ bookingId: req.params.bookingId })
-      .populate('userId', 'fullName email phone patientId dateOfBirth gender drugAllergies medicalHistory')
+      .populate('userId', 'fullName email phone patientId guestCode dateOfBirth gender drugAllergies medicalHistory')
       .lean();
 
     // A booking with no note yet is normal, not an error — the panel opens a
@@ -229,7 +229,7 @@ exports.saveNote = async (req, res) => {
     }
 
     await note.save();
-    await note.populate('userId', 'fullName email phone patientId dateOfBirth gender drugAllergies');
+    await note.populate('userId', 'fullName email phone patientId guestCode dateOfBirth gender drugAllergies');
 
     // Tell the guest in-app (and on their phone) the moment it is signed — once.
     if (note.status === 'Completed' && !note.guestNotifiedAt) {
@@ -297,7 +297,7 @@ exports.saveNote = async (req, res) => {
 exports.sendPrescription = async (req, res) => {
   try {
     const note = await ConsultationNote.findById(req.params.id)
-      .populate('userId', 'fullName email phone patientId dateOfBirth gender');
+      .populate('userId', 'fullName email phone patientId guestCode dateOfBirth gender');
     if (!note) return res.status(404).json({ success: false, message: 'Consultation note not found' });
     if (note.status !== 'Completed' || !note.prescriptionSigned) {
       return res.status(400).json({ success: false, message: 'Sign the consultation first — only a signed prescription can be sent.' });

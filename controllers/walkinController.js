@@ -32,6 +32,7 @@ const whatsappService = require('../services/whatsappService');
 const logger = require('../utils/logger');
 const { placeholderEmail, publicEmail } = require('../config/zenoti');
 const { toPreConsultDocument, toFormValues } = require('../utils/walkinPreConsult');
+const { guestCodeOf } = require('../utils/guestCode');
 
 const OTP_RESEND_MS = 30 * 1000;
 /** How long the proof from a verified OTP stays usable while details are typed. */
@@ -42,7 +43,8 @@ const digits = (value) => String(value || '').replace(/\D/g, '');
 /** The subset of the patient record the desk tablet is allowed to see. */
 const publicProfile = (user, { latest = null } = {}) => ({
   id: user._id,
-  patientId: user.patientId,
+  patientId: guestCodeOf(user),
+  guestCode: user.guestCode || null,
   fullName: user.fullName,
   phone: user.phone,
   email: publicEmail(user.email),
@@ -377,7 +379,7 @@ exports.saveProfile = async (req, res) => {
     // gated by ZENOTI_WRITE_MODE. Nothing to do here.
 
     const token = await issueSession(user, req);
-    logger.info('Walk-in patient created', { userId: user._id, patientId: user.patientId, location });
+    logger.info('Walk-in patient created', { userId: user._id, patientId: guestCodeOf(user), location });
 
     return res.status(201).json({ success: true, isNew: true, token, user: publicProfile(user) });
   } catch (error) {
@@ -485,7 +487,7 @@ exports.submitPreConsult = async (req, res) => {
       success: true,
       data: {
         id: form._id,
-        clientId: user.patientId,
+        clientId: guestCodeOf(user),
         name: form.name,
         dateOfVisit: form.dateOfVisit,
         status: form.status,

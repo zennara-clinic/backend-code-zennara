@@ -1,6 +1,7 @@
 const PreConsultForm = require('../models/PreConsultForm');
 const User = require('../models/User');
 const Booking = require('../models/Booking');
+const { guestCodeOf } = require('../utils/guestCode');
 
 // @desc    Create or update pre-consult form
 // @route   POST /api/pre-consult-forms
@@ -57,7 +58,7 @@ exports.createOrUpdateForm = async (req, res) => {
         form = new PreConsultForm({
           ...formData,
           userId,
-          clientId: user.patientId || formData.clientId || `CLIENT-${Date.now()}`
+          clientId: guestCodeOf(user) || formData.clientId || `CLIENT-${Date.now()}`
         });
         await form.save();
       }
@@ -66,7 +67,7 @@ exports.createOrUpdateForm = async (req, res) => {
       form = new PreConsultForm({
         ...formData,
         userId,
-        clientId: user.patientId || formData.clientId || `CLIENT-${Date.now()}`
+        clientId: guestCodeOf(user) || formData.clientId || `CLIENT-${Date.now()}`
       });
       await form.save();
     }
@@ -334,7 +335,7 @@ exports.getAllForms = async (req, res) => {
     if (bookingId) query.bookingId = bookingId;
 
     const forms = await PreConsultForm.find(query)
-      .populate('userId', 'fullName email phone patientId')
+      .populate('userId', 'fullName email phone patientId guestCode')
       .populate('bookingId', 'referenceNumber preferredDate status')
       .sort({ createdAt: -1 })
       .limit(limit * 1)
@@ -367,7 +368,7 @@ exports.getAdminFormById = async (req, res) => {
     const { id } = req.params;
 
     const form = await PreConsultForm.findById(id)
-      .populate('userId', 'fullName email phone patientId')
+      .populate('userId', 'fullName email phone patientId guestCode')
       .populate('bookingId', 'referenceNumber preferredDate status');
 
     if (!form) {

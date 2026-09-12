@@ -6,6 +6,7 @@ const { s3Client, S3_BUCKET } = require('../config/s3');
 const sharp = require('sharp');
 const crypto = require('crypto');
 const { sendOtpEmail } = require('../utils/emailService');
+const { guestCodeOf } = require('../utils/guestCode');
 
 // Get all package assignments with filters and sorting
 exports.getAllAssignments = async (req, res) => {
@@ -32,6 +33,7 @@ exports.getAllAssignments = async (req, res) => {
         { 'userDetails.email': { $regex: search, $options: 'i' } },
         { 'userDetails.phone': { $regex: search, $options: 'i' } },
         { 'userDetails.patientId': { $regex: search, $options: 'i' } },
+        { 'userDetails.guestCode': { $regex: search, $options: 'i' } },
         { assignmentId: { $regex: search, $options: 'i' } }
       ];
     }
@@ -53,7 +55,7 @@ exports.getAllAssignments = async (req, res) => {
       .sort(sort)
       .skip(skip)
       .limit(parseInt(limit))
-      .populate('userId', 'fullName email phone patientId memberType')
+      .populate('userId', 'fullName email phone patientId guestCode memberType')
       .populate('packageId', 'name price originalPrice');
 
     const total = await PackageAssignment.countDocuments(query);
@@ -82,7 +84,7 @@ exports.getAllAssignments = async (req, res) => {
 exports.getAssignmentById = async (req, res) => {
   try {
     const assignment = await PackageAssignment.findById(req.params.id)
-      .populate('userId', 'fullName email phone patientId memberType profilePicture')
+      .populate('userId', 'fullName email phone patientId guestCode memberType profilePicture')
       .populate('packageId');
 
     if (!assignment) {
@@ -171,7 +173,7 @@ exports.createAssignment = async (req, res) => {
     await assignment.save();
 
     // Populate before sending response
-    await assignment.populate('userId', 'fullName email phone patientId memberType');
+    await assignment.populate('userId', 'fullName email phone patientId guestCode memberType');
     await assignment.populate('packageId', 'name price originalPrice');
 
     res.status(201).json({
@@ -1216,7 +1218,7 @@ exports.getUserServiceCards = async (req, res) => {
           completedAt: cs.completedAt,
           serviceCard: {
             clientName: assignment.userDetails.fullName,
-            clientId: assignment.userDetails.patientId,
+            clientId: guestCodeOf(assignment.userDetails),
             doctor: cs.serviceCard.doctor,
             therapist: cs.serviceCard.therapist,
             manager: cs.serviceCard.manager,

@@ -93,11 +93,11 @@ exports.listMembers = async (req, res) => {
   if (req.query.status && req.query.status !== 'all') q.status = req.query.status;
   if (req.query.search) { const rx = new RegExp(String(req.query.search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i'); q.$or = [{ memberNumber: rx }, { 'snapshot.name': rx }]; }
   const limit = Math.min(500, Number(req.query.limit) || 200);
-  const rows = await MembershipAssignment.find(q).sort({ createdAt: -1 }).limit(limit).populate('userId', 'fullName phone email patientId').populate('membershipId', 'name code prefix').lean();
+  const rows = await MembershipAssignment.find(q).sort({ createdAt: -1 }).limit(limit).populate('userId', 'fullName phone email patientId guestCode').populate('membershipId', 'name code prefix').lean();
   if (req.query.search && !rows.length) {
     // fall back to a guest-name search
     const users = await User.find({ $or: [{ fullName: new RegExp(String(req.query.search), 'i') }, { phone: new RegExp(String(req.query.search).replace(/\D/g, '')) }] }).select('_id').limit(50).lean();
-    if (users.length) { delete q.$or; q.userId = { $in: users.map((u) => u._id) }; const more = await MembershipAssignment.find(q).sort({ createdAt: -1 }).limit(limit).populate('userId', 'fullName phone email patientId').populate('membershipId', 'name code prefix').lean(); return res.json({ success: true, data: more }); }
+    if (users.length) { delete q.$or; q.userId = { $in: users.map((u) => u._id) }; const more = await MembershipAssignment.find(q).sort({ createdAt: -1 }).limit(limit).populate('userId', 'fullName phone email patientId guestCode').populate('membershipId', 'name code prefix').lean(); return res.json({ success: true, data: more }); }
   }
   return res.json({ success: true, data: rows });
 };
@@ -138,7 +138,7 @@ async function createMemberAssignment(plan, user, { branchId = null, startDate =
 exports.createMemberAssignment = createMemberAssignment;
 
 exports.getMember = async (req, res) => {
-  const pa = await MembershipAssignment.findById(req.params.id).populate('userId', 'fullName phone email patientId').populate('membershipId', 'name code prefix').lean();
+  const pa = await MembershipAssignment.findById(req.params.id).populate('userId', 'fullName phone email patientId guestCode').populate('membershipId', 'name code prefix').lean();
   if (!pa) return fail(res, 404, 'Membership not found');
   return res.json({ success: true, data: pa });
 };

@@ -35,6 +35,8 @@ const packageAssignmentSchema = new mongoose.Schema({
     email: String,
     phone: String,
     patientId: String,
+    /** Zenoti's guest code — the identifier the desk searches by. */
+    guestCode: String,
     memberType: String
   },
   pricing: {

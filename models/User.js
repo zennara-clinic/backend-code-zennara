@@ -3,13 +3,35 @@ const bcrypt = require('bcryptjs');
 const logger = require('../utils/logger');
 
 const UserSchema = new mongoose.Schema({
+  /*
+   * The guest's printed identity. `guestCode` is Zenoti's own guest code
+   * (e.g. "ZENFD637") — the clinic prints it, quotes it at the desk and writes
+   * it on paper, so it is the one identifier that must match Zenoti exactly.
+   * Zenoti owns it; we only mirror it (services/zenotiSyncService.js).
+   *
+   * It is deliberately NOT unique-indexed: this field is written on the login
+   * and sync path, and a duplicate arriving from Zenoti must never be able to
+   * throw and lock a guest out. Uniqueness is Zenoti's to enforce, and
+   * scripts/backfillGuestCodes.js reports any duplicate it finds.
+   *
+   * `patientId` is the locally generated fallback ("ZEN" + 5 random) kept for
+   * the guests Zenoti has no code for. Read them through utils/guestCode.js —
+   * never display patientId on its own.
+   */
+  guestCode: {
+    type: String,
+    trim: true,
+    index: true,
+    default: null
+  },
+
   // Patient ID - 8 character unique ID
   patientId: {
     type: String,
     unique: true,
     sparse: true
   },
-  
+
   // Personal Information (from signup step 2)
   email: {
     type: String,

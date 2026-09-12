@@ -20,7 +20,7 @@ function buildAssignment(pkg, user, { branchId = null, preferredLocation = '', s
       packageName: pkg.name, packagePrice: pkg.price, originalPrice: pkg.originalPrice,
       services: (pkg.services || []).map((s) => ({ serviceId: s.serviceId, serviceName: s.serviceName, sessions: Math.max(1, Number(s.sessions) || 1), servicePrice: s.customPrice ?? s.servicePrice ?? null, redemptionOrder: Number(s.redemptionOrder) || 1 })),
     },
-    userDetails: { fullName: user.fullName || user.name, name: user.fullName || user.name, email: user.email, phone: user.phone, patientId: user.patientId, memberType: user.memberType },
+    userDetails: { fullName: user.fullName || user.name, name: user.fullName || user.name, email: user.email, phone: user.phone, patientId: user.patientId, guestCode: user.guestCode, memberType: user.memberType },
     pricing: { originalAmount: listPrice ?? pkg.price, discountPercentage: discountPercentage || 0, isZenMemberDiscount: !!isZenMemberDiscount },
     payment: { isReceived: !!payment.isReceived, receivedDate: payment.isReceived ? (payment.receivedDate || now) : null, paymentMethod: payment.paymentMethod || null, transactionId: payment.transactionId || null, amountPaid: payment.amountPaid ?? null, balanceDue: payment.balanceDue ?? null },
     notes, terms, validFrom: now, validUntil: until, preferredLocation: preferredLocation || '', branchId: branchId || null,
@@ -121,7 +121,7 @@ function transfer(pa, target, services, { by = 'Admin', reason = '' } = {}) {
   const target_pa = new PackageAssignment({
     userId: target._id, packageId: pa.packageId, invoiceId: null,
     packageDetails: { packageName: pa.packageDetails?.packageName, packagePrice: 0, originalPrice: pa.packageDetails?.originalPrice, services: moves.map((m) => ({ serviceId: m.serviceId, serviceName: m.serviceName, sessions: m.qty, servicePrice: (pa.packageDetails?.services || []).find((s) => String(s.serviceId) === String(m.serviceId))?.servicePrice ?? null })) },
-    userDetails: { fullName: target.fullName, name: target.fullName, email: target.email, phone: target.phone, patientId: target.patientId, memberType: target.memberType },
+    userDetails: { fullName: target.fullName, name: target.fullName, email: target.email, phone: target.phone, patientId: target.patientId, guestCode: target.guestCode, memberType: target.memberType },
     pricing: { originalAmount: 0, discountPercentage: 0 },
     payment: { isReceived: true, receivedDate: new Date(), paymentMethod: 'Other', transactionId: `TRANSFER-${pa.assignmentId}` },
     notes: `Transferred from ${pa.userDetails?.fullName || 'another guest'} (${pa.assignmentId})${reason ? `: ${reason}` : ''}`,

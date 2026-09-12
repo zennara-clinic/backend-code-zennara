@@ -173,7 +173,7 @@ async function mirrorGuestPackages(user, packages) {
           return { serviceId: s.serviceId, serviceName: s.serviceName, sessions: Math.max(1, Number(sold?.total) || Number(s.sessions) || 1), servicePrice: s.customPrice ?? s.servicePrice ?? null };
         }),
       };
-      a.userDetails = { fullName: user.fullName, email: user.email, phone: user.phone, patientId: user.patientId, memberType: user.memberType };
+      a.userDetails = { fullName: user.fullName, email: user.email, phone: user.phone, patientId: user.patientId, guestCode: user.guestCode, memberType: user.memberType };
       a.pricing = { ...(a.pricing?.toObject?.() || a.pricing || {}), originalAmount: Number(zp.price) > 0 ? Number(zp.price) : pkg.price, discountPercentage: 0, isZenMemberDiscount: false };
       a.payment = { isReceived: true, receivedDate: zp.purchaseDate ? new Date(zp.purchaseDate) : new Date(), paymentMethod: 'Clinic', transactionId: zp.invoice?.number || zp.invoice?.receiptNumber || null };
       a.validFrom = zp.startDate ? new Date(zp.startDate) : (zp.purchaseDate ? new Date(zp.purchaseDate) : a.validFrom);

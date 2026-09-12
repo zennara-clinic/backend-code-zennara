@@ -128,6 +128,7 @@ async function deleteAccount({ userId, deletedBy = 'user', reason = '', adminId 
     phone: user.phone,
     fullName: user.fullName,
     patientId: user.patientId,
+    guestCode: user.guestCode,
     deletedBy,
     deletedByAdminId: adminId,
     reason,

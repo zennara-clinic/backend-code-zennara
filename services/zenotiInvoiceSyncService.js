@@ -150,6 +150,7 @@ async function mirrorInvoice(zenotiInvoiceId, { detail = false, booking = null }
         phone: norm(guest.mobile_phone) || inv.guest?.phone || null,
         email: norm(guest.email) || inv.guest?.email || null,
         patientId: norm(guest.code) || inv.guest?.patientId || null,
+        guestCode: norm(guest.code) || inv.guest?.guestCode || null,
         gender: guest.gender === 1 ? 'Male' : guest.gender === 0 ? 'Female' : inv.guest?.gender || null,
         stateCode: inv.guest?.stateCode || null, gstin: inv.guest?.gstin || null,
       };

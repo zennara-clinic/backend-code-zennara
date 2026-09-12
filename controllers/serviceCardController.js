@@ -1,5 +1,6 @@
 const ServiceCard = require('../models/ServiceCard');
 const User = require('../models/User');
+const { guestCodeOf } = require('../utils/guestCode');
 
 // @desc    Create service card for user
 // @route   POST /api/service-cards
@@ -21,7 +22,7 @@ exports.createServiceCard = async (req, res) => {
     const serviceCard = new ServiceCard({
       userId,
       clientName: clientName || user.fullName,
-      clientId: clientId || user.patientId,
+      clientId: clientId || guestCodeOf(user),
       primaryDoctor,
       manager,
       services: []
@@ -165,7 +166,7 @@ exports.getAllServiceCards = async (req, res) => {
     if (userId) query.userId = userId;
 
     const cards = await ServiceCard.find(query)
-      .populate('userId', 'fullName email phone patientId')
+      .populate('userId', 'fullName email phone patientId guestCode')
       .sort({ createdAt: -1 })
       .limit(limit * 1)
       .skip((page - 1) * limit);

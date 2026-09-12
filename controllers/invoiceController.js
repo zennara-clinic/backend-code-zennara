@@ -48,7 +48,7 @@ const sellerFrom = (b) => ({
 const guestFrom = (u, fallback = {}) => ({
   name: u?.fullName || fallback.name || null, phone: u?.phone || fallback.phone || null,
   email: u?.email && !/@zennara\.local$|@guest\.zennara\.in$/i.test(u.email) ? u.email : null,
-  patientId: u?.patientId || null, gender: u?.gender || null, stateCode: null, gstin: null,
+  patientId: u?.patientId || null, guestCode: u?.guestCode || null, gender: u?.gender || null, stateCode: null, gstin: null,
 });
 
 async function resolveBranch({ branchId, booking }) {
@@ -148,7 +148,7 @@ async function applyMembershipDiscounts(inv) {
   }
 }
 
-const populateInvoice = (q) => q.populate('userId', 'fullName phone email patientId gender memberType zenMembershipExpiryDate').populate('branchId', 'name invoicePrefix');
+const populateInvoice = (q) => q.populate('userId', 'fullName phone email patientId guestCode gender memberType zenMembershipExpiryDate').populate('branchId', 'name invoicePrefix');
 const loadInvoice = (id) => populateInvoice(Invoice.findById(id));
 const send = (res, inv, status = 200, extra = {}) => res.status(status).json({ success: true, data: inv, ...extra });
 const mustBeOpen = (inv, res) => {
@@ -229,7 +229,7 @@ exports.list = async (req, res) => {
     if (search && String(search).trim()) {
       const s = String(search).trim();
       const rx = new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-      q.$or = [{ invoiceNumber: rx }, { receiptNumber: rx }, { 'guest.name': rx }, { 'guest.phone': rx }, { 'guest.patientId': rx }, { 'lines.name': rx }];
+      q.$or = [{ invoiceNumber: rx }, { receiptNumber: rx }, { 'guest.name': rx }, { 'guest.phone': rx }, { 'guest.patientId': rx }, { 'guest.guestCode': rx }, { 'lines.name': rx }];
     }
     const [rows, total, agg] = await Promise.all([
       populateInvoice(Invoice.find(q).sort({ issuedAt: -1 }).skip((page - 1) * limit).limit(limit)).lean(),

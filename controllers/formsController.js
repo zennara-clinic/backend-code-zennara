@@ -1,6 +1,7 @@
 const PatientConsentForm = require('../models/PatientConsentForm');
 const PreConsultForm = require('../models/PreConsultForm');
 const ServiceCard = require('../models/ServiceCard');
+const { guestCodeOf } = require('../utils/guestCode');
 
 // @desc    Get all forms (Consent, PreConsult, ServiceCard) - Admin
 // @route   GET /api/admin/forms
@@ -17,7 +18,7 @@ exports.getAllForms = async (req, res) => {
       if (status) query.status = status;
       
       const consentForms = await PatientConsentForm.find(query)
-        .populate('userId', 'fullName email phone patientId')
+        .populate('userId', 'fullName email phone patientId guestCode')
         .populate('bookingId', 'referenceNumber preferredDate')
         .lean();
 
@@ -28,7 +29,8 @@ exports.getAllForms = async (req, res) => {
         patientName: form.userId?.fullName || form.patientName || 'N/A',
         patientEmail: form.userId?.email || 'N/A',
         patientPhone: form.userId?.phone || 'N/A',
-        patientId: form.userId?.patientId || 'N/A'
+        patientId: guestCodeOf(form.userId) || 'N/A',
+        guestCode: form.userId?.guestCode || null
       })));
     }
 
@@ -37,7 +39,7 @@ exports.getAllForms = async (req, res) => {
       if (status) query.status = status;
       
       const preConsultForms = await PreConsultForm.find(query)
-        .populate('userId', 'fullName email phone patientId')
+        .populate('userId', 'fullName email phone patientId guestCode')
         .populate('bookingId', 'referenceNumber preferredDate')
         .lean();
 
@@ -48,7 +50,8 @@ exports.getAllForms = async (req, res) => {
         patientName: form.userId?.fullName || form.name || 'N/A',
         patientEmail: form.userId?.email || form.email || 'N/A',
         patientPhone: form.userId?.phone || form.phoneNumber || 'N/A',
-        patientId: form.userId?.patientId || form.clientId || 'N/A'
+        patientId: guestCodeOf(form.userId) || form.clientId || 'N/A',
+        guestCode: form.userId?.guestCode || null
       })));
     }
 
@@ -56,7 +59,7 @@ exports.getAllForms = async (req, res) => {
       const query = {};
       
       const serviceCards = await ServiceCard.find(query)
-        .populate('userId', 'fullName email phone patientId')
+        .populate('userId', 'fullName email phone patientId guestCode')
         .lean();
 
       forms.push(...serviceCards.map(card => ({
@@ -67,7 +70,8 @@ exports.getAllForms = async (req, res) => {
         patientName: card.userId?.fullName || card.clientName || 'N/A',
         patientEmail: card.userId?.email || 'N/A',
         patientPhone: card.userId?.phone || 'N/A',
-        patientId: card.userId?.patientId || card.clientId || 'N/A'
+        patientId: guestCodeOf(card.userId) || card.clientId || 'N/A',
+        guestCode: card.userId?.guestCode || null
       })));
     }
 
@@ -78,7 +82,8 @@ exports.getAllForms = async (req, res) => {
         form.patientName?.toLowerCase().includes(searchLower) ||
         form.patientEmail?.toLowerCase().includes(searchLower) ||
         form.patientPhone?.toLowerCase().includes(searchLower) ||
-        form.patientId?.toLowerCase().includes(searchLower)
+        form.patientId?.toLowerCase().includes(searchLower) ||
+        form.guestCode?.toLowerCase().includes(searchLower)
       );
     }
 
@@ -119,18 +124,18 @@ exports.getFormById = async (req, res) => {
     switch (type) {
       case 'consent':
         form = await PatientConsentForm.findById(id)
-          .populate('userId', 'fullName email phone patientId')
+          .populate('userId', 'fullName email phone patientId guestCode')
           .populate('bookingId', 'referenceNumber preferredDate status')
           .populate('preConsultFormId', 'dateOfVisit doctorName');
         break;
       case 'preconsult':
         form = await PreConsultForm.findById(id)
-          .populate('userId', 'fullName email phone patientId')
+          .populate('userId', 'fullName email phone patientId guestCode')
           .populate('bookingId', 'referenceNumber preferredDate status');
         break;
       case 'servicecard':
         form = await ServiceCard.findById(id)
-          .populate('userId', 'fullName email phone patientId');
+          .populate('userId', 'fullName email phone patientId guestCode');
         break;
       default:
         return res.status(400).json({

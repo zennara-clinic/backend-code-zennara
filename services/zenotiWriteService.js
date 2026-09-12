@@ -311,6 +311,15 @@ async function ensureGuest(user) {
     if (existing?.zenotiGuestId) {
       user.zenotiGuestId = existing.zenotiGuestId;
       user.zenotiCenterId = existing.centerId || centerId;
+      // Adopt Zenoti's guest code — it is what the clinic prints. Only if no
+      // other account already holds it: a phone match is not proof of identity
+      // (see below), and two accounts must never print the same code.
+      if (existing.code) {
+        // Models are required per-function in this module, not at the top.
+        const User = require('../models/User');
+        const taken = await User.exists({ guestCode: existing.code, _id: { $ne: user._id } });
+        if (!taken) user.guestCode = existing.code;
+      }
       /*
        * A phone match links the accounts, but a phone is not an identity —
        * families share numbers, and a number gets reassigned. When Zenoti's
@@ -373,6 +382,10 @@ async function ensureGuest(user) {
     if (!guestId) throw new Error('Zenoti guest create returned no id');
     user.zenotiGuestId = guestId;
     user.zenotiCenterId = centerId;
+    // Zenoti mints the guest code on create. It is not always echoed in the
+    // create response; when it isn't, the guest's next detail sync fills it in
+    // and the local id prints until then.
+    if (res?.code) user.guestCode = res.code;
     user.zenotiSyncStatus = 'synced';
     user.zenotiSyncedAt = new Date();
     await user.save({ validateModifiedOnly: true });

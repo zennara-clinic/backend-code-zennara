@@ -46,7 +46,7 @@ async function branchNameFrom(query) {
   return null;
 }
 
-const USER_FIELDS = 'patientId fullName email phone location memberType gender dateOfBirth source zenotiGuestId totalVisits totalSpent';
+const USER_FIELDS = 'patientId guestCode fullName email phone location memberType gender dateOfBirth source zenotiGuestId totalVisits totalSpent';
 
 // GET /api/admin/zenoti/status
 exports.getStatus = async (req, res) => {
@@ -386,7 +386,7 @@ async function listUnwound(field, { match = {}, sort, page, limit, branchName, s
     $lookup: {
       from: 'users', localField: 'userId', foreignField: '_id', as: 'user',
       pipeline: [{ $project: {
-        patientId: 1, fullName: 1, phone: 1, location: 1, memberType: 1, source: 1,
+        patientId: 1, guestCode: 1, fullName: 1, phone: 1, location: 1, memberType: 1, source: 1,
         // Placeholder addresses are internal keys, not something staff should see.
         email: { $cond: [{ $regexMatch: { input: { $ifNull: ['$email', ''] }, regex: /@guest\.zennara\.in$|@zennara\.local$/i } }, null, '$email'] },
       } }],

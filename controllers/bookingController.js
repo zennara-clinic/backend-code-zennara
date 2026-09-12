@@ -39,6 +39,7 @@ async function scopeToOwnDiary(req, query) {
 }
 const { publicEmail, isPlaceholderEmail } = require('../config/zenoti');
 const { buildBookingQuery } = require('../utils/listFilters');
+const { guestCodeOf } = require('../utils/guestCode');
 const lifecycle = require('../services/bookingLifecycleService');
 const Doctor = require('../models/Doctor');
 const Consultation = require('../models/Consultation');
@@ -732,7 +733,7 @@ exports.getAllBookingsAdmin = async (req, res) => {
     // bookings page down when rows were serialised with virtuals.
     let find = Booking.find(query)
       .populate('consultationId', 'name category price image')
-      .populate('userId', 'fullName email phone patientId')
+      .populate('userId', 'fullName email phone patientId guestCode')
       .populate('branchId', 'name address')
       .sort(sort)
       .select('-__v')
@@ -801,7 +802,7 @@ exports.exportBookingsAdmin = async (req, res) => {
     const limit = Math.min(20000, Math.max(1, parseInt(req.query.limit || '20000', 10)));
     const bookings = await Booking.find(query)
       .populate('consultationId', 'name category type price')
-      .populate('userId', 'fullName email phone patientId memberType')
+      .populate('userId', 'fullName email phone patientId guestCode memberType')
       .populate('branchId', 'name')
       .sort(sort)
       .limit(limit)
@@ -815,7 +816,7 @@ exports.exportBookingsAdmin = async (req, res) => {
       return {
         'Reference': b.referenceNumber || '',
         'Guest': (b.userId && b.userId.fullName) || b.fullName || '',
-        'Patient ID': (b.userId && b.userId.patientId) || '',
+        'Guest code': guestCodeOf(b.userId) || '',
         'Phone': b.mobileNumber || (b.userId && b.userId.phone) || '',
         'Email': /@guest\.zennara\.in$/i.test(b.email || '') ? '' : (b.email || ''),
         'Membership': (b.userId && b.userId.memberType) || '',
@@ -1161,7 +1162,7 @@ exports.getBookingByIdAdmin = async (req, res) => {
   try {
     const booking = await Booking.findById(req.params.id)
       .populate('consultationId', 'name category price image duration_minutes')
-      .populate('userId', 'fullName email phone patientId');
+      .populate('userId', 'fullName email phone patientId guestCode');
 
     if (!booking) {
       return res.status(404).json({
@@ -1916,7 +1917,7 @@ exports.createBookingAdmin = async (req, res) => {
 
     const [{ booking, consultation }] = created;
     await booking.populate('consultationId', 'name category price image');
-    await booking.populate('userId', 'fullName email phone patientId');
+    await booking.populate('userId', 'fullName email phone patientId guestCode');
 
     try {
       await NotificationHelper.bookingCreated({
@@ -1974,7 +1975,7 @@ exports.createBookingAdmin = async (req, res) => {
         : created.length > 1 ? `${created.length} services booked for ${fullName}.` : 'Booking created successfully',
       data: booking,
       bookings: created.map((c) => c.booking),
-      meta: { createdUser, patientId: user.patientId, visitGroupId },
+      meta: { createdUser, patientId: guestCodeOf(user), guestCode: user.guestCode || null, visitGroupId },
     });
   } catch (error) {
     console.error('❌ Admin create booking error:', error);
@@ -2149,7 +2150,7 @@ exports.rescheduleBookingAdmin = async (req, res) => {
       rescheduleLockToken = null;
     }
     await booking.populate('consultationId', 'name category price image');
-    await booking.populate('userId', 'fullName email phone patientId');
+    await booking.populate('userId', 'fullName email phone patientId guestCode');
 
     return res.status(200).json({
       success: true,
@@ -2205,7 +2206,7 @@ exports.updateBookingPaymentAdmin = async (req, res) => {
 
     await booking.save();
     await booking.populate('consultationId', 'name category price image');
-    await booking.populate('userId', 'fullName email phone patientId');
+    await booking.populate('userId', 'fullName email phone patientId guestCode');
 
     return res.status(200).json({ success: true, message: 'Payment updated', data: booking });
   } catch (error) {
@@ -2258,7 +2259,7 @@ exports.pushToZenotiAdmin = async (req, res) => {
     else if (booking.source === 'zenoti') return res.status(400).json({ success: false, message: 'This appointment already lives in Zenoti.' });
     else await zenotiWrite.syncBooking(booking._id);
     const fresh = await Booking.findById(booking._id)
-      .populate('consultationId', 'name category price image').populate('userId', 'fullName email phone patientId').lean();
+      .populate('consultationId', 'name category price image').populate('userId', 'fullName email phone patientId guestCode').lean();
     const ok = fresh.zenotiSyncStatus === 'synced';
     res.status(200).json({ success: ok, message: ok ? 'Written to Zenoti.' : (fresh.zenotiSyncError || `Zenoti write ${fresh.zenotiSyncStatus || 'not performed'} (mode ${zenotiWrite.mode()}).`), data: fresh });
   } catch (error) {
@@ -2365,7 +2366,7 @@ exports.undoBookingStatusAdmin = async (req, res) => {
       via: 'panel',
     });
     await booking.populate('consultationId', 'name category price image');
-    await booking.populate('userId', 'fullName email phone patientId');
+    await booking.populate('userId', 'fullName email phone patientId guestCode');
     await notifyLifecycle(booking, undo);
 
     return res.json({

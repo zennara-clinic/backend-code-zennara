@@ -4,6 +4,7 @@ const { clinicDateKey, clinicDayStart } = require('../utils/bookingTime');
 const { buildUserFilter } = require('../utils/listFilters');
 const DeletedAccountArchive = require('../models/DeletedAccountArchive');
 const accountDeletion = require('../services/accountDeletionService');
+const { guestCodeOf } = require('../utils/guestCode');
 
 // @desc    Get all patients/users
 // @route   GET /api/users
@@ -49,7 +50,8 @@ exports.getAllUsers = async (req, res) => {
     const formattedUsers = users.map(user => ({
       id: user._id,
       _id: user._id,
-      patientId: user.patientId || `PAT${String(user._id).slice(-6).toUpperCase()}`, // Use new patientId or fallback
+      patientId: guestCodeOf(user) || `PAT${String(user._id).slice(-6).toUpperCase()}`, // Zenoti's code, else the local one
+      guestCode: user.guestCode || null,
       name: user.fullName,
       fullName: user.fullName,
       email: publicEmail(user.email),
@@ -128,7 +130,8 @@ exports.getUserById = async (req, res) => {
     const formattedUser = {
       id: user._id,
       _id: user._id,
-      patientId: user.patientId || `PAT${String(user._id).slice(-6).toUpperCase()}`,
+      patientId: guestCodeOf(user) || `PAT${String(user._id).slice(-6).toUpperCase()}`,
+      guestCode: user.guestCode || null,
       name: user.fullName,
       fullName: user.fullName,
       email: publicEmail(user.email),
@@ -334,7 +337,7 @@ exports.getDeletedAccounts = async (req, res) => {
     if (includeRestored !== 'true') filter.restoredAt = null;
     if (search) {
       const rx = new RegExp(String(search).trim(), 'i');
-      filter.$or = [{ email: rx }, { phone: rx }, { fullName: rx }, { patientId: rx }];
+      filter.$or = [{ email: rx }, { phone: rx }, { fullName: rx }, { guestCode: rx }, { patientId: rx }];
     }
     const rows = await DeletedAccountArchive.find(filter)
       .select('-snapshot')
@@ -457,13 +460,14 @@ exports.createUser = async (req, res) => {
       phoneVerified: true
     });
 
-    console.log(`✅ User created by admin: ${user.fullName} (${user.patientId})`);
+    console.log(`✅ User created by admin: ${user.fullName} (${guestCodeOf(user)})`);
 
     // Format response
     const formattedUser = {
       id: user._id,
       _id: user._id,
-      patientId: user.patientId,
+      patientId: guestCodeOf(user),
+      guestCode: user.guestCode || null,
       name: user.fullName,
       fullName: user.fullName,
       email: publicEmail(user.email),
@@ -744,7 +748,7 @@ exports.exportUsers = async (req, res) => {
     const limit = Math.min(20000, Math.max(1, parseInt(req.query.limit || '20000', 10)));
 
     const users = await User.find(filter)
-      .select('patientId fullName email phone location memberType zenMembershipStartDate zenMembershipExpiryDate dateOfBirth gender source totalVisits totalSpent appOpenCount hasDrugAllergy drugAllergies medicalHistory smoking drinking isActive isVerified createdAt lastLogin zenotiGuestId zenotiSyncStatus zenotiSyncError zenotiSyncedAt')
+      .select('patientId guestCode fullName email phone location memberType zenMembershipStartDate zenMembershipExpiryDate dateOfBirth gender source totalVisits totalSpent appOpenCount hasDrugAllergy drugAllergies medicalHistory smoking drinking isActive isVerified createdAt lastLogin zenotiGuestId zenotiSyncStatus zenotiSyncError zenotiSyncedAt')
       .sort(sort)
       .limit(limit)
       .lean();
@@ -752,7 +756,7 @@ exports.exportUsers = async (req, res) => {
     const fmtDate = (d) => (d ? new Date(d).toISOString().slice(0, 10) : '');
     const age = (dob) => { if (!dob) return ''; const d = new Date(dob); if (Number.isNaN(d.getTime())) return ''; const t = new Date(); let a = t.getFullYear() - d.getFullYear(); if (t < new Date(t.getFullYear(), d.getMonth(), d.getDate())) a -= 1; return a; };
     const formattedData = users.map(user => ({
-      'Patient ID': user.patientId || `PAT${String(user._id).slice(-6).toUpperCase()}`,
+      'Guest code': guestCodeOf(user) || `PAT${String(user._id).slice(-6).toUpperCase()}`,
       'Full Name': user.fullName,
       'Email': publicEmail(user.email) || '',
       'Phone': user.phone,

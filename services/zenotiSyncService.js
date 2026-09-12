@@ -144,6 +144,11 @@ async function provisionUserFromGuest(guest, opts = {}) {
   if (guest.fullName) synced.fullName = guest.fullName;
   if (guest.gender) synced.gender = guest.gender;
   if (guest.dateOfBirth) synced.dateOfBirth = guest.dateOfBirth;
+  // Zenoti's guest code is the identifier the clinic prints and the guest
+  // quotes at the desk. Mirror it on every read so a code edited in Zenoti
+  // reaches us on the guest's next sync; never blank an existing one, since
+  // some Zenoti records carry no code at all and the local id covers those.
+  if (guest.code) synced.guestCode = guest.code;
   // The day the clinic registered the guest. The roster import stamped every
   // mirrored patient with the import day instead, so "Joined" read 23 Aug for
   // 6,900 people; the join date is the EARLIEST first contact we know of.

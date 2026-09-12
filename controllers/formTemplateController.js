@@ -200,7 +200,7 @@ exports.submissions = async (req, res) => {
         .sort({ createdAt: -1 })
         .skip((pageNo - 1) * perPage)
         .limit(perPage)
-        .populate('userId', 'fullName email phone patientId')
+        .populate('userId', 'fullName email phone patientId guestCode')
         .populate('bookingId', 'referenceNumber eventAt')
         .lean(),
       FormSubmission.countDocuments(query),

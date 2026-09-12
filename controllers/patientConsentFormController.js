@@ -262,7 +262,7 @@ exports.getAllConsentForms = async (req, res) => {
     if (bookingId) query.bookingId = bookingId;
 
     const forms = await PatientConsentForm.find(query)
-      .populate('userId', 'fullName email phone patientId')
+      .populate('userId', 'fullName email phone patientId guestCode')
       .populate('bookingId', 'referenceNumber preferredDate status')
       .populate('preConsultFormId', 'dateOfVisit doctorName')
       .sort({ createdAt: -1 })
@@ -345,7 +345,7 @@ exports.getAdminConsentFormById = async (req, res) => {
     const { id } = req.params;
 
     const form = await PatientConsentForm.findById(id)
-      .populate('userId', 'fullName email phone patientId dateOfBirth gender')
+      .populate('userId', 'fullName email phone patientId guestCode dateOfBirth gender')
       .populate('bookingId', 'referenceNumber preferredDate status')
       .populate('preConsultFormId', 'dateOfVisit doctorName');
 

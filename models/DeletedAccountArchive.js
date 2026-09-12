@@ -19,6 +19,7 @@ const deletedAccountArchiveSchema = new mongoose.Schema(
     phone: { type: String, index: true },
     fullName: { type: String },
     patientId: { type: String },
+    guestCode: { type: String },
 
     deletedAt: { type: Date, default: Date.now, index: true },
     /** 'user' when the person did it from the app, 'admin' when staff did. */

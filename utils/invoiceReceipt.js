@@ -7,6 +7,7 @@
  * printed-by / closed-by; the clinic's terms.
  */
 const { amountInWords } = require('./amountInWords');
+const { guestCodeOf } = require('./guestCode');
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const inr = (n) => `₹${(Number(n) || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -68,7 +69,7 @@ function renderReceiptHtml(inv, { printedBy = null, printedAt = new Date(), term
   </table>
   <hr/>
   <div class="b">${esc(g.name || 'Guest')}</div>
-  <div class="mut">${g.phone ? esc(g.phone) : ''}${g.gender ? ` · Sex: ${esc(g.gender)}` : ''}${g.patientId ? ` · Patient ID ${esc(g.patientId)}` : ''}${g.stateCode ? ` · State ${esc(g.stateCode)}` : ''}</div>
+  <div class="mut">${g.phone ? esc(g.phone) : ''}${g.gender ? ` · Sex: ${esc(g.gender)}` : ''}${guestCodeOf(g) ? ` · Guest code ${esc(guestCodeOf(g))}` : ''}${g.stateCode ? ` · State ${esc(g.stateCode)}` : ''}</div>
   ${g.gstin ? `<div class="mut">GSTIN ${esc(g.gstin)}</div>` : ''}
   <hr/>
   <table>
