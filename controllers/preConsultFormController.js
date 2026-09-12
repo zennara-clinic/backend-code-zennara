@@ -37,9 +37,18 @@ exports.createOrUpdateForm = async (req, res) => {
       }
     }
 
+    // The app saves the finished intake straight through this endpoint, so a
+    // form can arrive here already 'Submitted'. Remember whether it had been
+    // submitted BEFORE this write: the Zenoti note is left once, when the
+    // intake actually completes, never again on every later save.
+    const SUBMITTED_STATES = ['Submitted', 'Approved', 'Reviewed', 'Rejected'];
+    let wasSubmitted = false;
+
     // Check if form already exists for this user and booking
     let form;
     if (formData._id) {
+      const before = await PreConsultForm.findOne({ _id: formData._id, userId }).select('status').lean();
+      wasSubmitted = SUBMITTED_STATES.includes(before?.status);
       // Update existing form
       form = await PreConsultForm.findOneAndUpdate(
         { _id: formData._id, userId },
@@ -51,6 +60,7 @@ exports.createOrUpdateForm = async (req, res) => {
       form = await PreConsultForm.findOne({ bookingId: formData.bookingId, userId });
       if (form) {
         // Update existing
+        wasSubmitted = SUBMITTED_STATES.includes(form.status);
         Object.assign(form, formData);
         await form.save();
       } else {
@@ -58,7 +68,13 @@ exports.createOrUpdateForm = async (req, res) => {
         form = new PreConsultForm({
           ...formData,
           userId,
-          clientId: guestCodeOf(user) || formData.clientId || `CLIENT-${Date.now()}`
+          clientId: guestCodeOf(user) || formData.clientId || `CLIENT-${Date.now()}`,
+          // The read-back sheet prints the number the guest gave. Spreading
+          // formData alone left it null on every app-submitted form, so the
+          // sheet showed a dash where the guest had seen their own number —
+          // the walk-in translator (utils/walkinPreConsult.js) has always
+          // filled it in. Derived from the account the same way clientId is.
+          phoneNumber: formData.phoneNumber || user.phone || null
         });
         await form.save();
       }
@@ -67,9 +83,18 @@ exports.createOrUpdateForm = async (req, res) => {
       form = new PreConsultForm({
         ...formData,
         userId,
-        clientId: guestCodeOf(user) || formData.clientId || `CLIENT-${Date.now()}`
+        clientId: guestCodeOf(user) || formData.clientId || `CLIENT-${Date.now()}`,
+        phoneNumber: formData.phoneNumber || user.phone || null
       });
       await form.save();
+    }
+
+    // The clinic works from Zenoti — leave a note there that the intake is
+    // done, exactly as submitForm and the walk-in tablet do. Without it an app
+    // guest who filled the form in one go (the app never calls /submit) looked
+    // to the front desk like they had no intake at all.
+    if (form && form.status === 'Submitted' && !wasSubmitted) {
+      require('../services/zenotiWriteService').syncFormNote('intake', form).catch(() => {});
     }
 
     res.status(200).json({
@@ -79,6 +104,38 @@ exports.createOrUpdateForm = async (req, res) => {
     });
   } catch (error) {
     console.error('Error saving pre-consult form:', error);
+    /*
+     * A free-text answer over the model's 2000-character cap (previousTreatments,
+     * currentMedications, patientNotes) used to come back as a blanket 500 with
+     * no field name, so the app could only say "Failed to save" and the guest
+     * had no idea which box to shorten.
+     *
+     * The validator's own message is NOT passed through: Mongoose quotes the
+     * offending value inside it ("Path `patientNotes` (`...`) is longer than
+     * ..."), which would put clinical free text into an error payload and into
+     * every log that records it. Only the field name and the rule are returned.
+     */
+    if (error.name === 'ValidationError') {
+      const describe = (err) => {
+        const kind = err?.kind || err?.properties?.type || '';
+        if (kind === 'maxlength') {
+          const max = err?.properties?.maxlength;
+          return `This answer is too long — please keep it under ${max || 'the allowed number of'} characters.`;
+        }
+        if (kind === 'required') return 'This answer is required.';
+        if (kind === 'enum') return 'That is not one of the accepted choices.';
+        return 'This answer could not be saved.';
+      };
+      return res.status(400).json({
+        success: false,
+        code: 'FORM_VALIDATION_FAILED',
+        message: 'Some answers could not be saved. Please check the highlighted fields.',
+        errors: Object.entries(error.errors || {}).map(([field, err]) => ({
+          field,
+          message: describe(err),
+        })),
+      });
+    }
     res.status(500).json({
       success: false,
       message: 'Failed to save pre-consult form',

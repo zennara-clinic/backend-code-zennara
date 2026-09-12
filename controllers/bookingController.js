@@ -8,6 +8,11 @@ const Booking = require('../models/Booking');
  */
 const isConsultationEntry = (c) => /^consultations?$/i.test(String(c?.category || '').trim())
   || /consultation/i.test(String(c?.name || ''));
+// The paid path (paymentController.createConsultationPayment) has to apply the
+// very same "bookable online" gate this file's createBooking applies, so the
+// free and paid routes cannot come to different answers about one catalogue
+// row. Exported rather than copied for exactly that reason.
+exports.isConsultationEntry = isConsultationEntry;
 const zenotiWrite = require('../services/zenotiWriteService');
 
 /**
@@ -476,11 +481,19 @@ exports.cancelBooking = async (req, res) => {
       });
     }
 
-    booking.status = 'Cancelled';
-    booking.cancellationReason = reason.trim();
-    booking.cancelledAt = new Date();
-
-    await booking.save();
+    /*
+     * Cancel through the lifecycle service — the same call the desk's cancel
+     * makes (cancelBookingAdmin below), with via:'guest' instead of 'panel'.
+     *
+     * This used to set `status` and save directly, which skipped
+     * applyPackageSessionSideEffect: a session booked out of a package stayed
+     * 'Booked' on the assignment for ever, so a guest who cancelled silently
+     * lost that session and the app then showed "awaiting confirmation" with
+     * no Book button and no way back. Going through the service also releases
+     * the slot in Zenoti and writes the cancel onto the statusLog, so the desk
+     * reads the same story the guest does.
+     */
+    await lifecycle.apply(booking, 'cancel', { via: 'guest', reason: reason.trim() });
 
     // Populate consultation details for email
     await booking.populate('consultationId', 'name');
@@ -543,6 +556,9 @@ exports.cancelBooking = async (req, res) => {
       data: booking
     });
   } catch (error) {
+    if (error.name === 'LifecycleError') {
+      return res.status(error.status).json({ success: false, code: error.code, message: error.message, meta: error.meta });
+    }
     console.error('❌ Cancel booking error:', error);
     res.status(500).json({
       success: false,
@@ -926,6 +942,22 @@ exports.confirmBooking = async (req, res) => {
     await booking.save();
     await Booking.updateOne({ _id: booking._id, 'zenotiConfirmationLock.token': confirmationLockToken }, { $unset: { zenotiConfirmationLock: 1 } }, { timestamps: false });
     confirmationLockToken = null;
+
+    /*
+     * Stamp the confirmed slot back onto the package session, when this
+     * booking came out of a package.
+     *
+     * Confirming does not go through lifecycle.apply — the generic lifecycle
+     * endpoint delegates `confirm` to this handler — so the session row would
+     * otherwise keep the date the guest originally asked for and the app would
+     * go on saying "Awaiting confirmation · Date with the clinic" long after
+     * the desk had settled a time.
+     */
+    try {
+      await lifecycle.applyPackageSessionSideEffect(booking, 'confirm', { now: new Date(), admin: req.admin });
+    } catch (sessionError) {
+      console.error('Package session stamp after confirm failed:', sessionError.message);
+    }
 
     // Populate consultation details for email
     await booking.populate('consultationId', 'name');
@@ -2087,6 +2119,16 @@ exports.rescheduleBookingAdmin = async (req, res) => {
       await Booking.updateOne({ _id: booking._id, 'zenotiConfirmationLock.token': rescheduleLockToken }, { $unset: { zenotiConfirmationLock: 1 } }, { timestamps: false });
       rescheduleLockToken = null;
     }
+
+    // A moved appointment must move the package session with it — this handler
+    // does not go through lifecycle.apply, so nothing else would re-stamp the
+    // session's day and time and the guest would keep reading the old one.
+    try {
+      await lifecycle.applyPackageSessionSideEffect(booking, 'reschedule', { now: new Date(), admin: req.admin });
+    } catch (sessionError) {
+      console.error('Package session stamp after reschedule failed:', sessionError.message);
+    }
+
     await booking.populate('consultationId', 'name category price image');
     await booking.populate('userId', 'fullName email phone patientId guestCode');
 

@@ -13,6 +13,16 @@ const ZenotiPractitioner = require('../models/ZenotiPractitioner');
 const zenoti = require('./zenotiService');
 const { CENTERS } = require('../config/zenoti');
 const { SESSION_SLOT_MINUTES } = require('../config/scheduling');
+/*
+ * The clinic-wide booking window (config/scheduling.js: 11:00–18:00, Sunday
+ * 11:00–15:00) lives in the local slot engine, and every decision moved to
+ * THIS service — so a Zenoti shift of 09:00–19:00 was offering 9 AM and 6 PM
+ * on every surface, and the pre-payment guard (isSlotBookable, below) accepted
+ * them because it asks this file too. The clamp is imported, not copied, so
+ * the window has one definition; utils/dermatologistSlots only reaches back
+ * into this service from inside function bodies, so there is no require cycle.
+ */
+const { clampToBookingWindow } = require('../utils/dermatologistSlots');
 const {
   addClinicDays,
   clinicDayEnd,
@@ -265,7 +275,10 @@ async function doctorSlotsAtBranch(doctor, branch, date, { now = new Date(), exc
     centerDiary(centerId, date),
     localHolds(doctor.doctorId, date, excludeBookingId),
   ]);
-  const ranges = workingRanges(schedules, practitioner.zenotiEmployeeId, date);
+  // The window narrows what the dermatologist's Zenoti shift already allows;
+  // it is applied to the WORKING ranges only, never to the busy intervals —
+  // an appointment at 09:00 must still block, it just cannot be sold.
+  const ranges = clampToBookingWindow(workingRanges(schedules, practitioner.zenotiEmployeeId, date), date);
   const employeeId = norm(practitioner.zenotiEmployeeId);
   const busy = [
     ...(diary.appointments || []).filter((row) => norm(row.therapistId) === employeeId && activeAppointment(row)).map(interval),
@@ -397,7 +410,9 @@ async function availabilityRange(doctorId, from, to, options = {}) {
         ...(set.diary.blockouts || []).filter((row) => writtenDate(row.startTime) === date && norm(row.therapistId) === employeeId).map(interval),
         ...(holds.get(date) || []),
       ].filter(Boolean);
-      for (const range of workingRanges(set.rows, set.employeeId, date)) {
+      // Same clamp as the day view, so the calendar's open/closed dots and the
+      // day's slots cannot disagree about a shift that runs past 18:00.
+      for (const range of clampToBookingWindow(workingRanges(set.rows, set.employeeId, date), date)) {
         for (let at = parseClockMinutes(range.start); at + SESSION_SLOT_MINUTES <= parseClockMinutes(range.end); at += SESSION_SLOT_MINUTES) {
           allStarts.add(at);
           if (!overlaps(busy, at, at + SESSION_SLOT_MINUTES)
@@ -503,7 +518,11 @@ async function branchSlots(branchId, date, options = {}) {
       ...(diary.appointments || []).filter((row) => norm(row.therapistId) === employeeId && activeAppointment(row)).map(interval),
       ...(diary.blockouts || []).filter((row) => norm(row.therapistId) === employeeId).map(interval),
     ].filter(Boolean);
-    for (const range of workingRanges(schedules, employee.employeeId, date)) {
+    // Treatment times are centre working times, and they are sold to guests —
+    // createBooking and createConsultationPayment both check a requested time
+    // against this list — so the window caps them exactly as it caps a
+    // dermatologist's own diary.
+    for (const range of clampToBookingWindow(workingRanges(schedules, employee.employeeId, date), date)) {
       for (let at = parseClockMinutes(range.start); at + SESSION_SLOT_MINUTES <= parseClockMinutes(range.end); at += SESSION_SLOT_MINUTES) {
         if (!overlaps(busy, at, at + SESSION_SLOT_MINUTES)) freeStarts.add(at);
       }

@@ -6,6 +6,108 @@ const hashToken = (t) => crypto.createHash('sha256').update(String(t)).digest('h
 const findSession = (token) => Token.findOne({ $or: [{ tokenHash: hashToken(token) }, { token }], isActive: true });
 /** Sessions idle longer than this are ended even inside their 24h life. */
 const IDLE_MS = Math.max(1, Number(process.env.ADMIN_SESSION_IDLE_HOURS) || 8) * 60 * 60 * 1000;
+
+/*
+ * Sliding expiry for guest sessions.
+ *
+ * A guest session was a hard 7 days with no renewal of any kind, so somebody
+ * who had been signed in for a week got a silent 401 wherever they happened to
+ * be — mid-checkout, mid-booking — and had to go and ask for an OTP. An app
+ * that is in use every other day should never be logged out.
+ *
+ * How it works: once a session is past the halfway point of its own life, the
+ * next authenticated call mints a FRESH token with a full life and returns it
+ * in a response header. A client that stores the header keeps rolling forward;
+ * a client that ignores it is affected in no way at all — its bearer keeps
+ * working to exactly the same second it would have before.
+ *
+ * Two details that are easy to get wrong:
+ *
+ *  - The new token gets its OWN Token row. It cannot replace the old row's
+ *    value, because the old bearer must stay usable for clients that ignore
+ *    the header. Extending the old row's `expiresAt` on its own would achieve
+ *    nothing: the JWT's own `exp` claim is what jwt.verify enforces, and that
+ *    is not editable after signing.
+ *  - The new token carries `prev`, the id of the row it supersedes. The first
+ *    time the client actually presents the new token the old row is revoked,
+ *    so a rolling session does not accumulate rows in "Active sessions".
+ *
+ * This is deliberately NOT refresh-token rotation: no second credential, no
+ * new endpoint, nothing for the app to orchestrate.
+ */
+const SESSION_TOKEN_HEADER = 'X-Session-Token';
+const SESSION_EXPIRES_HEADER = 'X-Session-Expires';
+/** Never mint more than one replacement per session per this window. */
+const RENEW_THROTTLE_MS = 15 * 60 * 1000;
+const renewAttemptedAt = new Map();
+
+const renewThrottled = (key) => {
+  const now = Date.now();
+  const at = renewAttemptedAt.get(key);
+  if (at && now - at < RENEW_THROTTLE_MS) return true;
+  renewAttemptedAt.set(key, now);
+  // Bounded: a busy server must not hold a row per session it has ever seen.
+  if (renewAttemptedAt.size > 5000) {
+    for (const [k, t] of renewAttemptedAt) {
+      if (now - t > RENEW_THROTTLE_MS) renewAttemptedAt.delete(k);
+    }
+  }
+  return false;
+};
+
+/** Retire the row a rolling session has just moved off. Best-effort. */
+const retireSupersededSession = (prevId, currentId) => {
+  if (!prevId || String(prevId) === String(currentId)) return;
+  Token.updateOne({ _id: prevId, isActive: true }, { $set: { isActive: false } }).catch(() => {});
+};
+
+/**
+ * Hand the caller a fresh token when this one is past half its life.
+ *
+ * Never throws and never blocks the request: a session that could not be
+ * renewed simply keeps the token it has.
+ */
+const slideSession = async (req, res, tokenDoc, decoded) => {
+  try {
+    const endsAt = new Date(tokenDoc.expiresAt).getTime();
+    const startedAt = new Date(tokenDoc.createdAt || tokenDoc.lastUsedAt || Date.now()).getTime();
+    const lifespan = endsAt - startedAt;
+    if (!Number.isFinite(lifespan) || lifespan <= 0) return;
+    if (Date.now() - startedAt < lifespan / 2) return;
+    if (renewThrottled(String(tokenDoc._id))) return;
+
+    const token = jwt.sign(
+      { userId: String(decoded.userId), email: decoded.email, prev: String(tokenDoc._id) },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRE || '7d' }
+    );
+    const expiresAt = new Date(jwt.decode(token).exp * 1000);
+
+    await Token.create({
+      userId: tokenDoc.userId,
+      userType: tokenDoc.userType || 'User',
+      token,
+      type: tokenDoc.type || 'access',
+      deviceInfo: tokenDoc.deviceInfo,
+      ipAddress: req.ip || req.connection?.remoteAddress || tokenDoc.ipAddress,
+      expiresAt,
+      isActive: true,
+    });
+
+    res.setHeader(SESSION_TOKEN_HEADER, token);
+    res.setHeader(SESSION_EXPIRES_HEADER, expiresAt.toISOString());
+    // Expo web reads these through CORS, where a response header is invisible
+    // unless it is named here.
+    const exposed = String(res.getHeader('Access-Control-Expose-Headers') || '')
+      .split(',').map((h) => h.trim()).filter(Boolean);
+    for (const name of [SESSION_TOKEN_HEADER, SESSION_EXPIRES_HEADER]) {
+      if (!exposed.some((h) => h.toLowerCase() === name.toLowerCase())) exposed.push(name);
+    }
+    res.setHeader('Access-Control-Expose-Headers', exposed.join(', '));
+  } catch (error) {
+    console.error('Session renewal skipped:', error.message);
+  }
+};
 const User = require('../models/User');
 const Admin = require('../models/Admin');
 const AdminAuditLog = require('../models/AdminAuditLog');
@@ -141,7 +243,12 @@ exports.protect = async (req, res, next) => {
       // Update last used time
       tokenDoc.lastUsedAt = Date.now();
       await tokenDoc.save();
-      
+
+      // Sliding expiry: retire the row this session rolled off, and hand back a
+      // fresh token if this one is past half its life.
+      if (decoded.prev) retireSupersededSession(decoded.prev, tokenDoc._id);
+      await slideSession(req, res, tokenDoc, decoded);
+
       // Convert Mongoose document to plain object and add to request
       req.user = {
         _id: user._id,
@@ -670,7 +777,12 @@ exports.protectBoth = async (req, res, next) => {
         // Update last used time
         tokenDoc.lastUsedAt = Date.now();
         await tokenDoc.save();
-        
+
+        // Sliding expiry — same contract as protect(), so a guest whose app
+        // happens to hit only these routes still rolls forward.
+        if (decoded.prev) retireSupersededSession(decoded.prev, tokenDoc._id);
+        await slideSession(req, res, tokenDoc, decoded);
+
         // Add user to request
         req.user = {
           _id: user._id,

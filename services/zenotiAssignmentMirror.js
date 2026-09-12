@@ -119,13 +119,46 @@ function sessionsFrom(zp, existing = [], pkgServices = []) {
     const mine = byName.get(String(svc.name || '').trim().toLowerCase());
     const serviceId = mine?.serviceId || svc.serviceId || '';
     const serviceName = mine?.serviceName || svc.name || '';
-    const already = keep.filter((s) => String(s.serviceId || '') === String(serviceId)).length;
-    for (let i = already; i < total; i += 1) {
+    /*
+     * Kept rows are ours, not Zenoti's, and they are not interchangeable.
+     *
+     * This used to count EVERY kept row as if it were one of Zenoti's
+     * redemptions and then emit the remainder by index. With a 3-session
+     * package, 1 redeemed at the clinic and 1 session booked from the app, the
+     * kept Booked row consumed Zenoti's single redemption: the mirror wrote
+     * zero Completed rows, serviceBalances() (which counts `used` from rows
+     * with status 'Completed') reported nothing used, and the guest was offered
+     * two more sessions when only one was left — the app let them book it and
+     * the server accepted it.
+     *
+     * So the two are counted separately: a kept Completed row settles one of
+     * Zenoti's redemptions, a kept Booked row holds one of the remaining
+     * sessions open. Nothing ever goes negative, and a row with a bookingId is
+     * still never dropped — that link is the only thing tying an appointment
+     * to its session.
+     */
+    const mineKept = keep.filter((s) => String(s.serviceId || '') === String(serviceId));
+    const keptCompleted = mineKept.filter((s) => s.status === 'Completed').length;
+    const keptOpen = mineKept.length - keptCompleted;
+    // If we have recorded more completions than Zenoti has (our completion has
+    // not reached the CRM yet), believe the higher number — offering a session
+    // that is already spent is the failure that matters.
+    const redeemed = Math.max(used, keptCompleted);
+
+    for (let i = 0; i < Math.max(0, used - keptCompleted); i += 1) {
       out.push({
         serviceId,
         serviceName,
-        status: i < used ? 'Completed' : 'Scheduled',
-        completedAt: i < used ? (zp.purchaseDate ? new Date(zp.purchaseDate) : null) : null,
+        status: 'Completed',
+        completedAt: zp.purchaseDate ? new Date(zp.purchaseDate) : null,
+      });
+    }
+    for (let i = 0; i < Math.max(0, total - redeemed - keptOpen); i += 1) {
+      out.push({
+        serviceId,
+        serviceName,
+        status: 'Scheduled',
+        completedAt: null,
       });
     }
   }

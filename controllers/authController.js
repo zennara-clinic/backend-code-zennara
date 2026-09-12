@@ -15,6 +15,7 @@ const { publicEmail } = require('../config/zenoti');
 const logger = require('../utils/logger');
 const { filterFields, validateOwnership } = require('../middleware/securityMiddleware');
 const accountDeletion = require('../services/accountDeletionService');
+const { guestCodeOf } = require('../utils/guestCode');
 
 const serializeUser = (user) => ({
   id: user._id,
@@ -23,6 +24,13 @@ const serializeUser = (user) => ({
   email: publicEmail(user.email),
   fullName: user.fullName,
   phone: user.phone,
+  // The code the clinic prints and the guest quotes at the desk. It was never
+  // serialised, so the app's User.guestCode was always undefined and the
+  // intake sheet printed no code at all. Both are sent: `guestCode` is the
+  // canonical reader's answer (Zenoti's code, else the local patientId) and
+  // `patientId` stays available for anything still reading it by name.
+  guestCode: guestCodeOf(user),
+  patientId: user.patientId || null,
   location: user.location,
   dateOfBirth: user.dateOfBirth,
   gender: user.gender,
@@ -46,6 +54,57 @@ const serializeUser = (user) => ({
   notificationPreferences: user.notificationPreferences || {},
   createdAt: user.createdAt,
 });
+
+/**
+ * Mint a signed-in session for a guest: the JWT, its Token row and the
+ * login audit entry.
+ *
+ * Extracted 2026-09-12, when registration stopped ending in a second OTP
+ * round. Signup and OTP verification now hand the app exactly the same
+ * envelope, and there is one place where the token's life, its persisted
+ * expiry and the security log can be changed — they must never drift apart,
+ * because middleware/auth.js treats the Token row, not the JWT, as the
+ * session of record.
+ */
+const issueUserSession = async (user, req) => {
+  const deviceInfo = {
+    platform: req.headers['user-agent'] || 'unknown',
+    deviceId: req.headers['device-id'] || null,
+    deviceName: req.headers['device-name'] || null,
+    appVersion: req.headers['app-version'] || null
+  };
+
+  const token = jwt.sign(
+    { userId: user._id, email: user.email },
+    process.env.JWT_SECRET,
+    { expiresIn: process.env.JWT_EXPIRE || '7d' }
+  );
+
+  // Keep the persisted expiry and the mobile cache aligned with the JWT's
+  // actual exp claim, even when JWT_EXPIRE is changed from its 7-day default.
+  const decodedToken = jwt.decode(token);
+  const expiresAt = new Date(decodedToken.exp * 1000);
+
+  const tokenDoc = new Token({
+    userId: user._id,
+    token,
+    type: 'access',
+    deviceInfo,
+    ipAddress: req.ip || req.connection.remoteAddress,
+    expiresAt,
+    isActive: true
+  });
+  await tokenDoc.save();
+
+  await SecurityLog.logEvent(user._id, 'login_success', {
+    ipAddress: req.ip,
+    userAgent: req.headers['user-agent'],
+    deviceInfo,
+    severity: 'low'
+  });
+
+  return { token, expiresAt, deviceInfo };
+};
 
 // @desc    Send an OTP before creating a new account
 // @route   POST /api/auth/signup/send-otp
@@ -262,6 +321,11 @@ exports.signup = async (req, res) => {
       gender,
       memberType: 'Regular Member', // All new users start as Regular Members
       phoneVerified: true,
+      // The phone was proved by OTP a moment ago — the same proof verifyOTP
+      // acts on — so the account starts verified and signed in rather than
+      // being sent back to the login screen to prove it a second time.
+      isVerified: true,
+      lastLogin: new Date(),
       privacyPolicyConsent: {
         accepted: true,
         version: '2026-08-09',
@@ -289,10 +353,41 @@ exports.signup = async (req, res) => {
 
     logger.info('User registered successfully', { userId: user._id });
 
+    /*
+     * Sign the new guest straight in.
+     *
+     * Registration used to end with "please login to continue", which sent the
+     * guest back to the login screen to request a SECOND OTP for the number
+     * they had proved less than a minute earlier. The phone proof consumed
+     * above is the same proof verifyOTP acts on, so nothing is weakened by
+     * minting the session here — the account simply stops making the guest do
+     * the same thing twice.
+     *
+     * If the session cannot be written the account still exists, so this never
+     * fails registration: the response then carries no token and the app falls
+     * back to the login screen, exactly as it did before.
+     */
+    let session = null;
+    try {
+      session = await issueUserSession(user, req);
+    } catch (sessionError) {
+      logger.error('Could not issue a session at signup', {
+        userId: user._id,
+        error: sessionError.message,
+      });
+    }
+
     res.status(201).json({
       success: true,
-      message: 'Registration successful! Please login to continue.',
+      message: session
+        ? 'Registration successful!'
+        : 'Registration successful! Please login to continue.',
       data: {
+        token: session?.token || null,
+        expiresAt: session?.expiresAt || null,
+        user: serializeUser(user),
+        // The pre-session keys an older app build reads. Additive on purpose:
+        // a client that ignores `token` behaves exactly as it does today.
         userId: user._id,
         email: user.email,
         fullName: user.fullName
@@ -458,12 +553,17 @@ exports.login = async (req, res) => {
       }
     });
 
-    // Skip sending OTP for demo account - Apple Review
-    if (user.phone === '8945515335') {
-      console.log('Demo account detected - OTP: 9876 (fixed for Apple Review)');
+    // Skip sending OTP for the configured demo account - app-store review.
+    // The number and the code are no longer constants: the bypass exists only
+    // where DEMO_LOGIN_PHONE and DEMO_LOGIN_OTP are both set and NODE_ENV is
+    // not 'production' (see models/User.js demoLogin, and item 35 of the
+    // 2026-09-12 audit — this used to be a live backdoor in production).
+    const demo = User.demoLogin();
+    if (demo && user.phone === demo.phone) {
+      console.log('Demo account detected - fixed OTP login (non-production only)');
       return res.status(200).json({
         success: true,
-        message: 'Demo account - Use OTP: 9876',
+        message: `Demo account - Use OTP: ${demo.otp}`,
         data: {
           email: publicEmail(user.email),
           phone: user.phone ? `******${user.phone.slice(-4)}` : null,
@@ -605,47 +705,9 @@ exports.verifyOTP = async (req, res) => {
       severity: 'low'
     });
 
-    // Create device info for token
-    const deviceInfo = {
-      platform: req.headers['user-agent'] || 'unknown',
-      deviceId: req.headers['device-id'] || null,
-      deviceName: req.headers['device-name'] || null,
-      appVersion: req.headers['app-version'] || null
-    };
-
-    // Generate token pair (access + refresh) - for future use
-    // For now, keeping 7-day access token for compatibility
-    const token = jwt.sign(
-      { userId: user._id, email: user.email },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRE || '7d' }
-    );
-
-    // Keep the persisted expiry and the mobile cache aligned with the JWT's
-    // actual exp claim, even when JWT_EXPIRE is changed from its 7-day default.
-    const decodedToken = jwt.decode(token);
-    const expiresAt = new Date(decodedToken.exp * 1000);
-
-    // Save token to database
-    const tokenDoc = new Token({
-      userId: user._id,
-      token,
-      type: 'access',
-      deviceInfo,
-      ipAddress: req.ip || req.connection.remoteAddress,
-      expiresAt,
-      isActive: true
-    });
-
-    await tokenDoc.save();
-
-    // Log successful login
-    await SecurityLog.logEvent(user._id, 'login_success', {
-      ipAddress: req.ip,
-      userAgent: req.headers['user-agent'],
-      deviceInfo,
-      severity: 'low'
-    });
+    // The session — JWT, its Token row and the login audit entry. Shared with
+    // signup so a new account is signed in with exactly the same envelope.
+    const { token, expiresAt } = await issueUserSession(user, req);
 
     logger.info('User logged in successfully', { userId: user._id });
 
@@ -878,7 +940,6 @@ exports.updateProfile = async (req, res) => {
     
     const { 
       fullName, 
-      phone, 
       location, 
       dateOfBirth, 
       gender,
@@ -895,7 +956,22 @@ exports.updateProfile = async (req, res) => {
     // Build update object with only provided fields
     const updateData = {};
     if (fullName !== undefined) updateData.fullName = fullName;
-    if (phone !== undefined) updateData.phone = phone;
+    /*
+     * `phone` is deliberately NOT accepted here.
+     *
+     * The phone number IS the login credential — it is what an OTP is sent to.
+     * This endpoint used to apply a new one on nothing but a uniqueness check,
+     * so any client holding a token could move the account onto a number it had
+     * never proved and then sign in with it. Changing the number now goes only
+     * through the contact-change flow (controllers/contactChangeController.js),
+     * which proves the OLD value and then the NEW one before the change is
+     * scheduled.
+     *
+     * A `phone` in the body is ignored rather than rejected: an older app build
+     * sends the whole profile object back, and failing those requests would
+     * break saving a name or a date of birth. The response returns the
+     * unchanged number, so the client simply sees that nothing moved.
+     */
     if (location !== undefined) updateData.location = location;
     if (dateOfBirth !== undefined) updateData.dateOfBirth = dateOfBirth;
     if (gender !== undefined) updateData.gender = gender;
@@ -917,19 +993,6 @@ exports.updateProfile = async (req, res) => {
         success: false,
         message: 'User not found'
       });
-    }
-
-    if (updateData.phone && updateData.phone !== existingUser.phone) {
-      const phoneOwner = await User.exists({
-        phone: updateData.phone,
-        _id: { $ne: existingUser._id },
-      });
-      if (phoneOwner) {
-        return res.status(409).json({
-          success: false,
-          message: 'Phone number already registered',
-        });
-      }
     }
 
     // Only validate gender if it's being updated to a non-empty value

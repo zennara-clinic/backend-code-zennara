@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Branch = require('../models/Branch');
 const Doctor = require('../models/Doctor');
 const DermatologistAvailability = require('../models/DermatologistAvailability');
+const ZenotiPractitioner = require('../models/ZenotiPractitioner');
 
 const publicShape = (assignment) => ({
   doctorId: assignment.doctorId,
@@ -12,36 +13,65 @@ const publicShape = (assignment) => ({
 });
 
 /*
- * Where a dermatologist works has ONE answer: Doctor.availableCentres, which
- * the Zenoti practitioner sync rewrites every five minutes.
+ * Where a dermatologist works has ONE answer, and it is the same one the slot
+ * engine uses: the Zenoti practitioner links, with Doctor.availableCentres as
+ * the fallback for a dermatologist Zenoti has never heard of.
  *
  * This endpoint used to read a separate DermatologistAvailability collection,
  * maintained by hand, and the APP filters its dermatologist list on THIS
  * response — so the stale copy is what guests actually saw. On 2026-09-08 it
  * still offered Janaki at Financial District and Kondapur (Zenoti has her at
  * Jubilee Hills alone) and hid Rickson at Financial District, where Zenoti
- * does roster him. Fixing Doctor.availableCentres changed nothing on screen,
- * because the app was never reading it.
+ * does roster him. Reading Doctor.availableCentres instead fixed the source of
+ * the copy but not the disagreement: zenotiAvailabilityService.candidateBranches
+ * had already stopped trusting that hand-typed list, because it had drifted for
+ * seven of nine active dermatologists. The two therefore still answered
+ * different questions — the app hid a dermatologist from a centre Zenoti
+ * rosters them at, or listed them at a centre whose calendar comes back empty.
  *
- * The response shape is unchanged — the app depends on it — but the branches
- * now come from the doctor record. The old collection is still written by the
- * panel's upsert and is used only as a fallback for a doctorId that has no
- * Doctor row at all.
+ * The rule below is candidateBranches' rule, deliberately line for line:
+ * active clinic centres, filtered by the Zenoti link when there is one, by the
+ * panel's list when there is not, and unfiltered for a dermatologist with
+ * neither (which is what the slot engine already assumes).
+ *
+ * The response shape is unchanged — the app depends on it. The old collection
+ * is still written by the panel's upsert and is used only as a fallback for a
+ * doctorId that has no Doctor row at all.
  */
+const norm = (value) => String(value || '').trim().toLowerCase();
+
 async function derivedFromDoctors() {
   const [doctors, branches] = await Promise.all([
     Doctor.find({ isActive: { $ne: false } }).select('doctorId availableCentres isActive').lean(),
-    Branch.find({ isActive: true }).select('name').lean(),
+    // Pharmacies and the training centre are stock locations, never bookable.
+    Branch.find({ isActive: true, centreType: 'clinic' })
+      .select('name zenotiCenterId').sort({ displayOrder: 1, name: 1 }).lean(),
   ]);
-  const byName = new Map(branches.map((b) => [String(b.name).trim().toLowerCase(), b]));
-  return doctors.map((doc) => ({
-    doctorId: doc.doctorId,
-    branches: (doc.availableCentres || [])
-      .map((name) => byName.get(String(name).trim().toLowerCase()))
-      .filter(Boolean)
-      .map((b) => ({ _id: b._id, name: b.name })),
-    isActive: doc.isActive !== false,
-  }));
+
+  const links = await ZenotiPractitioner.find({
+    onboardedDoctorId: { $in: doctors.map((doc) => norm(doc.doctorId)) },
+    active: true,
+  }).select('onboardedDoctorId centerIds').lean();
+  const centresByDoctor = new Map();
+  for (const link of links) {
+    const key = norm(link.onboardedDoctorId);
+    const centres = centresByDoctor.get(key) || new Set();
+    (link.centerIds || []).forEach((id) => centres.add(norm(id)));
+    centresByDoctor.set(key, centres);
+  }
+
+  return doctors.map((doc) => {
+    const linked = centresByDoctor.get(norm(doc.doctorId));
+    const mine = linked && linked.size
+      ? branches.filter((branch) => linked.has(norm(branch.zenotiCenterId)))
+      : branches.filter((branch) => !doc.availableCentres?.length
+        || doc.availableCentres.some((name) => norm(name) === norm(branch.name)));
+    return {
+      doctorId: doc.doctorId,
+      branches: mine.map((branch) => ({ _id: branch._id, name: branch.name })),
+      isActive: doc.isActive !== false,
+    };
+  });
 }
 
 exports.getAll = async (req, res) => {

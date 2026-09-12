@@ -542,6 +542,29 @@ UserSchema.post('save', function(doc) {
   });
 });
 
+/**
+ * The fixed-OTP demo login, if this deployment is configured for one.
+ *
+ * Until 2026-09-12 the number 8945515335 and the code 9876 were constants in
+ * this file and in controllers/authController.js, which meant production
+ * carried a permanent backdoor: that one account accepted a publicly known
+ * four-digit code forever, skipped OTP delivery entirely and reset its own
+ * lockout counters on every use.
+ *
+ * The bypass now exists only when BOTH DEMO_LOGIN_PHONE and DEMO_LOGIN_OTP are
+ * set, and never when NODE_ENV is 'production'. There is deliberately no
+ * fallback constant — an app-store reviewer who needs it gets the two variables
+ * set on a non-production deployment. Do not re-add the literals.
+ */
+const demoLogin = () => {
+  if (process.env.NODE_ENV === 'production') return null;
+  const phone = String(process.env.DEMO_LOGIN_PHONE || '').trim();
+  const otp = String(process.env.DEMO_LOGIN_OTP || '').trim();
+  if (!phone || !otp) return null;
+  return { phone, otp };
+};
+UserSchema.statics.demoLogin = demoLogin;
+
 // Method to check rate limiting for OTP requests
 UserSchema.methods.canRequestOTP = function() {
   const now = Date.now();
@@ -574,8 +597,9 @@ UserSchema.methods.generateOTP = function() {
 
 // Method to verify OTP
 UserSchema.methods.verifyOTP = function(enteredOTP) {
-  // Special bypass for Apple Review demo account
-  if (this.phone === '8945515335' && String(enteredOTP).trim() === '9876') {
+  // Fixed-OTP bypass for an app-store review account. Gated — see demoLogin().
+  const demo = demoLogin();
+  if (demo && this.phone === demo.phone && String(enteredOTP).trim() === demo.otp) {
     // Reset counters for demo account
     this.failedLoginAttempts = 0;
     this.accountLockedUntil = null;

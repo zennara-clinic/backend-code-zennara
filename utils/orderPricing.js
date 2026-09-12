@@ -62,19 +62,60 @@ function belowMinimumMessage(subtotal) {
 
 /**
  * Validate a coupon for an order and return the authoritative discount.
- * Returns { ok:false } for any invalid/expired/ineligible coupon (the order then
- * proceeds at full price rather than failing checkout).
+ *
+ * Returns { ok:false, reason } for any invalid/expired/ineligible coupon — the
+ * order then proceeds at full price rather than failing checkout. `reason` is
+ * written for the guest: dropping a coupon silently is what let the Razorpay
+ * sheet show a number the guest had never seen (the app had computed and shown
+ * its own discount), so every caller now has something honest to say.
+ *
+ * @param {string} code
+ * @param {number} orderValue subtotal, before GST/delivery
+ * @param {Array<string>} productIds
+ * @param {{ userId?: any }} [options] when given, perUserLimit is enforced
  */
-async function validateCouponForOrder(code, orderValue, productIds) {
-  if (!code) return { ok: false };
+async function validateCouponForOrder(code, orderValue, productIds, { userId = null } = {}) {
+  if (!code) return { ok: false, reason: null };
   const coupon = await Coupon.findOne({ code: String(code).toUpperCase() });
-  if (!coupon || !coupon.isActive) return { ok: false };
+  if (!coupon) return { ok: false, reason: 'That coupon code was not recognised.' };
+  if (!coupon.isActive) return { ok: false, reason: 'This coupon is no longer active.' };
 
   const now = new Date();
-  if (coupon.validFrom && now < coupon.validFrom) return { ok: false };
-  if (coupon.validUntil && now > coupon.validUntil) return { ok: false };
-  if (coupon.usageLimit && coupon.usageCount >= coupon.usageLimit) return { ok: false };
-  if (coupon.minOrderValue && orderValue < coupon.minOrderValue) return { ok: false };
+  if (coupon.validFrom && now < coupon.validFrom) return { ok: false, reason: 'This coupon is not valid yet.' };
+  if (coupon.validUntil && now > coupon.validUntil) return { ok: false, reason: 'This coupon has expired.' };
+  if (coupon.usageLimit && coupon.usageCount >= coupon.usageLimit) return { ok: false, reason: 'This coupon has reached its usage limit.' };
+  if (coupon.minOrderValue && orderValue < coupon.minOrderValue) {
+    return { ok: false, reason: `This coupon needs an order of at least ₹${coupon.minOrderValue}.` };
+  }
+
+  /*
+   * Per-guest limit. `perUserLimit` has existed on the model since coupons
+   * were added and was read NOWHERE, so a one-per-customer coupon could be
+   * spent on every order the same guest placed. Counting the guest's own
+   * orders that carry the code is the only honest measure available: the old
+   * /coupons/apply route incremented a global counter from the phone and
+   * recorded no owner at all (removed — see couponController).
+   *
+   * Cancelled and returned orders release the coupon again: the guest was
+   * refunded, so charging them a use would be taking the discount away for
+   * an order that never happened.
+   */
+  if (coupon.perUserLimit && userId) {
+    const ProductOrder = require('../models/ProductOrder');
+    const used = await ProductOrder.countDocuments({
+      userId,
+      'coupon.code': coupon.code,
+      orderStatus: { $nin: ['Cancelled', 'Returned'] },
+    });
+    if (used >= coupon.perUserLimit) {
+      return {
+        ok: false,
+        reason: coupon.perUserLimit === 1
+          ? 'You have already used this coupon.'
+          : `You have already used this coupon ${coupon.perUserLimit} times.`,
+      };
+    }
+  }
 
   // Category scoping ("Skincare only") — matched on the catalogue's category,
   // sub-category or formulation, so a coupon written for a sheet category works.
@@ -82,12 +123,12 @@ async function validateCouponForOrder(code, orderValue, productIds) {
     const wanted = new Set(coupon.applicableCategories.map((c) => String(c).trim().toLowerCase()));
     const rows = await Product.find({ _id: { $in: productIds } }).select('productCategory productSubCategory formulation').lean();
     const inScope = rows.some((p) => [p.productCategory, p.productSubCategory, p.formulation].some((v) => v && wanted.has(String(v).trim().toLowerCase())));
-    if (!inScope) return { ok: false };
+    if (!inScope) return { ok: false, reason: 'This coupon does not apply to the products in your cart.' };
   }
   if (coupon.applicableProducts && coupon.applicableProducts.length > 0) {
     const applicable = coupon.applicableProducts.map(String);
     const hasApplicable = productIds.some((id) => applicable.includes(String(id)));
-    if (!hasApplicable) return { ok: false };
+    if (!hasApplicable) return { ok: false, reason: 'This coupon does not apply to the products in your cart.' };
   }
 
   let discount = 0;
@@ -99,20 +140,24 @@ async function validateCouponForOrder(code, orderValue, productIds) {
   }
   // Never let a discount exceed the order value.
   discount = Math.min(Math.round(discount), orderValue);
-  return { ok: true, code: coupon.code, discount };
+  return { ok: true, code: coupon.code, discount, reason: null };
 }
 
 /**
  * Price an order from the database.
  *
+ * `userId` is optional but should be passed wherever one is known: it is what
+ * lets the coupon's perUserLimit be enforced.
+ *
  * @param {{ items: Array<{productId:string, quantity:number}>, couponCode?: string, city?: string, userId?: any }} params
  * @returns {Promise<
  *   | { ok:false, status:number, message:string, availableStock?:number }
  *   | { ok:true, pricing:{subtotal:number,gst:number,discount:number,deliveryFee:number,total:number},
- *       items: Array<{product:object, quantity:number}>, coupon: {code:string,discount:number}|null }
+ *       items: Array<{product:object, quantity:number}>, coupon: {code:string,discount:number}|null,
+ *       couponOutcome: {code:string|null, applied:boolean, reason:string|null} }
  * >}
  */
-async function computeOrderPricing({ items, couponCode, city }) {
+async function computeOrderPricing({ items, couponCode, city, userId = null }) {
   if (!Array.isArray(items) || items.length === 0) {
     return { ok: false, status: 400, message: 'Order must contain at least one item' };
   }
@@ -176,8 +221,24 @@ async function computeOrderPricing({ items, couponCode, city }) {
 
   let discount = 0;
   let coupon = null;
+  /*
+   * What happened to the coupon, in words.
+   *
+   * An ineligible coupon used to be zeroed here and nobody was told: the app
+   * had already shown the guest a discounted bill, the server charged the
+   * undiscounted total, and the Razorpay sheet was the first place the two
+   * numbers differed. The caller now gets `couponOutcome` and hands it to the
+   * app in the payment-create response, so a client that disagrees with the
+   * server can say so BEFORE the payment sheet opens.
+   */
+  let couponOutcome = { code: null, applied: false, reason: null };
   if (couponCode) {
-    const result = await validateCouponForOrder(couponCode, subtotal, productIds);
+    const result = await validateCouponForOrder(couponCode, subtotal, productIds, { userId });
+    couponOutcome = {
+      code: String(couponCode).toUpperCase(),
+      applied: Boolean(result.ok),
+      reason: result.ok ? null : (result.reason || 'This coupon could not be applied to your order.'),
+    };
     if (result.ok) {
       discount = result.discount;
       coupon = { code: result.code, discount: result.discount };
@@ -192,6 +253,7 @@ async function computeOrderPricing({ items, couponCode, city }) {
     pricing: { subtotal, gst, discount, deliveryFee, total },
     items: lineItems,
     coupon,
+    couponOutcome,
   };
 }
 

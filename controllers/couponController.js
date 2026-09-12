@@ -88,94 +88,56 @@ exports.getCouponById = async (req, res) => {
 // @desc    Validate coupon code
 // @route   POST /api/coupons/validate
 // @access  Public
+/*
+ * This screen must give the SAME answer checkout will.
+ *
+ * It used to re-implement the rules — and imperfectly: it never looked at
+ * applicableCategories (so a Skincare-only coupon validated against any cart)
+ * and never looked at perUserLimit, while utils/orderPricing.validateCouponForOrder,
+ * which is what actually prices the order, checks both. A guest could be told
+ * "coupon is valid", see a discount, and then be charged the full amount.
+ * There is now one implementation and this is a thin wrapper over it.
+ */
 exports.validateCoupon = async (req, res) => {
   try {
     const { code, orderValue, productIds, userId } = req.body;
-    
-    const coupon = await Coupon.findOne({ code: code.toUpperCase() });
-    
-    if (!coupon) {
-      return res.status(404).json({
+    if (!code) {
+      return res.status(400).json({ success: false, message: 'Enter a coupon code' });
+    }
+
+    const { validateCouponForOrder } = require('../utils/orderPricing');
+    const result = await validateCouponForOrder(
+      code,
+      Number(orderValue) || 0,
+      Array.isArray(productIds) ? productIds : [],
+      // The route is public, so the caller's own id is the best available
+      // owner for the per-guest check. Claiming somebody else's id can only
+      // make this screen stricter — no money is moved here.
+      { userId: req.user?._id || userId || null },
+    );
+
+    if (!result.ok) {
+      const unknown = /not recognised/i.test(result.reason || '');
+      return res.status(unknown ? 404 : 400).json({
         success: false,
-        message: 'Invalid coupon code'
+        message: result.reason || 'Invalid coupon code',
       });
     }
-    
-    // Check if coupon is active
-    if (!coupon.isActive) {
-      return res.status(400).json({
-        success: false,
-        message: 'This coupon is no longer active'
-      });
-    }
-    
-    // Check validity dates
-    const now = new Date();
-    if (now < coupon.validFrom) {
-      return res.status(400).json({
-        success: false,
-        message: 'This coupon is not yet valid'
-      });
-    }
-    
-    if (now > coupon.validUntil) {
-      return res.status(400).json({
-        success: false,
-        message: 'This coupon has expired'
-      });
-    }
-    
-    // Check usage limit
-    if (coupon.usageLimit && coupon.usageCount >= coupon.usageLimit) {
-      return res.status(400).json({
-        success: false,
-        message: 'This coupon has reached its usage limit'
-      });
-    }
-    
-    // Check minimum order value
-    if (orderValue < coupon.minOrderValue) {
-      return res.status(400).json({
-        success: false,
-        message: `Minimum order value of ₹${coupon.minOrderValue} required`
-      });
-    }
-    
-    // Check applicable products
-    if (coupon.applicableProducts.length > 0) {
-      const hasApplicableProduct = productIds.some(id => 
-        coupon.applicableProducts.includes(id)
-      );
-      
-      if (!hasApplicableProduct) {
-        return res.status(400).json({
-          success: false,
-          message: 'This coupon is not applicable to the products in your cart'
-        });
-      }
-    }
-    
-    // Calculate discount
-    let discount = 0;
-    if (coupon.discountType === 'percentage') {
-      discount = (orderValue * coupon.discountValue) / 100;
-      if (coupon.maxDiscount && discount > coupon.maxDiscount) {
-        discount = coupon.maxDiscount;
-      }
-    } else {
-      discount = coupon.discountValue;
-    }
-    
+
+    // The app shows the coupon's own terms next to the discount, so these two
+    // fields still come from the record itself.
+    const coupon = await Coupon.findOne({ code: result.code });
+
     res.json({
       success: true,
       message: 'Coupon is valid',
       data: {
         coupon: {
-          code: coupon.code,
-          discountType: coupon.discountType,
-          discountValue: coupon.discountValue
+          code: result.code,
+          discountType: coupon?.discountType,
+          discountValue: coupon?.discountValue
         },
-        discount: Math.round(discount)
+        discount: result.discount
       }
     });
   } catch (error) {
@@ -417,69 +379,25 @@ exports.getAvailableCoupons = async (req, res) => {
   }
 };
 
-// @desc    Apply coupon and track usage
-// @route   POST /api/coupons/apply
-// @access  Private
-exports.applyCoupon = async (req, res) => {
-  try {
-    const { couponId, orderId } = req.body;
-    const userId = req.user._id;
-    
-    const coupon = await Coupon.findById(couponId);
-    
-    if (!coupon) {
-      return res.status(404).json({
-        success: false,
-        message: 'Coupon not found'
-      });
-    }
-    
-    // Check if coupon is still valid
-    if (!coupon.isActive) {
-      return res.status(400).json({
-        success: false,
-        message: 'This coupon is no longer active'
-      });
-    }
-    
-    const now = new Date();
-    if (now < coupon.validFrom || now > coupon.validUntil) {
-      return res.status(400).json({
-        success: false,
-        message: 'This coupon has expired or is not yet valid'
-      });
-    }
-    
-    // Check usage limit
-    if (coupon.usageLimit && coupon.usageCount >= coupon.usageLimit) {
-      return res.status(400).json({
-        success: false,
-        message: 'This coupon has reached its usage limit'
-      });
-    }
-    
-    // Increment usage count
-    coupon.usageCount += 1;
-    await coupon.save();
-    
-    res.json({
-      success: true,
-      message: 'Coupon applied successfully',
-      data: {
-        couponId: coupon._id,
-        code: coupon.code,
-        orderId
-      }
-    });
-  } catch (error) {
-    console.error('Error applying coupon:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to apply coupon',
-      error: error.message
-    });
-  }
-};
+/*
+ * POST /api/coupons/apply — RETIRED 2026-09-12. Answers 410.
+ *
+ * It took a coupon id from the phone, checked nothing about who was asking or
+ * what they were buying, and incremented `usageCount`. Any client could burn a
+ * limited coupon to exhaustion with a loop, and because no order was recorded
+ * against the use, `perUserLimit` had nothing to count and was never enforced
+ * anywhere. A coupon use is now spent in exactly one place — the product-order
+ * payment verification, once an order carrying the coupon exists against a
+ * captured payment (paymentController.verifyProductPayment).
+ *
+ * Kept as a 410 rather than deleted so an app build that still calls it gets
+ * an answer it can recognise instead of a 404 that reads like an outage.
+ */
+exports.applyCoupon = async (req, res) => res.status(410).json({
+  success: false,
+  code: 'COUPON_APPLY_RETIRED',
+  message: 'Coupons are applied when your order is paid for — there is nothing to do here.',
+});
 
 // @desc    Get coupon statistics
 // @route   GET /api/admin/coupons/statistics

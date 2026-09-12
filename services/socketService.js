@@ -1,4 +1,6 @@
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
+const Token = require('../models/Token');
 const User = require('../models/User');
 const Admin = require('../models/Admin');
 const Chat = require('../models/Chat');
@@ -15,6 +17,23 @@ const connectedAdmins = new Map();
  * guest has been checked in.
  */
 let ioRef = null;
+
+/**
+ * The stored session for a bearer — the same lookup middleware/auth.js does
+ * (by hash for current sessions, by raw value for ones issued before hashing).
+ *
+ * The handshake used to accept any unexpired JWT, so a token revoked by signing
+ * out or by "sign out everywhere" kept a live chat socket open until the JWT
+ * expired on its own — up to a week. The socket is an authenticated channel
+ * like any other and must answer to the same session of record.
+ */
+const findSession = (token) => Token.findOne({
+  $or: [
+    { tokenHash: crypto.createHash('sha256').update(String(token)).digest('hex') },
+    { token },
+  ],
+  isActive: true,
+});
 
 const setupSocketIO = (io) => {
   ioRef = io;
@@ -38,6 +57,14 @@ const setupSocketIO = (io) => {
         role: decoded.role,
         userType 
       });
+
+      // The JWT alone is not the session — the Token row is. A revoked or
+      // expired session is refused here, not left to the JWT's own clock.
+      const session = await findSession(token);
+      if (!session || !session.isValid()) {
+        console.error('Socket auth failed: session is no longer valid');
+        return next(new Error('Authentication error: Session expired'));
+      }
 
       if (userType === 'admin') {
         // Admin tokens use 'adminId' field

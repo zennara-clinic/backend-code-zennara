@@ -86,7 +86,7 @@ exports.createOrderLegacyUnpaid = async (req, res) => {
     // Never trust client-sent prices / GST / discount / total. Recompute
     // everything from the database and validate the coupon ourselves; the
     // client's `pricing` block is ignored entirely.
-    const priced = await computeOrderPricing({ items, couponCode: coupon?.code, city: address.city });
+    const priced = await computeOrderPricing({ items, couponCode: coupon?.code, city: address.city, userId: req.user._id });
     if (!priced.ok) {
       return res.status(priced.status || 400).json({
         success: false,
@@ -272,9 +272,24 @@ exports.createOrderLegacyUnpaid = async (req, res) => {
 exports.getUserOrders = async (req, res) => {
   try {
     const { status, limit } = req.query;
-    
-    const query = { userId: req.user._id };
-    
+
+    /*
+     * App orders only.
+     *
+     * ProductOrder holds both — orders placed in the app and counter sales
+     * mirrored from Zenoti invoices (source 'zenoti'). This response ALSO
+     * carries `clinicPurchases`, built from the same Zenoti data, so every
+     * clinic purchase was listed twice on the Orders screen: once as an order
+     * the guest could try to cancel or return, and once as a clinic purchase.
+     * The two lists now hold one kind of thing each. The panel reads its own
+     * controller, so nothing else depends on the mirrored rows being here.
+     *
+     * Written as "not zenoti" rather than "is app" on purpose: `source` was
+     * added after the first orders were placed, and those rows have no value
+     * at all — an equality test would have hidden a guest's oldest orders.
+     */
+    const query = { userId: req.user._id, source: { $ne: 'zenoti' } };
+
     if (status) {
       query.orderStatus = status;
     }

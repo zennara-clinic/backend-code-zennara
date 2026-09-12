@@ -3,6 +3,35 @@ const PreConsultForm = require('../models/PreConsultForm');
 const ServiceCard = require('../models/ServiceCard');
 const { guestCodeOf } = require('../utils/guestCode');
 
+/**
+ * The clinical fields models/PreConsultForm.js encrypts, plus the markers
+ * mongoose-field-encryption writes beside them (`__enc_<field>` and, for the
+ * object fields, `__enc_<field>_d`).
+ *
+ * The listing below is a bulk read and so is `.lean()`. The plugin decrypts in
+ * post('init'), which lean skips, so every lean row carried these fields as raw
+ * ciphertext and the spread shipped them — and their markers — straight out of
+ * the API. The list never shows a clinical answer anyway; it is a name, an id
+ * and a status, and the un-leaned detail handler below is what opens a form.
+ * So they are projected away rather than decrypted: nothing to leak, and the
+ * list stays lean.
+ */
+const PRECONSULT_ENCRYPTED_FIELDS = [
+  'drugAllergies',
+  'otherAllergies',
+  'medicalHistory',
+  'additionalInfo',
+  'lastMenstrualPeriod',
+  'symptomDuration',
+  'previousTreatments',
+  'currentMedications',
+  'patientNotes',
+];
+const PRECONSULT_LIST_PROJECTION = PRECONSULT_ENCRYPTED_FIELDS
+  .flatMap((field) => [field, `__enc_${field}`, `__enc_${field}_d`])
+  .map((field) => `-${field}`)
+  .join(' ');
+
 // @desc    Get all forms (Consent, PreConsult, ServiceCard) - Admin
 // @route   GET /api/admin/forms
 // @access  Private/Admin
@@ -39,6 +68,7 @@ exports.getAllForms = async (req, res) => {
       if (status) query.status = status;
       
       const preConsultForms = await PreConsultForm.find(query)
+        .select(PRECONSULT_LIST_PROJECTION)
         .populate('userId', 'fullName email phone patientId guestCode')
         .populate('bookingId', 'referenceNumber preferredDate')
         .lean();

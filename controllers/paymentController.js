@@ -240,6 +240,9 @@ exports.createProductOrderPayment = async (req, res) => {
       items: orderData.items,
       couponCode: orderData.coupon?.code,
       city: deliveryAddress.city,
+      // Needed for the coupon's perUserLimit — without it a one-per-customer
+      // coupon is spendable on every order the same guest places.
+      userId: req.user._id,
     });
     if (!priced.ok) {
       // Carries `code`/`minOrderValue` for BELOW_MIN_ORDER so the app can show
@@ -309,6 +312,17 @@ exports.createProductOrderPayment = async (req, res) => {
     
     console.log('✅ Payment record created:', payment._id);
     
+    /*
+     * The bill, in full, alongside the Razorpay order.
+     *
+     * The app priced the cart itself — including the coupon — and the server
+     * silently dropped a coupon it found ineligible, so the Razorpay sheet
+     * opened on a number the guest had never been shown. The server's own
+     * figures now travel with the order id: the app compares them against
+     * what it displayed and, if they differ, re-renders the bill (and says why
+     * the coupon did not stick) BEFORE the sheet opens. The charge itself is
+     * unchanged — `amount` remains server-computed and authoritative.
+     */
     res.json({
       success: true,
       data: {
@@ -316,7 +330,20 @@ exports.createProductOrderPayment = async (req, res) => {
         amount: razorpayOrder.amount,
         currency: razorpayOrder.currency,
         keyId: process.env.RAZORPAY_KEY_ID,
-        paymentId: payment._id
+        paymentId: payment._id,
+        pricing: {
+          subtotal: priced.pricing.subtotal,
+          discount: priced.pricing.discount,
+          deliveryFee: priced.pricing.deliveryFee,
+          gst: priced.pricing.gst,
+          total: priced.pricing.total,
+          currency: 'INR',
+        },
+        coupon: {
+          code: priced.couponOutcome?.code ?? null,
+          applied: Boolean(priced.couponOutcome?.applied),
+          reason: priced.couponOutcome?.reason ?? null,
+        },
       }
     });
   } catch (error) {
@@ -399,6 +426,7 @@ exports.verifyProductPayment = async (req, res) => {
         items: orderData.items,
         couponCode: orderData.coupon?.code,
         city: address.city,
+        userId: req.user._id,
       });
       if (!priced.ok) {
         await markFulfilmentFailure(payment, 'order', priced.message);
@@ -428,6 +456,11 @@ exports.verifyProductPayment = async (req, res) => {
 
     // Second pass: atomically reduce stock
     const processedItems = [];
+    // Which of these products actually keep a count. The ledger rows written
+    // after the order is created must cover exactly these — an untracked
+    // (Zenoti-mirrored) product is never decremented, so a movement row for it
+    // would invent stock movement that never happened.
+    const trackedIds = new Set();
     for (const item of itemsToProcess) {
       const { productId, quantity } = item;
       // No count kept for this product (trackStock:false — Zenoti-mirrored):
@@ -475,6 +508,7 @@ exports.verifyProductPayment = async (req, res) => {
         });
       }
 
+      if (!untracked) trackedIds.add(String(productId));
       processedItems.push({
         productId,
         productName: item.productName,
@@ -539,6 +573,54 @@ exports.verifyProductPayment = async (req, res) => {
         }
       }
       throw error;
+    }
+
+    /*
+     * The product ledger's other half.
+     *
+     * The $inc above is the only place a paid app order moves stock, and it
+     * wrote no ProductStockMovement — while orderLifecycleService writes a
+     * PLUS row on every cancel and return. The ledger therefore only ever
+     * showed stock coming back in, and no product could be reconciled against
+     * it. Same source and refId shape as the restore rows
+     * (`<orderId>:restore:<productId>`) so the two sides pair up.
+     *
+     * Written after the order exists, because the refId is built from its id —
+     * which also means the rollback branches above need no compensating row:
+     * they unwind the decrement before any row was written, so the ledger is
+     * left exactly as it was.
+     */
+    const ProductStockMovement = require('../models/ProductStockMovement');
+    ProductStockMovement.insertMany(
+      processedItems
+        .filter((it) => trackedIds.has(String(it.productId)))
+        .map((it) => ({
+          productId: it.productId,
+          source: 'app-order',
+          refId: `${order._id}:${it.productId}`,
+          delta: -Number(it.quantity),
+          note: `Order ${order.orderNumber || order._id}`,
+        })),
+      { ordered: false },
+    ).catch(() => {});
+
+    /*
+     * Burn one coupon use — here, and nowhere else.
+     *
+     * `usageCount` used to be incremented by POST /coupons/apply, which any
+     * phone could call for any coupon id with no order behind it, so the
+     * counter measured taps rather than sales. A use is spent when an order
+     * that actually carried the coupon is created against a captured payment,
+     * which is this line. The webhook fulfilment path (fulfilPaymentFromWebhook)
+     * calls this same controller, and the idempotency guard at the top returns
+     * the existing order before reaching here, so "app verified" and "webhook
+     * verified" together still count exactly one.
+     */
+    if (pricingSnapshot.coupon?.code) {
+      await require('../models/Coupon').updateOne(
+        { code: pricingSnapshot.coupon.code },
+        { $inc: { usageCount: 1 } },
+      ).catch((error) => console.error('⚠️ Coupon usage count not recorded:', error.message));
     }
 
     // Link payment to order
@@ -1246,9 +1328,44 @@ exports.createConsultationPayment = async (req, res) => {
       });
     }
 
+    /*
+     * The "bookable online" gate, applied before any money moves.
+     *
+     * bookingController.createBooking has refused a treatment with no Zenoti
+     * service behind it since the first four app bookings went astray, but the
+     * PAID path never ran the same test: a guest could pay through Razorpay for
+     * a row Zenoti cannot take, and the desk's Confirm then failed with
+     * ZENOTI_CONFIRM_FAILED — charged, with no appointment in anybody's diary
+     * and a refund to chase. Same condition, same code, same wording as the
+     * free path, and `isConsultationEntry` is imported from there rather than
+     * copied so the two cannot drift.
+     */
+    const { isConsultationEntry } = require('./bookingController');
+    if (!isConsultationEntry(consultation)
+      && (!consultation.zenotiServiceId || consultation.zenotiCanBook === false)) {
+      return res.status(409).json({
+        success: false,
+        code: 'SERVICE_NOT_BOOKABLE_ONLINE',
+        message: `${consultation.name} can't be booked in the app yet — please call the clinic and we'll arrange it for you.`,
+      });
+    }
+
     // New guests book a consultation first — enforced before any money moves.
     const gate = await require('../utils/guestEligibility').serviceBookingBlock(req.user._id, consultation);
     if (gate) return res.status(gate.status).json({ success: false, code: gate.code, message: gate.message });
+
+    // The mirror image of createBooking's payment gate. That path refuses a row
+    // whose `chargeOnlineBooking` is on and priced, sending it here; this path
+    // must refuse a row whose toggle is OFF, because the clinic has said that
+    // treatment is settled at the desk. Between the two, exactly one route
+    // accepts any given catalogue row.
+    if (consultation.chargeOnlineBooking === false) {
+      return res.status(400).json({
+        success: false,
+        code: 'BOOKING_NOT_CHARGED_ONLINE',
+        message: 'This treatment is settled at the clinic, not in the app. Please book it without payment.',
+      });
+    }
 
     // The clinic's backend-managed working days/hours are authoritative. Do
     // this before creating a Razorpay order so a stale client cannot pay for a

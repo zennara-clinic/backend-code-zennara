@@ -1443,6 +1443,24 @@ async function raiseSessionBooking(req, res, assignment, session) {
     session.bookingId = booking._id;
     session.bookingCreatedAt = new Date();
     session.status = 'Booked';
+    /*
+     * Stamp the session with WHEN it is.
+     *
+     * Only bookingId/status were written here, so a session the guest had
+     * booked — and the desk had confirmed — still read "Awaiting confirmation"
+     * with no date in the app: the row itself had never learned its date. The
+     * guest's chosen day and the earliest slot they offered go on now, and
+     * services/bookingLifecycleService.js moves them to the confirmed slot when
+     * the desk fixes one.
+     *
+     * Clinic-day start, not the raw string: these are Asia/Kolkata days, and a
+     * server-local Date would drift a booking onto the day before.
+     */
+    session.scheduledDate = booking.preferredDate;
+    session.scheduledTime = [...slots]
+      .map((time) => ({ time, minutes: parseClockMinutes(time) }))
+      .filter((slot) => slot.minutes !== null)
+      .sort((left, right) => left.minutes - right.minutes)[0]?.time || slots[0] || '';
     await assignment.save();
 
     return res.status(201).json({

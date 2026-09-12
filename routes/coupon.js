@@ -20,7 +20,9 @@ const VIEW = requirePermission('coupons.view', 'coupons.manage');
 router.get('/available', getAvailableCoupons);
 router.post('/validate', validateCoupon);
 
-// Protected user routes
+// Retired: a coupon use is spent when a paid order carrying it is created, not
+// when a phone says so. The handler answers 410 for older app builds; the
+// mount stays `protect`ed so the 410 is all an anonymous caller can reach.
 router.post('/apply', protect, applyCoupon);
 
 // Admin routes - require admin authentication

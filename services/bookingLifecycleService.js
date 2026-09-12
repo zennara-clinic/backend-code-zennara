@@ -36,7 +36,7 @@
 
 const Booking = require('../models/Booking');
 const logger = require('../utils/logger');
-const { bookingScheduledAt, clinicDateKey } = require('../utils/bookingTime');
+const { bookingScheduledAt, clinicDateKey, clinicDayStart } = require('../utils/bookingTime');
 
 /** How long before the slot check-in opens. */
 const EARLY_MINUTES = Math.max(0, Number(process.env.CHECKIN_EARLY_MINUTES) || 30);
@@ -367,17 +367,51 @@ async function apply(bookingOrId, action, {
   return booking;
 }
 
+/**
+ * Actions after which the session row must be re-stamped with the slot the
+ * desk actually settled on. Confirming is the obvious one; a reschedule moves
+ * the appointment, and the session has to move with it.
+ */
+const SESSION_SCHEDULE_ACTIONS = new Set(['confirm', 'reschedule']);
+
 /** Keep the package ledger aligned with the appointment lifecycle. */
 async function applyPackageSessionSideEffect(booking, action, { now, admin }) {
   if (!booking.packageAssignmentId || !booking.packageSessionId) return;
-  if (!['complete', 'undo_complete', 'cancel', 'no_show', 'undo_cancel', 'undo_no_show'].includes(action)) return;
+  const name = String(action || '');
+  const reschedules = SESSION_SCHEDULE_ACTIONS.has(name) || name.startsWith('reschedule');
+  if (!reschedules
+    && !['complete', 'undo_complete', 'cancel', 'no_show', 'undo_cancel', 'undo_no_show'].includes(action)) return;
   const PackageAssignment = require('../models/PackageAssignment');
   const assignment = await PackageAssignment.findById(booking.packageAssignmentId);
   const session = assignment?.sessions?.id(booking.packageSessionId);
   if (!assignment || !session) return;
   const rules = require('../utils/packageRules');
 
-  if (action === 'complete') {
+  /*
+   * The session row learns when it is.
+   *
+   * raiseSessionBooking stamps the guest's requested day and slot; the desk's
+   * confirmation (or a reschedule) is what fixes the real one. Without this the
+   * app kept showing a confirmed package session as "Awaiting confirmation"
+   * with no date, because the row still carried the request rather than the
+   * appointment. Read from the booking's confirmed fields so the two can never
+   * disagree — and never from a raw ISO string: these are Asia/Kolkata clinic
+   * days (utils/bookingTime).
+   */
+  if (booking.confirmedDate) {
+    session.scheduledDate = clinicDayStart(booking.confirmedDate) || booking.confirmedDate;
+  }
+  if (booking.confirmedTime) session.scheduledTime = booking.confirmedTime;
+
+  if (reschedules) {
+    // Confirming or moving an appointment does not touch the ledger — the
+    // session stays Booked against its appointment. The stamp above is the
+    // whole job.
+    if (session.status === 'Scheduled' && booking.status !== 'Cancelled') {
+      session.status = 'Booked';
+      session.bookingId = booking._id;
+    }
+  } else if (action === 'complete') {
     session.status = 'Completed';
     session.completedAt = now;
     const already = (assignment.redemptions || []).some((entry) =>
@@ -579,3 +613,14 @@ function logStatus(booking, { action, from, to, admin = null, reason = '', via =
 }
 
 module.exports.logStatus = logStatus;
+
+/*
+ * Exported so the bespoke desk paths can keep a package session in step too.
+ *
+ * confirmBooking and rescheduleBookingAdmin (controllers/bookingController.js)
+ * do NOT go through apply() — they set the slot themselves and only log the
+ * status — so neither reaches the side-effect above. They are the two moments a
+ * package session actually learns its real date, so they should call this with
+ * 'confirm' / 'reschedule' after saving the booking.
+ */
+module.exports.applyPackageSessionSideEffect = applyPackageSessionSideEffect;
