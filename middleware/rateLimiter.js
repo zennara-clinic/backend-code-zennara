@@ -170,20 +170,85 @@ exports.paymentVerificationLimiter = rateLimit({
 });
 
 /**
- * The walk-in tablet's OTP endpoint.
+ * One guest's number, not one front desk.
  *
- * Its per-phone cooldown stops someone re-sending to one number, but nothing
- * stopped a caller cycling through numbers — and every one of those is a
- * WhatsApp message the clinic pays for. A front desk checks in a few dozen
- * guests an hour at most, so a generous IP ceiling costs the desk nothing and
- * caps the damage.
+ * The walk-in OTP limiter was keyed on IP and counted successes, so an entire
+ * clinic behind one connection shared a single budget of 40 per ten minutes —
+ * two calls per guest (send, then verify) meant the desk locked ITSELF out
+ * after roughly fifteen check-ins, while an attacker spread across addresses
+ * never felt it. The number being verified is what an attacker has to work
+ * through, so that is the key; `ipKeyGenerator` normalises IPv6 into a /64
+ * block for the requests that carry no number at all.
+ */
+const perPhoneKey = (req) => {
+  const phone = String(req.body?.phone || '').replace(/\D/g, '').slice(-10);
+  return phone ? `phone:${phone}` : `ip:${ipKeyGenerator(req.ip)}`;
+};
+
+/**
+ * The walk-in tablet's OTP endpoints. Counts FAILURES only.
+ *
+ * A successful check-in is not an attack, and the desk does two of these per
+ * guest. What this stops is one number being hammered — the real ceilings on
+ * cost and on guessing live on the SignupVerification record itself (a rolling
+ * per-number send allowance and a rolling attempt window), because those
+ * survive a restart and an attacker who moves between addresses.
  */
 exports.walkInOtpLimiter = rateLimit({
   windowMs: 10 * 60 * 1000,
-  max: 40,
+  max: 20,
+  keyGenerator: perPhoneKey,
+  skipSuccessfulRequests: true,
+  message: {
+    success: false,
+    message: 'Too many attempts for this number. Please wait a few minutes.',
+    code: 'RATE_LIMIT_EXCEEDED',
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+/**
+ * A backstop on the paid WhatsApp bill, keyed on where the requests come from.
+ *
+ * Per-number budgets cannot see a caller who simply walks through thousands of
+ * numbers, one message each. A front desk sends a few dozen codes an hour, so
+ * this ceiling is invisible to the clinic and still caps what one source can
+ * cost. NOT MOUNTED YET — routes/walkin.js belongs to another change; it
+ * belongs in front of `walkInOtpLimiter` on POST /api/walkin/send-otp.
+ */
+exports.walkInOtpSourceLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 200,
+  keyGenerator: (req) => ipKeyGenerator(req.ip),
   message: {
     success: false,
     message: 'Too many check-ins from this device. Please wait a few minutes.',
+    code: 'RATE_LIMIT_EXCEEDED',
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+/**
+ * Submitting the pre-consult form.
+ *
+ * The form endpoint had no ceiling of its own: one session could post signed
+ * forms in a loop, each one a stored clinical document and a Zenoti note. A
+ * guest submits once and may legitimately retry a handful of times on a bad
+ * connection (the submissionId idempotency key makes those retries free), so a
+ * modest per-session allowance is all the desk ever needs. Keyed on the
+ * session's own guest — the tablet is shared, and the whole clinic must not
+ * queue behind one address. NOT MOUNTED YET — routes/walkin.js belongs to
+ * another change; it belongs on POST /api/walkin/preconsult, after `protect`.
+ */
+exports.walkInFormLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 12,
+  keyGenerator: (req) => (req.user?._id ? `user:${req.user._id}` : `ip:${ipKeyGenerator(req.ip)}`),
+  message: {
+    success: false,
+    message: 'Too many form submissions. Please wait a few minutes and try again.',
     code: 'RATE_LIMIT_EXCEEDED',
   },
   standardHeaders: true,

@@ -133,7 +133,52 @@ test('a blank water intake is null, never NaN', () => {
   // the first would invent an answer nobody gave.
   assert.equal(toPreConsultDocument({ ...filled, waterIntake: '' }, { user: guest }).diet.waterIntakeLiters, null);
   assert.equal(toPreConsultDocument({ ...filled, waterIntake: 'two' }, { user: guest }).diet.waterIntakeLiters, null);
-  assert.equal(toPreConsultDocument({ ...filled, children: '' }, { user: guest }).numberOfChildren, 0);
+  // Children followed the same rule as the line above it in spirit but not in
+  // code: a blank was written as 0, which reads on the panel as "no children"
+  // rather than "not asked". Unanswered is null here too.
+  assert.equal(toPreConsultDocument({ ...filled, children: '' }, { user: guest }).numberOfChildren, null);
+});
+
+test('an unanswered optional question is never stored as an answer', () => {
+  /*
+   * maritalStatus, diet and children used to default to Single, Veg and 0, so
+   * a guest who skipped them had all three recorded against them. On the
+   * dermatologist's screen that is indistinguishable from having said it.
+   */
+  const doc = toPreConsultDocument(
+    { ...filled, maritalStatus: '', diet: '', children: '' },
+    { user: guest },
+  );
+  assert.equal(doc.maritalStatus, null);
+  assert.equal(doc.diet.type, null);
+  assert.equal(doc.numberOfChildren, null);
+});
+
+test('a guest who typed their own referral source can fill the form again', () => {
+  /*
+   * "Other" plus free text is stored as the text itself. Handing that straight
+   * back put a value in `source` that is not one of the options, so the schema
+   * rejected it, the chips showed nothing selected, and Continue did nothing
+   * at all — a returning guest could not get past the first step.
+   */
+  const back = toFormValues({ referralSource: 'TV advert' });
+  assert.equal(back.source, 'Other');
+  assert.equal(back.sourceOther, 'TV advert');
+
+  const known = toFormValues({ referralSource: 'Instagram' });
+  assert.equal(known.source, 'Instagram');
+  assert.equal(known.sourceOther, '');
+});
+
+test('a drug allergy whose detail begins with "none" is still an allergy', () => {
+  // The reverse trip used to test /^none/i against the free text, so "none
+  // known, but reacts to sulfa" came back next visit as no allergies at all.
+  const back = toFormValues({ drugAllergies: 'none known, but reacts to sulfa' });
+  assert.equal(back.drugAllergies, true);
+  assert.equal(back.drugAllergiesDetail, 'none known, but reacts to sulfa');
+
+  const none = toFormValues({ drugAllergies: 'None reported' });
+  assert.equal(none.drugAllergies, false);
 });
 
 test('the old thyroidDisorder name stays in step with thyroid', () => {

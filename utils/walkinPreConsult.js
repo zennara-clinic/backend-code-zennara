@@ -31,6 +31,21 @@ const MEDICAL = {
   'Thyroid Disorder': 'thyroid',
 };
 
+/*
+ * The referral answers the form offers. Must stay in step with SOURCE_OPTIONS
+ * in "Walk-In Form/shared/preconsult-schema.js" — anything not in this list is
+ * a guest's own wording typed under "Other", and is handed back as such.
+ */
+const SOURCE_OPTIONS = [
+  'Instagram',
+  'Facebook',
+  'Google',
+  'Friend / Family',
+  'Doctor referral',
+  'Walk-in',
+  'Other',
+];
+
 const yes = (v) => v === 'yes' || v === true;
 
 /** A number, or null — never NaN, which Mongoose would reject on a Number path. */
@@ -80,8 +95,8 @@ function toPreConsultDocument(values, { user, ipAddress, bookingId } = {}) {
     gender: values.gender || user?.gender || 'Other',
     phoneNumber: user?.phone || null,
     email: values.email || null,
-    maritalStatus: values.maritalStatus || 'Single',
-    numberOfChildren: num(values.children) ?? 0,
+    maritalStatus: values.maritalStatus || null,
+    numberOfChildren: num(values.children),
     planningForPregnancy: yes(values.planningPregnancy),
     lastMenstrualPeriod: values.lmp || null,
 
@@ -121,7 +136,9 @@ function toPreConsultDocument(values, { user, ipAddress, bookingId } = {}) {
       otherProducts: values.otherProducts || null,
     },
     diet: {
-      type: values.diet === 'non-veg' ? 'Non-Veg' : values.diet === 'veg' ? 'Veg' : 'Veg',
+      // Not answered stays null; it used to be written as 'Veg', which put a
+      // dietary claim on the record that the guest never made.
+      type: values.diet === 'non-veg' ? 'Non-Veg' : values.diet === 'veg' ? 'Veg' : null,
       waterIntakeLiters: num(values.waterIntake),
     },
     additionalInfo: {
@@ -167,7 +184,18 @@ function toFormValues(doc) {
     if (doc.reasonForVisit?.[key]) reasons.push(label);
   }
 
-  const hadDrugAllergy = Boolean(doc.drugAllergies) && !/^none/i.test(String(doc.drugAllergies));
+  /*
+   * "No known drug allergies" is one exact sentence, not a prefix.
+   *
+   * This used to be a /^none/i test on the free text, so a guest who answered
+   * YES and wrote "none known, but reacts to sulfa" came back next visit as
+   * having no drug allergies at all, with their text dropped. Matching the
+   * exact phrase drugAllergyText() writes keeps "nothing" and "something that
+   * begins with the word none" apart, and anything unrecognised is treated as
+   * an allergy — the safe direction to be wrong in.
+   */
+  const allergyText = String(doc.drugAllergies || '').trim();
+  const hadDrugAllergy = Boolean(allergyText) && allergyText.toLowerCase() !== 'none reported';
 
   return {
     dateOfVisit: iso(doc.dateOfVisit),
@@ -176,11 +204,27 @@ function toFormValues(doc) {
     gender: doc.gender || '',
     email: doc.email || '',
     maritalStatus: doc.maritalStatus || '',
-    children: doc.numberOfChildren ? String(doc.numberOfChildren) : '',
+    // A truthful zero is an answer. Reading it as "unanswered" made the form
+    // ask a guest with no children the same question at every single visit.
+    children: doc.numberOfChildren === null || doc.numberOfChildren === undefined
+      ? '' : String(doc.numberOfChildren),
     planningPregnancy: doc.planningForPregnancy ? 'yes' : '',
     lmp: doc.lastMenstrualPeriod || '',
-    source: doc.referralSource || '',
-    sourceOther: '',
+    /*
+     * "Other" survives the round trip.
+     *
+     * A guest who picked Other and typed "TV ad" had that text stored as the
+     * referral source itself, so the next visit handed the form a value that
+     * is not one of the options. The schema rejected it, the chips rendered
+     * nothing selected, and Continue silently did nothing — a returning guest
+     * could not get past the first step and had no way to see why. Anything
+     * we do not recognise is what it always was: Other, plus their wording.
+     */
+    ...(() => {
+      const stored = doc.referralSource || '';
+      if (!stored || SOURCE_OPTIONS.includes(stored)) return { source: stored, sourceOther: '' };
+      return { source: 'Other', sourceOther: stored === 'Other' ? '' : stored };
+    })(),
     referredBy: doc.referredBy || '',
     reasons,
     concerns,
@@ -196,7 +240,8 @@ function toFormValues(doc) {
     sunscreen: doc.dailyRoutine?.sunscreen || '',
     otherProducts: doc.dailyRoutine?.otherProducts || '',
     diet: doc.diet?.type === 'Non-Veg' ? 'non-veg' : doc.diet?.type === 'Veg' ? 'veg' : '',
-    waterIntake: doc.diet?.waterIntakeLiters ? String(doc.diet.waterIntakeLiters) : '',
+    waterIntake: doc.diet?.waterIntakeLiters === null || doc.diet?.waterIntakeLiters === undefined
+      ? '' : String(doc.diet.waterIntakeLiters),
     newProducts: doc.additionalInfo?.newSkincareProducts?.used ? 'yes' : '',
     newProductsDetail: doc.additionalInfo?.newSkincareProducts?.details || '',
     salonVisit: doc.additionalInfo?.recentSalonVisit?.visited ? 'yes' : '',

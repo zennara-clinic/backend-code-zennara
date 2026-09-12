@@ -16,6 +16,22 @@ const preConsultFormSchema = new mongoose.Schema({
     ref: 'Booking'
   },
 
+  /**
+   * The client's own id for one filling of the form (a UUID the tablet makes
+   * once per form instance and resends on every retry).
+   *
+   * A dropped response used to mean the guest tapped Submit again and the
+   * clinic got two identical signed forms — and two identical Zenoti notes.
+   * With this the second attempt finds the first and returns it. Unique per
+   * guest, partial so the millions of rows without one are untouched.
+   */
+  submissionId: {
+    type: String,
+    default: null,
+    trim: true,
+    maxlength: 64
+  },
+
   // Personal Information
   clientId: {
     type: String,
@@ -52,14 +68,23 @@ const preConsultFormSchema = new mongoose.Schema({
     lowercase: true,
     trim: true
   },
+  /*
+   * Unanswered is its own answer, and must not read as a claim.
+   *
+   * These three defaulted to 'Single', 0 and 'Veg', so a guest who skipped an
+   * optional question had one recorded against them that they never gave —
+   * indistinguishable, on the dermatologist's screen, from having said it. The
+   * same file already gets this right for drug allergies, storing "None
+   * reported" precisely so blank cannot be mistaken for not-asked.
+   */
   maritalStatus: {
     type: String,
-    enum: ['Single', 'Married', 'Other'],
-    default: 'Single'
+    enum: ['Single', 'Married', 'Other', null],
+    default: null
   },
   numberOfChildren: {
     type: Number,
-    default: 0
+    default: null
   },
   planningForPregnancy: {
     type: Boolean,
@@ -193,9 +218,10 @@ const preConsultFormSchema = new mongoose.Schema({
   // Diet
   diet: {
     type: {
+      // See maritalStatus above: an unanswered diet is null, never 'Veg'.
       type: String,
-      enum: ['Veg', 'Non-Veg', 'Vegan', 'Other'],
-      default: 'Veg'
+      enum: ['Veg', 'Non-Veg', 'Vegan', 'Other', null],
+      default: null
     },
     waterIntakeLiters: {
       type: Number,
@@ -222,7 +248,16 @@ const preConsultFormSchema = new mongoose.Schema({
   // Signatures
   clientSignature: {
     type: String, // base64 or URL
-    default: null
+    default: null,
+    /*
+     * A signature is a few tens of kilobytes of PNG from a 700px canvas. The
+     * path had no ceiling at all, so anything a client chose to post — an
+     * uploaded photograph, a deliberate multi-megabyte string — went into the
+     * document whole. 400,000 characters is the cap the tablet states for
+     * itself, and the walk-in controller rejects anything longer with a field
+     * error rather than letting it reach the database.
+     */
+    maxlength: 400000
   },
   doctorName: {
     type: String,
@@ -323,5 +358,11 @@ if (encryptionSecret?.trim()) {
 preConsultFormSchema.index({ userId: 1, createdAt: -1 });
 preConsultFormSchema.index({ clientId: 1 });
 preConsultFormSchema.index({ bookingId: 1 });
+// One form per client-generated submission id, per guest — the idempotency
+// key above. Partial so only rows that carry one are constrained.
+preConsultFormSchema.index(
+  { userId: 1, submissionId: 1 },
+  { unique: true, partialFilterExpression: { submissionId: { $type: 'string' } } }
+);
 
 module.exports = mongoose.model('PreConsultForm', preConsultFormSchema);

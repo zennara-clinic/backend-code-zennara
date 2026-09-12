@@ -28,7 +28,13 @@ const TokenSchema = new mongoose.Schema({
   },
   type: {
     type: String,
-    enum: ['access', 'refresh', 'admin_access'],
+    /*
+     * `walkin_access` is the front-desk tablet's own session. It is a separate
+     * kind on purpose: auth.js refuses it outside the /api/walkin mount and
+     * times it out after a few idle minutes, so a bearer left on a shared
+     * tablet cannot be replayed against the rest of the guest API.
+     */
+    enum: ['access', 'refresh', 'admin_access', 'walkin_access'],
     default: 'access'
   },
   deviceInfo: {

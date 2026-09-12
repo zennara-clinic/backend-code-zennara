@@ -2,11 +2,26 @@ const express = require('express');
 const router = express.Router();
 const walkin = require('../controllers/walkinController');
 const { protect, optionalAuth } = require('../middleware/auth');
-const { walkInOtpLimiter } = require('../middleware/rateLimiter');
+const {
+  walkInOtpLimiter,
+  walkInOtpSourceLimiter,
+  walkInFormLimiter,
+} = require('../middleware/rateLimiter');
 
 // Public — the desk tablet before anyone is signed in.
 router.get('/branches', walkin.getBranches);
-router.post('/send-otp', walkInOtpLimiter, walkin.sendOtp);
+/*
+ * Two ceilings on the OTP, because one number cannot see both abuses.
+ *
+ * walkInOtpLimiter counts FAILED attempts per phone number: it is what stops
+ * someone grinding codes against one guest, and keying it on the number rather
+ * than the address is what stopped a busy desk — the whole clinic shares one
+ * connection — from locking itself out after a dozen honest check-ins.
+ * walkInOtpSourceLimiter is the other half: a caller walking through thousands
+ * of DIFFERENT numbers stays inside every per-number budget while sending a
+ * paid WhatsApp message to each, in the clinic's name.
+ */
+router.post('/send-otp', walkInOtpSourceLimiter, walkInOtpLimiter, walkin.sendOtp);
 router.post('/verify-otp', walkInOtpLimiter, walkin.verifyOtp);
 
 /*
@@ -20,7 +35,9 @@ router.post('/profile', optionalAuth, walkin.saveProfile);
 
 // Signed-in walk-in session.
 router.get('/me', protect, walkin.me);
-router.post('/preconsult', protect, walkin.submitPreConsult);
+// A signed form is one submission, not a loop: the signature is a data URI the
+// guest's own session could otherwise post as fast as the network allows.
+router.post('/preconsult', protect, walkInFormLimiter, walkin.submitPreConsult);
 router.post('/finish', protect, walkin.finish);
 
 module.exports = router;

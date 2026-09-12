@@ -508,7 +508,15 @@ exports.getFormStatusForBooking = async (req, res) => {
     const booking = await Booking.findById(req.params.bookingId).select('userId eventAt').lean();
     if (!booking) return res.status(404).json({ success: false, message: 'Appointment not found' });
 
-    let form = await PreConsultForm.findOne({ bookingId: req.params.bookingId })
+    /*
+     * Scoped to the appointment's OWN guest, never to the bookingId alone.
+     * `bookingId` is written from a request body on the create path, so a form
+     * carrying somebody else's appointment id is something a client can cause;
+     * reading by that id unscoped would then answer this appointment with a
+     * stranger's form. The create path at the top of this file has always
+     * matched on { bookingId, userId } — this is the same rule on the way out.
+     */
+    let form = await PreConsultForm.findOne({ bookingId: req.params.bookingId, userId: booking.userId })
       .select('status createdAt updatedAt bookingId')
       .sort({ updatedAt: -1 })
       .lean();

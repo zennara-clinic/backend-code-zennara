@@ -7,6 +7,10 @@ const findSession = (token) => Token.findOne({ $or: [{ tokenHash: hashToken(toke
 /** Sessions idle longer than this are ended even inside their 24h life. */
 const IDLE_MS = Math.max(1, Number(process.env.ADMIN_SESSION_IDLE_HOURS) || 8) * 60 * 60 * 1000;
 
+/** Where a walk-in session is allowed to be presented, and how long it may sit idle. */
+const WALKIN_MOUNT = '/api/walkin';
+const WALKIN_IDLE_MS = Math.max(1, Number(process.env.WALKIN_IDLE_MINUTES) || 15) * 60 * 1000;
+
 /*
  * Sliding expiry for guest sessions.
  *
@@ -217,6 +221,39 @@ exports.protect = async (req, res, next) => {
         });
       }
 
+      /*
+       * A walk-in session belongs to the front-desk tablet, and nowhere else.
+       *
+       * The kiosk used to mint the ordinary seven-day app session. Anyone who
+       * saw one WhatsApp code over a guest's shoulder held that guest's whole
+       * account for a week, from anywhere: payments, prescriptions, saved
+       * addresses, bank details, the full data export, and account deletion.
+       * A tablet that captures a name and an intake form needs none of that.
+       *
+       * So the session issued by /api/walkin carries `scope: 'walkin'` and is
+       * refused everywhere except the walk-in mount itself. It is also short,
+       * and dies of idleness: the guest is standing at a desk, and the next
+       * person to pick up the tablet must never inherit the last one.
+       */
+      if (decoded.scope === 'walkin') {
+        if (req.baseUrl !== WALKIN_MOUNT) {
+          return res.status(403).json({
+            success: false,
+            code: 'WALKIN_SESSION_SCOPE',
+            message: 'This check-in session can only be used for the walk-in form.',
+          });
+        }
+        const lastUsed = tokenDoc.lastUsedAt ? new Date(tokenDoc.lastUsedAt).getTime() : null;
+        if (lastUsed && Date.now() - lastUsed > WALKIN_IDLE_MS) {
+          await tokenDoc.revoke();
+          return res.status(401).json({
+            success: false,
+            code: 'SESSION_EXPIRED',
+            message: 'This check-in timed out. Please start again.',
+          });
+        }
+      }
+
       // Check if user account still exists and is active (fetch full user data)
       const user = await User.findById(decoded.userId).select('-password -otp -otpExpires');
       
@@ -246,8 +283,10 @@ exports.protect = async (req, res, next) => {
 
       // Sliding expiry: retire the row this session rolled off, and hand back a
       // fresh token if this one is past half its life.
+      // Never on a walk-in session: its whole point is that it is short-lived
+      // and dies with the guest's visit, so renewing it would undo the fix.
       if (decoded.prev) retireSupersededSession(decoded.prev, tokenDoc._id);
-      await slideSession(req, res, tokenDoc, decoded);
+      if (decoded.scope !== 'walkin') await slideSession(req, res, tokenDoc, decoded);
 
       // Convert Mongoose document to plain object and add to request
       req.user = {
@@ -862,6 +901,21 @@ exports.optionalAuth = async (req, res, next) => {
       
       if (!tokenDoc || !tokenDoc.isValid()) {
         // Invalid token - continue as guest
+        req.user = null;
+        req.isGuest = true;
+        return next();
+      }
+
+      /*
+       * A walk-in session outside the walk-in mount counts for nothing here.
+       *
+       * Today this middleware guards only /api/walkin/profile, so the check
+       * changes nothing — it is here so that the next route to adopt
+       * optionalAuth cannot quietly hand a front-desk tablet session the
+       * standing of a signed-in guest. `protect` refuses the same token
+       * outright; this one simply treats it as nobody.
+       */
+      if (decoded.scope === 'walkin' && req.baseUrl !== WALKIN_MOUNT) {
         req.user = null;
         req.isGuest = true;
         return next();
