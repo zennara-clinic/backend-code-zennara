@@ -93,7 +93,7 @@ async function findGuestByPhone(phone) {
 }
 
 /** The subset of the patient record the desk tablet is allowed to see. */
-const publicProfile = (user, { latest = null } = {}) => ({
+const publicProfile = (user, { latest = null, lastCheckInDay = null } = {}) => ({
   id: user._id,
   patientId: guestCodeOf(user),
   guestCode: user.guestCode || null,
@@ -106,6 +106,9 @@ const publicProfile = (user, { latest = null } = {}) => ({
   source: user.source || 'app',
   zenotiLinked: Boolean(user.zenotiGuestId),
   ...(latest ? { latest } : {}),
+  // The clinic day this guest last submitted an intake, so the tablet can say
+  // "you have already checked in today" instead of taking a second one.
+  ...(lastCheckInDay ? { lastCheckInDay } : {}),
 });
 
 /**
@@ -155,10 +158,24 @@ async function issueSession(user, req) {
  * strings where objects are expected, so the pre-fill would come up silently
  * missing every clinical answer instead of failing loudly.
  */
-async function latestFormValues(userId) {
+/**
+ * Last visit's answers, and the clinic day the form was actually submitted on.
+ *
+ * The day is what lets the tablet tell "this guest has filled the form before"
+ * apart from "this guest has already filled it today" — the first should open
+ * a pre-filled form, the second should not quietly collect a second intake for
+ * one visit. Taken from `createdAt`, never from `dateOfVisit`: the guest types
+ * that one, and a mistyped date must not decide whether they are asked again.
+ */
+async function latestSubmission(userId) {
   const doc = await PreConsultForm.findOne({ userId, status: { $ne: 'Draft' } })
     .sort({ createdAt: -1 });
-  return doc ? toFormValues(doc.toObject()) : null;
+  if (!doc) return { latest: null, lastCheckInDay: null };
+  const { clinicDateKey } = require('../utils/bookingTime');
+  return {
+    latest: toFormValues(doc.toObject()),
+    lastCheckInDay: doc.createdAt ? clinicDateKey(doc.createdAt) : null,
+  };
 }
 
 // @desc    Branches a walk-in can check in at
@@ -538,7 +555,7 @@ exports.me = async (req, res) => {
   try {
     return res.json({
       success: true,
-      user: publicProfile(req.user, { latest: await latestFormValues(req.user._id) }),
+      user: publicProfile(req.user, await latestSubmission(req.user._id)),
     });
   } catch (error) {
     logger.error('Walk-in me failed', { error: error.message });
