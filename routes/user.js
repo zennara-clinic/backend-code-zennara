@@ -6,7 +6,6 @@ const {
   updateUser,
   deleteUser,
   updateUserStatistics,
-  exportUsers,
   createUser,
   assignMembership,
   cancelMembership,
@@ -29,7 +28,6 @@ router.use(protectAdmin);
 // User management routes
 router.post('/', MANAGE, createUser); // Create new user (admin)
 router.get('/', VIEW, attachMyGuestIds(), getAllUsers);
-router.get('/export', VIEW, notForDoctors, exportUsers);
 router.get('/deleted', DELETE, getDeletedAccounts);
 router.post('/deleted/:archiveId/restore', DELETE, restoreDeletedAccount);
 router.get('/:id', VIEW, OWN, getUserById);

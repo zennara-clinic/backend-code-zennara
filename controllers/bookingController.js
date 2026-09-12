@@ -52,7 +52,7 @@ const NotificationHelper = require('../utils/notificationHelper');
 const whatsappService = require('../services/whatsappService');
 const twilioVoiceService = require('../services/twilioVoiceService');
 const {
-  bookingScheduledAt, clinicDateKey, clinicDayEnd, clinicDayStart, clock24, formatClinicDate, formatClinicDateTime,
+  bookingScheduledAt, clinicDateKey, clinicDayEnd, clinicDayStart, clock24, formatClinicDate,
   parseClockMinutes,
 } = require('../utils/bookingTime');
 const { UPCOMING: BOOKING_UPCOMING, PAST: BOOKING_PAST } = require('../utils/bookingStatuses');
@@ -789,68 +789,6 @@ exports.getAllBookingsAdmin = async (req, res) => {
       success: false,
       message: 'Failed to fetch bookings'
     });
-  }
-};
-
-// @desc    Export bookings matching the same filters as the list (Admin)
-// @route   GET /api/bookings/admin/export
-// @access  Private (Admin)
-exports.exportBookingsAdmin = async (req, res) => {
-  try {
-    const { query, sort } = await buildBookingQuery(ownDiaryParams(req));
-    await scopeToOwnDiary(req, query);
-    const limit = Math.min(20000, Math.max(1, parseInt(req.query.limit || '20000', 10)));
-    const bookings = await Booking.find(query)
-      .populate('consultationId', 'name category type price')
-      .populate('userId', 'fullName email phone patientId guestCode memberType')
-      .populate('branchId', 'name')
-      .sort(sort)
-      .limit(limit)
-      .lean();
-
-    const fmtDate = (d) => (d ? clinicDateKey(d) || '' : '');
-    const fmtWhen = (d) => (d ? formatClinicDateTime(d) : '');
-    const rows = bookings.map((b) => {
-      const slotDate = b.confirmedDate || b.preferredDate;
-      const slotTime = b.confirmedTime || b.slotTime || (b.preferredTimeSlots && b.preferredTimeSlots[0]) || '';
-      return {
-        'Reference': b.referenceNumber || '',
-        'Guest': (b.userId && b.userId.fullName) || b.fullName || '',
-        'Guest code': guestCodeOf(b.userId) || '',
-        'Phone': b.mobileNumber || (b.userId && b.userId.phone) || '',
-        'Email': /@guest\.zennara\.in$/i.test(b.email || '') ? '' : (b.email || ''),
-        'Membership': (b.userId && b.userId.memberType) || '',
-        'Service': (b.consultationId && b.consultationId.name) || b.externalServiceName || '',
-        'Category': (b.consultationId && b.consultationId.category) || b.externalServiceCategory || '',
-        'Kind': /consultation/i.test(((b.consultationId && (b.consultationId.category + ' ' + b.consultationId.name)) || b.externalServiceName || '')) ? 'Consultation' : 'Treatment',
-        'Centre': (b.branchId && b.branchId.name) || b.preferredLocation || '',
-        'Date': fmtDate(slotDate),
-        'Time': slotTime,
-        'Status': b.status,
-        'Dermatologist': b.specialistName || '',
-        'Therapist': b.therapistName || '',
-        'Room': b.room || '',
-        'Source': b.source || 'app',
-        'Package': b.isPackageIncluded ? 'Yes' : 'No',
-        'Amount': b.amount || 0,
-        'Payment Status': b.paymentStatus || '',
-        'Payment Method': b.paymentMethod || '',
-        'Paid At': fmtWhen(b.paidAt),
-        'Checked In': fmtWhen(b.checkInTime),
-        'Checked Out': fmtWhen(b.checkOutTime),
-        'Session Minutes': b.sessionDuration || '',
-        'Rating': b.rating || '',
-        'Cancellation Reason': b.cancellationReason || '',
-        'Booked On': fmtWhen(b.createdAt),
-        'Notes': b.notes || '',
-      };
-    });
-    const fields = String(req.query.fields || '').split(',').map((f) => f.trim()).filter(Boolean);
-    const out = fields.length ? rows.map((r) => Object.fromEntries(fields.filter((f) => f in r).map((f) => [f, r[f]]))) : rows;
-    res.status(200).json({ success: true, count: out.length, data: out });
-  } catch (error) {
-    console.error('❌ Export bookings failed:', error);
-    res.status(500).json({ success: false, message: 'Failed to export bookings' });
   }
 };
 

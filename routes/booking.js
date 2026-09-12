@@ -44,7 +44,6 @@ const VIEW = requirePermission('bookings.view', 'today.view', 'patients.view');
 const scope = require('../utils/doctorGuestScope');
 const OWN = scope.ownBooking((req) => req.params.id);
 router.get('/admin/all', protectAdmin, VIEW, scope.ownGuestIfNamed('userId'), getAllBookingsAdmin);
-router.get('/admin/export', protectAdmin, VIEW, scope.ownGuestIfNamed('userId'), bookingController.exportBookingsAdmin);
 // Reception creates walk-in and phone bookings here.
 router.post('/admin', protectAdmin, auditLog('BOOKING_CREATED', 'BOOKING'), createBookingAdmin);
 router.get('/admin/:id', protectAdmin, VIEW, OWN, getBookingByIdAdmin);
