@@ -303,11 +303,88 @@ const preConsultFormSchema = new mongoose.Schema({
   dateOfVisit: {
     type: Date,
     default: Date.now
+  },
+
+  /*
+   * Provenance — HOW this intake was captured, and by whom.
+   *
+   * Three ways a form reaches this collection: the guest fills it in the app,
+   * the guest fills it on the desk tablet (walk-in), or a staff member types up
+   * the paper sheet the guest signed at the desk — the way 6,000+ guests gave
+   * their intake between 2021 and the app existing. Without this the three
+   * were indistinguishable, so a desk-typed copy looked like the guest's own
+   * app submission and the dermatologist could not tell whether the signature
+   * on file was electronic or on a sheet in a folder.
+   *
+   * Rows written before this field exist without it; `inferOrigin` below
+   * fills the gap from the signature format so no serialiser ever shows blank.
+   */
+  origin: {
+    channel: { type: String, enum: ['app', 'walkin', 'staff', null], default: null },
+    capturedOn: { type: String, enum: ['digital', 'paper', null], default: null },
+    /** The date written on the paper sheet — the day the guest actually filled it. */
+    paperDate: { type: Date, default: null },
+    /** The staff member who typed a paper sheet up. Null for the guest's own submissions. */
+    enteredBy: {
+      id: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', default: null },
+      name: { type: String, default: null },
+      role: { type: String, default: null }
+    },
+    enteredAt: { type: Date, default: null },
+    /** The guest signed the paper; there is no electronic signature to show. */
+    signatureOnPaper: { type: Boolean, default: false },
+    /** What the digitising staff member noted about the sheet (illegible answers, missing page). */
+    notes: { type: String, default: null, trim: true, maxlength: 1000 }
   }
 
 }, {
   timestamps: true
 });
+
+/**
+ * The provenance of a form, for rows that predate `origin` as much as for
+ * rows that carry it.
+ *
+ * Older rows are told apart by their signature: the desk tablet stores the
+ * signature pad's PNG as a data URI, the app stores a typed "name|style"
+ * string. Everything before 2026-09-12 was captured digitally by the guest
+ * either way. `inferred: true` says the answer was worked out, not recorded,
+ * so a panel can phrase it accordingly.
+ *
+ * Works on a document or a lean/plain object; needs only `origin`,
+ * `clientSignature` and `createdAt`, none of which is encrypted.
+ */
+preConsultFormSchema.statics.inferOrigin = function inferOrigin(doc) {
+  if (!doc) return null;
+  const stored = doc.origin || {};
+  if (stored.channel) {
+    return {
+      channel: stored.channel,
+      capturedOn: stored.capturedOn || 'digital',
+      paperDate: stored.paperDate || null,
+      enteredBy: {
+        id: stored.enteredBy?.id || null,
+        name: stored.enteredBy?.name || null,
+        role: stored.enteredBy?.role || null
+      },
+      enteredAt: stored.enteredAt || null,
+      signatureOnPaper: stored.signatureOnPaper === true,
+      notes: stored.notes || null,
+      inferred: false
+    };
+  }
+  const signature = typeof doc.clientSignature === 'string' ? doc.clientSignature : '';
+  return {
+    channel: signature.startsWith('data:image/') ? 'walkin' : 'app',
+    capturedOn: 'digital',
+    paperDate: null,
+    enteredBy: { id: null, name: null, role: null },
+    enteredAt: doc.createdAt || null,
+    signatureOnPaper: false,
+    notes: null,
+    inferred: true
+  };
+};
 
 // Field-level encryption for sensitive health data (DPDPA 2023 compliance).
 //

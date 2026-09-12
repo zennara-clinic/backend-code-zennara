@@ -9,9 +9,12 @@ const {
   submitForm,
   getAllForms,
   getAdminFormById,
-  updateFormStatus
+  updateFormStatus,
+  getIntakeForUser,
+  getSchema,
+  digitiseForUser
 } = require('../controllers/preConsultFormController');
-const { protect, protectAdmin } = require('../middleware/auth');
+const { protect, protectAdmin, requirePermission } = require('../middleware/auth');
 
 // Admin routes. A dermatologist reads the forms of their own guests only.
 const scope = require('../utils/doctorGuestScope');
@@ -25,6 +28,23 @@ router.get(
   protectAdmin,
   scope.ownBooking((req) => req.params.bookingId),
   require('../controllers/preConsultFormController').getFormStatusForBooking,
+);
+/*
+ * Intake state and digitising a paper form — also BEFORE '/admin/:id'.
+ *
+ * Typing up a guest's paper sheet is an edit of their record, so it takes
+ * the same key as editing the record (patients.manage) or the forms area
+ * (forms.view). A dermatologist holds both in their baseline and, as with
+ * every guest read, only for guests in their own diary.
+ */
+router.get('/admin/schema', protectAdmin, getSchema);
+router.get('/admin/intake/:userId', protectAdmin, scope.ownGuest((req) => req.params.userId), getIntakeForUser);
+router.post(
+  '/admin/digitise/:userId',
+  protectAdmin,
+  requirePermission('patients.manage', 'forms.view'),
+  scope.ownGuest((req) => req.params.userId),
+  digitiseForUser,
 );
 router.get('/admin/:id', protectAdmin, OWN_FORM, getAdminFormById);
 router.patch('/admin/:id/status', protectAdmin, OWN_FORM, updateFormStatus);

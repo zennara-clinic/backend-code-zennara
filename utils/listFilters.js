@@ -381,6 +381,36 @@ async function buildUserFilter(q) {
     and.push({ _id: { $in: ids } });
   }
 
+  /*
+   * Pre-consult intake: digital | paper | none — the same three-state rule
+   * as utils/preConsultIntake, as guest-id sets. 'digital' is every guest
+   * with a submitted form; 'paper' is every guest with clinic evidence
+   * (a completed visit, an owned package, a signed note) who has no form;
+   * 'none' is everyone else. Three distincts over 7k guests is well within
+   * what a list request can afford, and it keeps the export identical to
+   * the screen.
+   */
+  if (['digital', 'paper', 'none'].includes(q.intake)) {
+    const PreConsultForm = require('../models/PreConsultForm');
+    const PackageAssignment = require('../models/PackageAssignment');
+    const ConsultationNote = require('../models/ConsultationNote');
+    const { SUBMITTED } = require('./preConsultIntake');
+    const digital = (await PreConsultForm.distinct('userId', { status: { $in: SUBMITTED } })).map(String);
+    if (q.intake === 'digital') {
+      and.push({ _id: { $in: digital } });
+    } else {
+      const [visited, packaged, prescribed] = await Promise.all([
+        Booking.distinct('userId', { status: 'Completed', userId: { $ne: null } }),
+        PackageAssignment.distinct('userId', { status: { $in: ['Active', 'Completed'] } }),
+        ConsultationNote.distinct('userId', { status: 'Completed' }),
+      ]);
+      const digitalSet = new Set(digital);
+      const paper = [...new Set([...visited, ...packaged, ...prescribed].map(String))].filter((id) => !digitalSet.has(id));
+      if (q.intake === 'paper') and.push({ _id: { $in: paper } });
+      else and.push({ _id: { $nin: [...digital, ...paper] } });
+    }
+  }
+
   if (q.search) {
     const rx = { $regex: escapeRx(q.search), $options: 'i' };
     and.push({ $or: [{ fullName: rx }, { email: rx }, { phone: rx }, { guestCode: rx }, { patientId: rx }] });

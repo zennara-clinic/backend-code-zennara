@@ -46,6 +46,15 @@ exports.getAllUsers = async (req, res) => {
       createdAt: { $gte: startOfMonth }
     });
 
+    /*
+     * Where each guest's pre-consult intake is — digital, on paper, or not
+     * yet — answered for the whole page in a handful of queries
+     * (utils/preConsultIntake.intakeStatesFor). Best-effort: a failure here
+     * must not take the patients list down with it.
+     */
+    const { intakeStatesFor, intakeRow } = require('../utils/preConsultIntake');
+    const intakes = await intakeStatesFor(users.map((u) => u._id)).catch(() => new Map());
+
     // Format users data
     const formattedUsers = users.map(user => ({
       id: user._id,
@@ -79,7 +88,8 @@ exports.getAllUsers = async (req, res) => {
       zenotiGuestId: user.zenotiGuestId || null,
       zenotiSyncedAt: user.zenotiSyncedAt || null,
       createdAt: user.createdAt,
-      lastLogin: user.lastLogin
+      lastLogin: user.lastLogin,
+      intake: intakeRow(intakes.get(String(user._id)))
     }));
 
     res.status(200).json({
@@ -171,6 +181,21 @@ exports.getUserById = async (req, res) => {
       formattedUser.stats = await require('../utils/guestStats').getGuestStats(user._id);
     } catch (statsError) {
       formattedUser.stats = null;
+    }
+
+    // Where their pre-consult intake is (digital / on paper / not yet), the
+    // same shape as the list row so the panel reads one field in both places.
+    try {
+      const { intakeStatus, intakeRow } = require('../utils/preConsultIntake');
+      const intake = await intakeStatus(user._id);
+      formattedUser.intake = intakeRow({
+        state: intake.state,
+        formId: intake.form?._id || null,
+        origin: intake.origin,
+        lastVisitAt: user.lastVisitAt || formattedUser.stats?.lastVisitAt || null,
+      });
+    } catch (intakeError) {
+      formattedUser.intake = null;
     }
 
     res.status(200).json({

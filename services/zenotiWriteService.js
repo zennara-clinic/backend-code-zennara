@@ -1612,8 +1612,22 @@ async function syncFormNote(kind, form) {
     const centerId = user.zenotiCenterId || clinicCenterIdForBranch(booking?.preferredLocation);
     const centerName = require('../config/zenoti').centerById(centerId)?.name || booking?.preferredLocation || '';
     const label = kind === 'consent' ? 'Treatment consent form' : 'Pre-consultation form';
+    /*
+     * Say how the form was captured. It used to read "completed in the
+     * Zennara app" for every intake, including ones filled on the desk tablet
+     * and — now — ones a staff member typed in from the paper sheet a guest
+     * signed years ago. The clinic reads these notes to decide whether a
+     * paper form still needs finding, so the wording has to be true.
+     */
+    const origin = form.origin || {};
+    const opened = origin.channel === 'staff' && origin.capturedOn === 'paper'
+      ? `${label} digitised from the paper form dated ${origin.paperDate ? clinicDay(origin.paperDate) : 'unknown'}`
+        + `${origin.enteredBy?.name ? ` by ${origin.enteredBy.name}` : ''} on ${clinicDay(new Date())}.`
+      : origin.channel === 'walkin'
+        ? `${label} completed on the Zennara walk-in tablet on ${clinicDay(new Date())}.`
+        : `${label} completed in the Zennara app on ${clinicDay(new Date())}.`;
     const lines = [
-      `${label} completed in the Zennara app on ${clinicDay(new Date())}.`,
+      opened,
       booking ? `Visit: ${booking.referenceNumber || ''} ${booking.preferredDate ? clinicDay(booking.preferredDate) : ''}`.trim() : null,
       kind === 'consent' && form.treatmentProcedure ? `Procedure: ${form.treatmentProcedure}` : null,
       kind === 'consent' ? `Consent given: ${form.consentGiven ? 'yes' : 'no'}${form.marketingPhotoConsent ? ' · photo consent: yes' : ''}` : null,

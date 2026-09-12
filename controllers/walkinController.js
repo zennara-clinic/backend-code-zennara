@@ -696,6 +696,8 @@ exports.submitPreConsult = async (req, res) => {
       ...doc,
       userId: user._id,
       ...(submissionId ? { submissionId } : {}),
+      // The guest's own digital submission, on the desk tablet.
+      origin: { channel: 'walkin', capturedOn: 'digital', enteredAt: new Date() },
     });
 
     /*

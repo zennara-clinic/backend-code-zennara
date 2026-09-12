@@ -118,6 +118,11 @@ async function listDoctorPatients(doctor, params = {}) {
   const counts = out?.counts?.[0] || { all: 0, booked: 0 };
   const total = out?.total?.[0]?.n || 0;
 
+  // Where each guest's pre-consult intake is, for the page in bulk. A failure
+  // here leaves the column blank rather than emptying the list.
+  const { intakeStatesFor, intakeRow } = require('./preConsultIntake');
+  const intakes = await intakeStatesFor(rows.map((r) => r._id)).catch(() => new Map());
+
   return {
     total,
     page,
@@ -126,6 +131,7 @@ async function listDoctorPatients(doctor, params = {}) {
     counts: { all: counts.all, booked: counts.booked, unbooked: counts.all - counts.booked },
     data: rows.map((r) => {
       const allergy = String(r.u?.drugAllergies || '').trim();
+      const intake = intakeRow(intakes.get(String(r._id)));
       return {
         userId: r._id,
         fullName: r.fullName || 'Guest',
@@ -145,6 +151,7 @@ async function listDoctorPatients(doctor, params = {}) {
           ...(r.consultationIds || []).map((id) => serviceName.get(String(id))),
           ...(r.serviceNames || []),
         ].filter(Boolean))].slice(0, 6),
+        intake: { state: intake.state, label: intake.label, formId: intake.formId, capturedOn: intake.capturedOn },
       };
     }),
   };
