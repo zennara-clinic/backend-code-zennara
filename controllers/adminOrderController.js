@@ -1,6 +1,7 @@
 const ProductOrder = require('../models/ProductOrder');
 const Branch = require('../models/Branch');
-const { isPickup, sequenceFor, statusMismatch, isFulfilled, normalisePickupCode, destinationLine, recipientName, STATUS_LABEL } = require('../utils/orderFulfilment');
+const { isPickup, sequenceFor, statusMismatch, isFulfilled, normaliseHandoverCode, isHandoverStatus, handoverAudience, destinationLine, recipientName, STATUS_LABEL } = require('../utils/orderFulfilment');
+const handoverCode = require('../services/handoverCodeService');
 const { clinicHoursLine } = require('../utils/centreHours');
 const { clinicDateKey, clinicDayEnd, clinicDayStart } = require('../utils/bookingTime');
 const Product = require('../models/Product');
@@ -17,7 +18,7 @@ const {
 // @access  Private/Admin
 exports.getAllOrders = async (req, res) => {
   try {
-    const { status, paymentStatus, userId, search, source, startDate, endDate, limit, page = 1, fulfilment, branchId, pickupCode } = req.query;
+    const { status, paymentStatus, userId, search, source, startDate, endDate, limit, page = 1, fulfilment, branchId, handoverCode: codeQuery } = req.query;
     
     const query = {};
     
@@ -30,8 +31,8 @@ exports.getAllOrders = async (req, res) => {
     if (fulfilment === 'pickup') query['fulfilment.type'] = 'pickup';
     else if (fulfilment === 'delivery') query.$and = [...(query.$and || []), { $or: [{ 'fulfilment.type': 'delivery' }, { 'fulfilment.type': { $exists: false } }, { 'fulfilment.type': null }] }];
     if (branchId && /^[0-9a-f]{24}$/i.test(branchId)) query['fulfilment.branchId'] = branchId;
-    // The desk types the code the guest reads out.
-    if (pickupCode && normalisePickupCode(pickupCode)) query['fulfilment.pickupCode'] = normalisePickupCode(pickupCode);
+    // The desk types the code the guest reads out — either flow.
+    if (codeQuery && normaliseHandoverCode(codeQuery)) query['handover.code'] = normaliseHandoverCode(codeQuery);
     
     if (paymentStatus) {
       query.paymentStatus = paymentStatus;
@@ -63,7 +64,7 @@ exports.getAllOrders = async (req, res) => {
           { orderNumber: rx },
           { 'shippingAddress.fullName': rx },
           { 'shippingAddress.phone': rx },
-          { 'fulfilment.pickupCode': normalisePickupCode(search) || '__none__' },
+          { 'handover.code': normaliseHandoverCode(search) || '__none__' },
           { userId: { $in: users.map((u) => u._id) } },
         ],
       }];
@@ -168,20 +169,23 @@ exports.updateOrderStatus = async (req, res) => {
       return res.status(400).json({ success: false, code: 'FULFILMENT_MISMATCH', message: mismatch });
     }
     /*
-     * Handing over a pickup order: the guest reads out the six-character code
-     * from their app or message and the desk types it. A wrong code stops the
-     * handover. When the guest cannot produce it (phone dead, message gone),
-     * the desk may skip it by saying so — `skipCode` plus a note about how the
-     * guest was identified — and that reason is kept on the order.
+     * The handover.
+     *
+     * Both flows end the same way: the guest reads out their code and whoever
+     * hands the order over types it in. A wrong code stops the handover. When
+     * the guest cannot produce it — phone dead, message lost — staff may hand
+     * it over anyway by saying how they identified them, and that reason is
+     * kept on the order (services/handoverCodeService).
      */
-    if (status === 'Collected') {
-      const typed = normalisePickupCode(req.body.pickupCode);
-      const expected = normalisePickupCode(order.fulfilment?.pickupCode);
-      if (!req.body.skipCode) {
-        if (!typed) return res.status(400).json({ success: false, code: 'PICKUP_CODE_REQUIRED', message: 'Enter the pickup code the guest shows you, or skip it with a note on how you verified them.' });
-        if (expected && typed !== expected) return res.status(400).json({ success: false, code: 'PICKUP_CODE_MISMATCH', message: 'That pickup code does not match this order.' });
-      } else if (!String(note || '').trim()) {
-        return res.status(400).json({ success: false, code: 'PICKUP_NOTE_REQUIRED', message: 'Say how the guest was identified when skipping the code.' });
+    let handover = null;
+    if (isHandoverStatus(order, status)) {
+      handover = handoverCode.verify(order, {
+        typed: req.body.handoverCode ?? req.body.pickupCode,
+        override: Boolean(req.body.skipCode ?? req.body.override),
+        note: note ?? req.body.note,
+      });
+      if (!handover.ok) {
+        return res.status(400).json({ success: false, code: handover.code, message: handover.message });
       }
     }
     if (status === 'Delivery Failed') {
@@ -272,20 +276,19 @@ exports.updateOrderStatus = async (req, res) => {
     order.orderStatus = status;
     
     // Handle specific status updates
-    if (status === 'Delivered') {
-      order.deliveredAt = new Date();
+    if (handover) {
+      const at = handoverCode.markVerified(order, handover, req.admin?._id || null);
+      // The return window and every "when did the guest get it" read deliveredAt.
+      order.deliveredAt = at;
+      if (isPickup(order)) {
+        order.fulfilment.collectedAt = at;
+        order.fulfilment.collectedBy = req.admin?._id || null;
+        order.fulfilment.collectedNote = handover.method === 'override' ? `Code not shown: ${handover.note}` : (note || null);
+      }
       if (order.paymentMethod === 'COD') order.paymentStatus = 'Paid';
     }
     if (status === 'Ready for Pickup') {
       order.fulfilment.readyAt = new Date();
-    }
-    if (status === 'Collected') {
-      const now = new Date();
-      order.fulfilment.collectedAt = now;
-      order.fulfilment.collectedBy = req.admin?._id || null;
-      order.fulfilment.collectedNote = req.body.skipCode ? `Code skipped: ${String(note || '').trim()}` : (note || null);
-      // The return window and every "when did the guest get it" read this.
-      order.deliveredAt = now;
     }
     
     if (status === 'Cancelled' && !order.cancelledAt) {
@@ -374,7 +377,9 @@ exports.updateOrderStatus = async (req, res) => {
           centreAddress: [pa.addressLine1, pa.city, pa.pincode].filter(Boolean).join(', ') || null,
           centrePhone: pa.phone || null,
           centreHours: centre ? clinicHoursLine(centre) : null,
-          pickupCode: order.fulfilment?.pickupCode || null,
+          code: order.handover?.code || null,
+          pickupCode: order.handover?.code || null,
+          showTo: handoverAudience(order),
         };
 
         let notificationsSent = false;
@@ -599,16 +604,30 @@ exports.assignDelivery = async (req, res) => {
     });
     await order.save();
 
+    /*
+     * The delivery code, issued now.
+     *
+     * Until a rider exists there is nobody for the guest to show a code to, so
+     * this is the moment it is cut, messaged to WhatsApp and email, and shown
+     * in the app. A reassignment after a failed attempt keeps the SAME code —
+     * the guest may already have written it down, and the parcel is the same
+     * parcel. `issue` is idempotent per flow and re-sends on request.
+     */
+    await handoverCode.issue(order, { resend: true }).catch((error) => {
+      console.error('⚠️ Delivery code not issued:', error.message);
+    });
+
     NotificationHelper.orderStatusChanged(
       { _id: order._id, userId: order.userId, orderNumber: order.orderNumber },
       wasFailed ? 'Delivery Failed' : 'Shipped',
       'Out for Delivery'
     ).catch((error) => console.error('Delivery assignment notification failed:', error.message));
 
+    const saved = await ProductOrder.findById(order._id);
     return res.json({
       success: true,
       message: `Delivery attempt ${attempt} assigned successfully`,
-      data: order,
+      data: saved || order,
     });
   } catch (error) {
     console.error('Assign delivery error:', error);

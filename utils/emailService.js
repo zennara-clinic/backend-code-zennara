@@ -27,6 +27,7 @@ const getOrderOutForDeliveryTemplate = require('../Email Templates/orderOutForDe
 const getOrderDeliveredTemplate = require('../Email Templates/orderDelivered');
 const getOrderCancelledTemplate = require('../Email Templates/orderCancelled');
 const getOrderReadyForPickupTemplate = require('../Email Templates/orderReadyForPickup');
+const getHandoverCodeTemplate = require('../Email Templates/handoverCode');
 const getOrderCollectedTemplate = require('../Email Templates/orderCollected');
 const getReturnRequestReceivedTemplate = require('../Email Templates/returnRequestReceived');
 const getReturnApprovedTemplate = require('../Email Templates/returnApproved');
@@ -743,6 +744,23 @@ exports.sendOrderCancelledEmail = async (email, customerName, orderData) => {
     return response;
   } catch (error) {
     console.error('Order cancelled email sending failed');
+    throw error;
+  }
+};
+
+// Send the handover code — the one the guest reads out when they receive the
+// order, at the desk for pickup or at the door for delivery.
+exports.sendHandoverCodeEmail = async (email, customerName, data) => {
+  try {
+    const htmlContent = getHandoverCodeTemplate(customerName, data);
+    const subject = data.fulfilment === 'pickup'
+      ? `Your pickup code for ${data.orderNumber}`
+      : `Your delivery code for ${data.orderNumber}`;
+    const response = await sendEmail(email, subject, htmlContent);
+    console.log('Handover code email sent successfully');
+    return response;
+  } catch (error) {
+    console.error('Handover code email sending failed');
     throw error;
   }
 };

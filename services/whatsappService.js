@@ -725,6 +725,49 @@ Thank you for shopping with Zennara Clinic. Please rate your experience in the a
   }
 
   /**
+   * The handover code, for either flow.
+   *
+   * Store pickup gets it when the order is placed; delivery gets it when a
+   * rider is assigned. The guest reads it out to whoever hands the order over.
+   * Template vars: name, order no, code, where they receive it, who to show it to.
+   */
+  async sendHandoverCode(phoneNumber, data) {
+    const pickup = data.fulfilment === 'pickup';
+    if (process.env.WHATSAPP_HANDOVER_CODE_SID &&
+        !process.env.WHATSAPP_HANDOVER_CODE_SID.includes('xxx')) {
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_HANDOVER_CODE_SID,
+        {
+          '1': data.customerName,
+          '2': data.orderNumber,
+          '3': data.code || '',
+          '4': pickup ? (data.centreName || 'our centre') : (data.deliveryAddress || 'your address'),
+          '5': data.showTo || (pickup ? 'the reception desk' : 'the delivery partner'),
+        }
+      );
+    }
+
+    const where = pickup
+      ? `Collect at: ${data.centreName || 'our centre'}${data.centreAddress ? `\n${data.centreAddress}` : ''}${data.centreHours ? `\nHours: ${data.centreHours}` : ''}`
+      : `Delivering to: ${data.deliveryAddress || 'your saved address'}${data.deliveryPartner ? `\nDelivery partner: ${data.deliveryPartner}` : ''}`;
+
+    const message = `Hello ${data.customerName}!
+
+${pickup ? 'Your pickup code' : 'Your delivery code'} for order ${data.orderNumber} is:
+
+${data.code}
+
+${where}
+
+Read this code out to ${data.showTo} when you receive your order. It is already paid for, so there is nothing to settle.
+
+Never share this code with anyone else. Nobody from Zennara will ask you for it over the phone.`;
+
+    return await this.sendMessage(phoneNumber, message);
+  }
+
+  /**
    * Store pickup: the order is packed and waiting at the centre. Carries the
    * pickup code the guest shows at the desk. Template vars: name, order no,
    * centre, code, address.

@@ -86,19 +86,46 @@ function statusMismatch(order, status) {
 }
 
 /*
- * Pickup codes.
+ * Handover codes.
+ *
+ * Both flows end the same way: the guest reads out a code and the person
+ * handing the order over types it in. For store pickup that is the desk; for
+ * delivery it is the rider at the door. Nothing is handed over on a code that
+ * does not match, and a handover with no code at all has to say why.
  *
  * Six characters from an alphabet with no 0/O, 1/I/L or 5/S, so a code read
- * out at the desk or over the phone cannot be misheard. 28^6 ≈ 480 million —
- * uniqueness is still enforced against open pickup orders by the caller.
+ * out at a counter or over the phone cannot be misheard. 28^6 ≈ 480 million —
+ * uniqueness is still enforced against open orders by the caller.
  */
 const CODE_ALPHABET = 'ABCDEFGHJKMNPQRTUVWXYZ234679';
-function generatePickupCode(random = Math.random) {
+function generateHandoverCode(random = Math.random) {
   let out = '';
   for (let i = 0; i < 6; i += 1) out += CODE_ALPHABET[Math.floor(random() * CODE_ALPHABET.length)];
   return out;
 }
-const normalisePickupCode = (code) => String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+const normaliseHandoverCode = (code) => String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+/**
+ * When the code is issued, and what it opens.
+ *
+ * Pickup: the moment the order exists, because the guest may walk in as soon
+ * as we say it is ready and wants the code in hand from the start.
+ * Delivery: when a rider is assigned, because until then there is nobody to
+ * show it to — and a code sitting in a message for a week is a code the guest
+ * has lost by the time the door knocks.
+ */
+const ISSUE_STATUS = Object.freeze({ pickup: 'Order Placed', delivery: 'Out for Delivery' });
+/** The status the code unlocks — the one that says the guest now has the goods. */
+const VERIFY_STATUS = Object.freeze({ pickup: 'Collected', delivery: 'Delivered' });
+
+const handoverStatusFor = (order) => VERIFY_STATUS[typeOf(order)];
+/** True when moving to `status` is the handover this order's code protects. */
+const isHandoverStatus = (order, status) => status === handoverStatusFor(order);
+
+/** Who the guest shows the code to, in words, for messages and screens. */
+const handoverAudience = (order) => (isPickup(order)
+  ? `the reception desk at ${order?.fulfilment?.branchName || 'the centre'}`
+  : 'the delivery partner');
 
 /**
  * Where the goods go, in one line, for messages and the panel: the delivery
@@ -119,6 +146,13 @@ const recipientName = (order, user) => order?.shippingAddress?.fullName || user?
 
 module.exports = {
   FULFILMENT_TYPES,
+  ISSUE_STATUS,
+  VERIFY_STATUS,
+  handoverStatusFor,
+  isHandoverStatus,
+  handoverAudience,
+  generateHandoverCode,
+  normaliseHandoverCode,
   DELIVERY_SEQUENCE,
   PICKUP_SEQUENCE,
   DELIVERY_ONLY,
@@ -134,8 +168,6 @@ module.exports = {
   customerCancellable,
   fulfilledAt,
   statusMismatch,
-  generatePickupCode,
-  normalisePickupCode,
   destinationLine,
   recipientName,
 };

@@ -53,7 +53,6 @@ const productOrderSchema = new mongoose.Schema({
     type: { type: String, enum: ['delivery', 'pickup'], default: 'delivery', index: true },
     branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', default: null, index: true },
     branchName: { type: String, default: null, trim: true },
-    pickupCode: { type: String, default: null, trim: true, uppercase: true },
     pickupAddress: {
       addressLine1: { type: String, default: null },
       city: { type: String, default: null },
@@ -65,6 +64,33 @@ const productOrderSchema = new mongoose.Schema({
     collectedAt: { type: Date, default: null },
     collectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', default: null },
     collectedNote: { type: String, default: null },
+  },
+  /**
+   * The handover code — the one thing that says the right person received the
+   * order (utils/orderFulfilment.js).
+   *
+   * Both flows end with it. A store-pickup order gets its code the moment the
+   * order exists, because the guest can walk in as soon as it is ready; a
+   * delivery order gets one when a rider is assigned, because until then there
+   * is nobody to show it to. It is messaged to WhatsApp and email as soon as
+   * it is issued, and shown in the app from that moment.
+   *
+   * Nothing is marked Collected or Delivered without it. `method` records how
+   * the handover was confirmed: 'code' when it was typed and matched,
+   * 'override' when staff could not get it and said why instead.
+   */
+  handover: {
+    code: { type: String, default: null, trim: true, uppercase: true },
+    /** Which flow the code was cut for, so a changed order cannot reuse the wrong one. */
+    issuedFor: { type: String, enum: ['delivery', 'pickup', null], default: null },
+    issuedAt: { type: Date, default: null },
+    /** Last time it went out, and by which routes. */
+    sentAt: { type: Date, default: null },
+    sentChannels: { type: [String], default: [] },
+    verifiedAt: { type: Date, default: null },
+    verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', default: null },
+    method: { type: String, enum: ['code', 'override', null], default: null },
+    note: { type: String, default: null },
   },
   shippingAddress: {
     addressId: {
@@ -371,7 +397,8 @@ productOrderSchema.index(
 productOrderSchema.index({ zenotiSaleId: 1 }, { unique: true, partialFilterExpression: { zenotiSaleId: { $type: 'string' } } });
 // The desk's pickup queue: open pickup orders at one centre, newest first.
 productOrderSchema.index({ 'fulfilment.type': 1, 'fulfilment.branchId': 1, orderStatus: 1, createdAt: -1 });
-// A code is looked up when the guest reads it out; only open pickup orders keep one live.
-productOrderSchema.index({ 'fulfilment.pickupCode': 1 }, { partialFilterExpression: { 'fulfilment.pickupCode': { $type: 'string' } } });
+// A code is looked up when the guest reads it out, and checked for collisions
+// while it is live; only an open order carries one.
+productOrderSchema.index({ 'handover.code': 1 }, { partialFilterExpression: { 'handover.code': { $type: 'string' } } });
 
 module.exports = mongoose.model('ProductOrder', productOrderSchema);

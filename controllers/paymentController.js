@@ -9,7 +9,8 @@ const NotificationHelper = require('../utils/notificationHelper');
 const { clinicDateKey, clinicDayStart, clock24, parseClockMinutes } = require('../utils/bookingTime');
 const { computeOrderPricing } = require('../utils/orderPricing');
 const Branch = require('../models/Branch');
-const { generatePickupCode, recipientName } = require('../utils/orderFulfilment');
+const { recipientName, isPickup } = require('../utils/orderFulfilment');
+const handoverCode = require('../services/handoverCodeService');
 
 /*
  * The centre a product order belongs to.
@@ -36,15 +37,6 @@ async function resolveOrderCentre(fulfilment, user) {
   return { type, branch, error: null };
 }
 
-/** A code no other open pickup order at any centre is using right now. */
-async function freshPickupCode() {
-  for (let i = 0; i < 8; i += 1) {
-    const code = generatePickupCode();
-    const clash = await ProductOrder.exists({ 'fulfilment.pickupCode': code, orderStatus: { $nin: ['Collected', 'Cancelled', 'Returned'] } });
-    if (!clash) return code;
-  }
-  return generatePickupCode();
-}
 
 class PaymentFlowError extends Error {
   constructor(status, message, code = 'PAYMENT_VERIFICATION_FAILED') {
@@ -265,10 +257,10 @@ exports.createProductOrderPayment = async (req, res) => {
     if (centre.error) {
       return res.status(400).json({ success: false, code: 'PICKUP_CENTRE_REQUIRED', message: centre.error });
     }
-    const isPickup = centre.type === 'pickup';
+    const wantsPickup = centre.type === 'pickup';
 
     let deliveryAddress = null;
-    if (!isPickup) {
+    if (!wantsPickup) {
       if (!mongoose.isValidObjectId(orderData.addressId)) {
         return res.status(400).json({ success: false, message: 'Select a valid delivery address' });
       }
@@ -341,7 +333,7 @@ exports.createProductOrderPayment = async (req, res) => {
         // allowed to replace these after the customer has paid.
         orderData: {
           items: orderData.items.map(({ productId, quantity }) => ({ productId, quantity })),
-          addressId: isPickup ? null : orderData.addressId,
+          addressId: wantsPickup ? null : orderData.addressId,
           coupon: priced.coupon || undefined,
           notes: orderData.notes || '',
           fulfilment: {
@@ -428,8 +420,8 @@ exports.verifyProductPayment = async (req, res) => {
     
     payment = await verifyOwnedCapturedPayment(req, 'ProductOrder');
     const orderData = payment.metadata?.orderData;
-    const isPickup = orderData?.fulfilment?.type === 'pickup';
-    if (!Array.isArray(orderData?.items) || (!isPickup && !orderData.addressId)) {
+    const isPickupOrder = orderData?.fulfilment?.type === 'pickup';
+    if (!Array.isArray(orderData?.items) || (!isPickupOrder && !orderData.addressId)) {
       throw new PaymentFlowError(422, 'Stored order details are incomplete');
     }
 
@@ -471,7 +463,7 @@ exports.verifyProductPayment = async (req, res) => {
     const orderBranch = mongoose.isValidObjectId(orderData.fulfilment?.branchId)
       ? await Branch.findById(orderData.fulfilment.branchId).select('name address contact isActive').lean()
       : null;
-    if (isPickup) {
+    if (isPickupOrder) {
       pickupBranch = orderBranch;
       if (!pickupBranch) {
         await markFulfilmentFailure(payment, 'order', 'Pickup centre not found');
@@ -509,7 +501,7 @@ exports.verifyProductPayment = async (req, res) => {
         city: address ? address.city : null,
         userId: req.user._id,
         branch: orderBranch,
-        fulfilment: isPickup ? 'pickup' : 'delivery',
+        fulfilment: isPickupOrder ? 'pickup' : 'delivery',
       });
       if (!priced.ok) {
         await markFulfilmentFailure(payment, 'order', priced.message);
@@ -607,12 +599,11 @@ exports.verifyProductPayment = async (req, res) => {
     const orderNumber = `ORD${Date.now()}${String(orderCount + 1).padStart(4, '0')}`;
     
     // Where the goods go: the guest's address, or the centre they collect from.
-    const fulfilment = isPickup
+    const fulfilment = isPickupOrder
       ? {
         type: 'pickup',
         branchId: pickupBranch._id,
         branchName: pickupBranch.name,
-        pickupCode: await freshPickupCode(),
         pickupAddress: {
           addressLine1: [pickupBranch.address?.line1 || pickupBranch.address?.street, pickupBranch.address?.line2].filter(Boolean).join(', ') || null,
           city: pickupBranch.address?.city || null,
@@ -732,6 +723,26 @@ exports.verifyProductPayment = async (req, res) => {
     payment.orderId = order._id;
     await payment.save();
     
+    /*
+     * The pickup code, issued the moment the order exists.
+     *
+     * A guest who chose to collect can walk in as soon as we say it is ready,
+     * so they get the code now — on WhatsApp, by email and in the app — rather
+     * than at the ready-to-collect step. A delivery order has nobody to show a
+     * code to until a rider is assigned, so its code is cut there instead
+     * (adminOrderController.assignDelivery).
+     *
+     * Awaited, not fired and forgotten: the code belongs to the order the app
+     * is about to render, and a guest who sees "collect with your code" and no
+     * code has been told a half-truth. A failed WhatsApp or email inside the
+     * service is logged and does not fail the order.
+     */
+    if (isPickup(order)) {
+      await handoverCode.issue(order).catch((error) => {
+        console.error('⚠️ Pickup code not issued:', error.message);
+      });
+    }
+
     // Populate order details
     const populatedOrder = await ProductOrder.findById(order._id)
       .populate('userId', 'fullName email phone')
