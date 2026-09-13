@@ -23,6 +23,11 @@
 const DEFAULT_MAX_ENTRIES = 200;
 
 const store = new Map(); // key -> { expiresAt, body }
+// key -> Promise<body> for a report that is being computed right now. Two
+// people opening the same page inside the same second (or one panel's poll
+// landing while the previous request is still running) share ONE handler run
+// instead of starting a second copy of the same work.
+const pending = new Map();
 let maxEntries = DEFAULT_MAX_ENTRIES;
 
 /**
@@ -76,6 +81,32 @@ function cacheFor(seconds, { now = Date.now } = {}) {
     }
     if (hit) store.delete(key);
 
+    const inflight = pending.get(key);
+    if (inflight) {
+      // Ride the run already in progress; if it fails, compute our own.
+      return inflight.then(
+        (body) => {
+          res.set('Cache-Control', `private, max-age=${seconds}`);
+          res.set('X-Cache', 'WAIT');
+          return res.status(200).json(body);
+        },
+        () => next(),
+      );
+    }
+
+    let resolveRun;
+    let rejectRun;
+    const run = new Promise((resolve, reject) => { resolveRun = resolve; rejectRun = reject; });
+    run.catch(() => {}); // a failed run is reported by the leader's own response
+    pending.set(key, run);
+    let settled = false;
+    const settle = (body) => {
+      if (settled) return;
+      settled = true;
+      if (pending.get(key) === run) pending.delete(key);
+      if (body) resolveRun(body); else rejectRun(new Error('not cached'));
+    };
+
     const original = res.json.bind(res);
     res.set('X-Cache', 'MISS');
     res.json = function cachingJson(body) {
@@ -83,9 +114,18 @@ function cacheFor(seconds, { now = Date.now } = {}) {
       if (res.statusCode === 200 && body && typeof body === 'object') {
         res.set('Cache-Control', `private, max-age=${seconds}`);
         put(key, { expiresAt: now() + ttlMs, body });
+        settle(body);
+      } else {
+        settle(null);
       }
       return original(body);
     };
+    // A handler that ends the response without .json (an error, a dropped
+    // connection) must not leave followers waiting forever.
+    if (typeof res.on === 'function') {
+      res.on('finish', () => settle(null));
+      res.on('close', () => settle(null));
+    }
     return next();
   };
 }
@@ -94,11 +134,12 @@ function cacheFor(seconds, { now = Date.now } = {}) {
 function clear() {
   const n = store.size;
   store.clear();
+  pending.clear();
   return n;
 }
 
 function stats() {
-  return { entries: store.size, maxEntries };
+  return { entries: store.size, maxEntries, inflight: pending.size };
 }
 
 /** Test hook: shrink the bound to prove eviction without 200 requests. */

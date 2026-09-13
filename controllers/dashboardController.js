@@ -99,11 +99,8 @@ exports.getDashboard = async (req, res) => {
     const paidIn = (s, e) => ({ paymentStatus: 'paid', $or: [{ paidAt: { $gte: s, $lte: e } }, { paidAt: null, createdAt: { $gte: s, $lte: e } }] });
 
     const { consult } = await consultationIdsByKind();
-    const consultSet = new Set(consult.map(String));
-    const isConsult = (bk) => (bk.consultationId ? consultSet.has(String(bk.consultationId)) : CONSULT_RX.test(bk.externalServiceName || ''));
 
-    // ---- pull the window's rows (small enough to shape in memory) ---------
-    const bookingFields = 'consultationId externalServiceName externalServiceCategory status amount paymentStatus paymentMethod paidAt createdAt confirmedDate preferredDate specialistId specialistName specialistTier zenotiTherapistId zenotiTherapistName source preferredLocation branchId rating userId isPackageIncluded';
+    // ---- pull the window's figures (grouped in the database) ---------------
     // Clinic (Zenoti) package purchases and counter sales are ALSO mirrored into
     // PackageAssignment / ProductOrder (source:'zenoti') so guests see them in
     // the app. For revenue they are read from the Zenoti mirror below — the
@@ -115,10 +112,16 @@ exports.getDashboard = async (req, res) => {
      * centre and by day — so the database groups them and returns a few hundred
      * rows at most, where this used to load every paid booking in the window
      * (the whole history for All time) to add them up here. `consult` is the
-     * same test as isConsult(): catalogue id in the consultation set, else the
-     * Zenoti service name. The slot-window rows below stay in memory: the
-     * leaderboard matches each row against the doctor roster by name, which is
-     * per-row logic no aggregate expresses cleanly.
+     * same test everywhere: catalogue id in the consultation set, else the
+     * Zenoti service name.
+     *
+     * The slot-window visits are read the same way, as four small groupings —
+     * by status/kind/source/centre, by day, by practitioner and by service —
+     * instead of every row. "All time" is the whole diary (37,000+ visits at
+     * the time of writing); loading it took minutes and the Overview kept
+     * showing the previous range while it waited. The leaderboard still
+     * matches against the doctor roster by name, but per practitioner group
+     * (a few hundred) rather than per visit.
      */
     const consultExpr = {
       $cond: [
@@ -127,6 +130,13 @@ exports.getDashboard = async (req, res) => {
         { $regexMatch: { input: { $ifNull: ['$externalServiceName', ''] }, regex: CONSULT_RX.source, options: 'i' } },
       ],
     };
+    const slotDayExpr = { $dateToString: { format: '%Y-%m-%d', date: { $ifNull: ['$confirmedDate', '$preferredDate'] }, timezone: CLINIC_TIME_ZONE } };
+    const paidAmount = { $cond: [{ $eq: ['$paymentStatus', 'paid'] }, num('$amount'), 0] };
+    const pendingAmount = { $cond: [{ $eq: ['$paymentStatus', 'pending'] }, num('$amount'), 0] };
+    const slotGroup = (id, extra = {}) => Booking.aggregate([
+      { $match: { $and: [bookingBranch, slotIn(start, end)] } },
+      { $group: { _id: id, count: { $sum: 1 }, paid: { $sum: paidAmount }, ...extra } },
+    ]);
     const paidGroup = (s, e) => Booking.aggregate([
       { $match: { $and: [bookingBranch, paidIn(s, e)] } },
       { $group: {
@@ -143,11 +153,17 @@ exports.getDashboard = async (req, res) => {
       { $match: match }, { $group: { _id: null, revenue: { $sum: amountExpr }, n: { $sum: 1 }, ...extra } },
     ]).then((r) => r[0] || { revenue: 0, n: 0 });
 
-    const [bookings, paidRows, prevPaid, orders, prevOrders, packages, prevPackages, memberships, prevMemberships] = await Promise.all([
-      // $and, not a spread: both the centre filter and the window use `$or`, and
-      // spreading them let the window silently replace the centre — so a
-      // centre's Overview showed every centre's visits.
-      Booking.find({ $and: [bookingBranch, slotIn(start, end)] }).select(bookingFields).lean(),
+    const [countRows, dayRows, perfRows, svcRows, paidRows, prevPaid, orders, prevOrders, packages, prevPackages, memberships, prevMemberships] = await Promise.all([
+      // $and, not a spread (inside slotGroup): both the centre filter and the
+      // window use `$or`, and spreading them let the window silently replace
+      // the centre — so a centre's Overview showed every centre's visits.
+      slotGroup({ status: '$status', consult: consultExpr, source: '$source', preferredLocation: '$preferredLocation', branchId: '$branchId' }, { pending: { $sum: pendingAmount } }),
+      slotGroup(slotDayExpr),
+      slotGroup(
+        { specialistId: '$specialistId', specialistName: '$specialistName', zenotiTherapistId: '$zenotiTherapistId', source: '$source', status: '$status', consult: consultExpr },
+        { ratingSum: { $sum: { $cond: [{ $gt: ['$rating', 0] }, '$rating', 0] } }, ratingCount: { $sum: { $cond: [{ $gt: ['$rating', 0] }, 1, 0] } }, users: { $addToSet: '$userId' } },
+      ),
+      slotGroup({ consultationId: '$consultationId', externalServiceName: '$externalServiceName', externalServiceCategory: '$externalServiceCategory', consult: consultExpr }),
       paidGroup(start, end),
       totalOf(Booking, { $and: [bookingBranch, paidIn(prevStart, prevEnd)] }, num('$amount')),
       ProductOrder.find({ ...appOnly, createdAt: { $gte: start, $lte: end } }).select('pricing paymentStatus paymentMethod orderStatus createdAt userId items').lean(),
@@ -159,6 +175,9 @@ exports.getDashboard = async (req, res) => {
     ]);
     const paidCount = sum(paidRows, (r) => r.count);
     const paidWhere = (f) => sum(paidRows.filter(f), (r) => r.revenue);
+    // Visits in the window, by whichever of their grouped dimensions a figure needs.
+    const visits = (f = () => true) => sum(countRows.filter((r) => f(r._id)), (r) => r.count);
+    const visitCount = visits();
 
     // Product orders have no branch; when scoped, attribute by the guest's home centre.
     let ordersScoped = orders;
@@ -233,8 +252,8 @@ exports.getDashboard = async (req, res) => {
     const prevClinicRev = sum(zPrevOrders, (r) => r.revenue) + sum(zPrevPackages, (r) => r.revenue);
 
     const streams = [
-      { key: 'consultations', label: 'Consultations', revenue: round(consultRev), count: bookings.filter(isConsult).length, app: round(consultRev - clinicConsultRev), clinic: round(clinicConsultRev) },
-      { key: 'treatments', label: 'Treatments', revenue: round(treatRev), count: bookings.filter((x) => !isConsult(x)).length, app: round(treatRev - clinicTreatRev), clinic: round(clinicTreatRev) },
+      { key: 'consultations', label: 'Consultations', revenue: round(consultRev), count: visits((v) => v.consult), app: round(consultRev - clinicConsultRev), clinic: round(clinicConsultRev) },
+      { key: 'treatments', label: 'Treatments', revenue: round(treatRev), count: visits((v) => !v.consult), app: round(treatRev - clinicTreatRev), clinic: round(clinicTreatRev) },
       { key: 'products', label: 'Products', revenue: round(productRev + clinicProductRev), count: ordersScoped.length + (zOrders[0]?.count || 0), app: round(productRev), clinic: round(clinicProductRev) },
       { key: 'packages', label: 'Packages', revenue: round(packageRev + clinicPackageRev), count: packages.length + (zPackages[0]?.count || 0), app: round(packageRev), clinic: round(clinicPackageRev) },
       { key: 'memberships', label: 'Zen memberships', revenue: round(membershipAppRevenue + membershipClinicRevenue), count: membershipCount, app: round(membershipAppRevenue), clinic: round(membershipClinicRevenue), unpriced: membershipsUnpriced },
@@ -299,27 +318,27 @@ exports.getDashboard = async (req, res) => {
     const existingPatients = await Booking.distinct('userId', {
       ...bookingBranch, status: 'Completed', eventAt: { $lt: start },
     }).then((ids) => ids.length);
-    const completed = bookings.filter((x) => x.status === 'Completed').length;
-    const cancelled = bookings.filter((x) => x.status === 'Cancelled').length;
-    const noShow = bookings.filter((x) => x.status === 'No Show').length;
+    const completed = visits((v) => v.status === 'Completed');
+    const cancelled = visits((v) => v.status === 'Cancelled');
+    const noShow = visits((v) => v.status === 'No Show');
     const counts = {
-      bookings: bookings.length, completed, cancelled, noShow,
-      consultations: bookings.filter(isConsult).length,
-      treatments: bookings.filter((x) => !isConsult(x)).length,
-      completedConsultations: bookings.filter((x) => x.status === 'Completed' && isConsult(x)).length,
-      completedTreatments: bookings.filter((x) => x.status === 'Completed' && !isConsult(x)).length,
-      upcoming: bookings.filter((x) => ['Confirmed', 'Awaiting Confirmation', 'Rescheduled'].includes(x.status)).length,
-      awaitingConfirmation: bookings.filter((x) => x.status === 'Awaiting Confirmation').length,
-      noShowRate: bookings.length ? round((noShow / bookings.length) * 100) : 0,
-      cancellationRate: bookings.length ? round((cancelled / bookings.length) * 100) : 0,
+      bookings: visitCount, completed, cancelled, noShow,
+      consultations: visits((v) => v.consult),
+      treatments: visits((v) => !v.consult),
+      completedConsultations: visits((v) => v.status === 'Completed' && v.consult),
+      completedTreatments: visits((v) => v.status === 'Completed' && !v.consult),
+      upcoming: visits((v) => ['Confirmed', 'Awaiting Confirmation', 'Rescheduled'].includes(v.status)),
+      awaitingConfirmation: visits((v) => v.status === 'Awaiting Confirmation'),
+      noShowRate: visitCount ? round((noShow / visitCount) * 100) : 0,
+      cancellationRate: visitCount ? round((cancelled / visitCount) * 100) : 0,
       orders: ordersScoped.length, paidOrders: paidOrders.length, ordersByStatus: by(ordersScoped, (o) => o.orderStatus),
       openOrders: ordersScoped.filter((o) => !['Delivered', 'Cancelled', 'Returned'].includes(o.orderStatus)).length,
       packagesAssigned: packages.length, packagesPaid: paidPackages.length,
       packagesUnpaid: packages.filter((p) => !(p.payment && p.payment.isReceived)).length,
       membershipsSold: membershipCount, membershipsUnpriced, activeZen, zenExpiring, newPatients, totalPatients,
       existingPatients, newThisMonth, treatmentsThisWeek, upcomingAll, appointmentsAllTime, returningPatients,
-      bookingsBySource: by(bookings, (x) => x.source || 'app'),
-      outstanding: round(sum(bookings.filter((x) => x.paymentStatus === 'pending' && !['Cancelled', 'No Show'].includes(x.status)), (x) => x.amount)
+      bookingsBySource: countRows.reduce((m, r) => { const k = r._id.source || 'app'; m[k] = (m[k] || 0) + r.count; return m; }, {}),
+      outstanding: round(sum(countRows.filter((r) => !['Cancelled', 'No Show'].includes(r._id.status)), (r) => r.pending)
         + sum(packages.filter((p) => !(p.payment && p.payment.isReceived) && p.status === 'Active'), (p) => p.pricing && p.pricing.finalAmount)),
       averageTicket: paidCount + paidOrders.length + paidPackages.length + membershipsScoped.length
         ? round(totalRevenue / (paidCount + paidOrders.length + paidPackages.length + membershipsScoped.length)) : 0,
@@ -336,7 +355,8 @@ exports.getDashboard = async (req, res) => {
     const practitionerByName = new Map(zenotiPractitioners.map((p) => [p.normalizedName || canonicalName(p.name), p]));
     const practitionerByLocal = new Map(zenotiPractitioners.filter((p) => p.onboardedDoctorId).map((p) => [String(p.onboardedDoctorId).toLowerCase(), p]));
     const perf = new Map();
-    for (const bk of bookings) {
+    for (const g of perfRows) {
+      const bk = g._id;
       const specialistKey = bk.specialistId && String(bk.specialistId).toLowerCase();
       const external = (bk.zenotiTherapistId && practitionerByEmployee.get(String(bk.zenotiTherapistId).toLowerCase()))
         || (bk.specialistName && practitionerByName.get(canonicalName(bk.specialistName)))
@@ -362,23 +382,26 @@ exports.getDashboard = async (req, res) => {
         doctorId: id, name: d ? d.name : external?.name || bk.specialistName, photo: d ? d.photo : null,
         tier: d ? d.tier : null, level: d ? (d.tier === 'senior-consultant' ? 'Senior Dermatologist' : 'Dermatologist') : 'Zenoti practitioner',
         source, onboarded: Boolean(d), zenotiEmployeeId: external?.zenotiEmployeeId || null,
-        bookings: 0, consultations: 0, treatments: 0, completed: 0, noShow: 0, cancelled: 0, revenue: 0, ratings: [], patients: new Set(),
+        bookings: 0, consultations: 0, treatments: 0, completed: 0, noShow: 0, cancelled: 0, revenue: 0, ratingSum: 0, ratingCount: 0, patients: new Set(),
       };
-      row.bookings += 1;
-      if (isConsult(bk)) row.consultations += 1; else row.treatments += 1;
-      if (bk.status === 'Completed') row.completed += 1;
-      if (bk.status === 'No Show') row.noShow += 1;
-      if (bk.status === 'Cancelled') row.cancelled += 1;
-      if (bk.paymentStatus === 'paid') row.revenue += Number(bk.amount) || 0;
-      if (bk.rating) row.ratings.push(bk.rating);
-      if (bk.userId) row.patients.add(String(bk.userId));
+      // Whichever group arrives first creates the row; a later one may know the roster id.
+      if (!row.zenotiEmployeeId && external?.zenotiEmployeeId) row.zenotiEmployeeId = external.zenotiEmployeeId;
+      row.bookings += g.count;
+      if (bk.consult) row.consultations += g.count; else row.treatments += g.count;
+      if (bk.status === 'Completed') row.completed += g.count;
+      if (bk.status === 'No Show') row.noShow += g.count;
+      if (bk.status === 'Cancelled') row.cancelled += g.count;
+      row.revenue += Number(g.paid) || 0;
+      row.ratingSum += Number(g.ratingSum) || 0;
+      row.ratingCount += Number(g.ratingCount) || 0;
+      for (const u of g.users || []) if (u) row.patients.add(String(u));
       perf.set(id, row);
     }
     const dermatologists = [...perf.values()].map((r) => ({
       ...r, revenue: round(r.revenue), patients: r.patients.size,
-      avgRating: r.ratings.length ? round(r.ratings.reduce((a, b) => a + b, 0) / r.ratings.length) : null,
+      avgRating: r.ratingCount ? round(r.ratingSum / r.ratingCount) : null,
       completionRate: r.bookings ? round((r.completed / r.bookings) * 100) : 0,
-      ratings: undefined,
+      ratingSum: undefined, ratingCount: undefined,
     })).sort((a, b) => b.revenue - a.revenue || b.completed - a.completed);
     // Dermatologists with no bookings in the window still belong on the board.
     docs.forEach((d) => {
@@ -395,14 +418,15 @@ exports.getDashboard = async (req, res) => {
     });
 
     // ---- services, centres, payment mix, series --------------------------
-    const svcNames = new Map((await Consultation.find({ _id: { $in: [...new Set(bookings.map((x) => x.consultationId).filter(Boolean).map(String))] } }).select('name category').lean()).map((c) => [String(c._id), c]));
+    const svcNames = new Map((await Consultation.find({ _id: { $in: [...new Set(svcRows.map((r) => r._id.consultationId).filter(Boolean).map(String))] } }).select('name category').lean()).map((c) => [String(c._id), c]));
     const svcAgg = new Map();
-    for (const bk of bookings) {
+    for (const g of svcRows) {
+      const bk = g._id;
       const c = bk.consultationId ? svcNames.get(String(bk.consultationId)) : null;
       const name = (c && c.name) || bk.externalServiceName || 'Other';
-      const row = svcAgg.get(name) || { name, category: (c && c.category) || bk.externalServiceCategory || null, kind: isConsult(bk) ? 'consultation' : 'treatment', bookings: 0, revenue: 0 };
-      row.bookings += 1;
-      if (bk.paymentStatus === 'paid') row.revenue += Number(bk.amount) || 0;
+      const row = svcAgg.get(name) || { name, category: (c && c.category) || bk.externalServiceCategory || null, kind: bk.consult ? 'consultation' : 'treatment', bookings: 0, revenue: 0 };
+      row.bookings += g.count;
+      row.revenue += Number(g.paid) || 0;
       svcAgg.set(name, row);
     }
     const topServices = [...svcAgg.values()].map((r) => ({ ...r, revenue: round(r.revenue) })).sort((a, b) => b.revenue - a.revenue || b.bookings - a.bookings).slice(0, 10);
@@ -412,7 +436,7 @@ exports.getDashboard = async (req, res) => {
     const bump = (name, amt, cnt = 1) => { const k = name || 'Unassigned'; centreAgg[k] = centreAgg[k] || { centre: k, revenue: 0, bookings: 0 }; centreAgg[k].revenue += amt; centreAgg[k].bookings += cnt; };
     const branchNameById = new Map(branches.map((x) => [String(x._id), x.name]));
     paidRows.forEach((r) => bump(r._id.preferredLocation || branchNameById.get(String(r._id.branchId)), Number(r.revenue) || 0, 0));
-    bookings.forEach((bk) => bump(bk.preferredLocation || branchNameById.get(String(bk.branchId)), 0, 1));
+    countRows.forEach((r) => bump(r._id.preferredLocation || branchNameById.get(String(r._id.branchId)), 0, r.count));
     // Packages sold here carry a centre; clinic package and retail sales carry
     // the guest's home centre. Only app product orders have no centre at all.
     paidPackages.forEach((p) => bump(p.preferredLocation || branchNameById.get(String(p.branchId)), (p.pricing && p.pricing.finalAmount) || 0, 0));
@@ -441,7 +465,7 @@ exports.getDashboard = async (req, res) => {
     const addClinic = (key, rows) => rows.forEach((r) => { const row = series[r._id.day]; if (!row) return; row[key] = round(row[key] + (Number(r.revenue) || 0)); row.total = round(row.total + (Number(r.revenue) || 0)); });
     addClinic('products', zOrderRows);
     addClinic('packages', zPackageRows);
-    bookings.forEach((bk) => { const row = series[dayKey(bk.confirmedDate || bk.preferredDate)]; if (row) row.bookings += 1; });
+    dayRows.forEach((r) => { const row = series[r._id]; if (row) row.bookings += r.count; });
 
     const body = {
       success: true,

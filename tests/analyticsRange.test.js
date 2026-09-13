@@ -246,3 +246,47 @@ test('cache: bounded — the least recently used entry goes first', async () => 
     responseCache.clear();
   }
 });
+
+test('cache: concurrent identical requests share one handler run (WAIT), the leader stores it', async () => {
+  responseCache.clear();
+  const mw = responseCache.cacheFor(60);
+  let runs = 0;
+  let finish;
+  const slow = new Promise((resolve) => { finish = resolve; });
+  // The leader's handler does not answer until we say so.
+  const leader = fakeRes();
+  let leaderNexted = false;
+  await mw(req({}, admin()), leader, () => { leaderNexted = true; runs += 1; slow.then(() => leader.status(200).json({ runs })); });
+  assert.strictEqual(leaderNexted, true);
+  assert.strictEqual(responseCache.stats().inflight, 1);
+
+  const follower = fakeRes();
+  let followerNexted = false;
+  const waiting = mw(req({}, admin()), follower, () => { followerNexted = true; runs += 1; });
+  finish();
+  await waiting;
+  assert.strictEqual(followerNexted, false, 'the follower must not run the handler again');
+  assert.strictEqual(follower.res ? follower.res.headers['X-Cache'] : follower.headers['X-Cache'], 'WAIT');
+  assert.deepStrictEqual(follower.body, { runs: 1 });
+  assert.strictEqual(runs, 1);
+  assert.strictEqual(responseCache.stats().inflight, 0);
+  const later = await run(mw, req({}, admin()), () => { runs += 1; });
+  assert.strictEqual(later.res.headers['X-Cache'], 'HIT');
+});
+
+test('cache: when the leader fails, followers compute their own answer', async () => {
+  responseCache.clear();
+  const mw = responseCache.cacheFor(60);
+  const leader = fakeRes();
+  let fail;
+  const failing = new Promise((resolve) => { fail = resolve; });
+  await mw(req({}, admin()), leader, () => { failing.then(() => leader.status(500).json({ success: false })); });
+  const follower = fakeRes();
+  let followerRan = false;
+  const waiting = mw(req({}, admin()), follower, () => { followerRan = true; follower.status(200).json({ ok: true }); });
+  fail();
+  await waiting;
+  assert.strictEqual(followerRan, true);
+  assert.deepStrictEqual(follower.body, { ok: true });
+  assert.strictEqual(responseCache.stats().inflight, 0);
+});
