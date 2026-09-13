@@ -451,6 +451,22 @@ bookingSchema.index({ userId: 1, eventAt: -1 });
 bookingSchema.index({ eventAt: -1 });
 bookingSchema.index({ preferredDate: 1, preferredLocation: 1 });
 bookingSchema.index({ createdAt: -1 });
+/*
+ * Revenue windows read paid visits as
+ *   { paymentStatus: 'paid', $or: [{ paidAt: in window }, { paidAt: null, createdAt: in window }] }
+ * (dashboard, monthly trend, top guests, staff sales). One compound serves
+ * both branches of that `$or`: the first on (paymentStatus, paidAt), the
+ * second on (paymentStatus, paidAt = null, createdAt). Without it every
+ * revenue tile scanned the whole collection for the paid rows.
+ */
+bookingSchema.index({ paymentStatus: 1, paidAt: 1, createdAt: 1 });
+/*
+ * Bookings "happen" on their slot day, and every window query reads
+ *   { $or: [{ confirmedDate: in window }, { confirmedDate: null, preferredDate: in window }] }
+ * (dashboard, appointment and service analytics). Each `$or` branch needs an
+ * index or the whole `$or` falls back to a scan; this one serves both.
+ */
+bookingSchema.index({ confirmedDate: 1, preferredDate: 1 });
 bookingSchema.index(
   { razorpayOrderId: 1 },
   { unique: true, sparse: true, name: 'one_booking_per_razorpay_order' }

@@ -360,6 +360,14 @@ const packageAssignmentSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Analytics windows: assignments made in a period ({ createdAt: in window })
+// and package money by when it was received —
+//   { 'payment.isReceived': true, $or: [{ 'payment.receivedDate': in window }, { 'payment.receivedDate': null, createdAt: in window }] }
+// (dashboard, monthly revenue, today's sales). The compound serves both `$or`
+// branches: (isReceived, receivedDate) and (isReceived, receivedDate = null, createdAt).
+packageAssignmentSchema.index({ createdAt: -1 });
+packageAssignmentSchema.index({ 'payment.isReceived': 1, 'payment.receivedDate': 1, createdAt: 1 });
+
 // Generate assignment ID before saving
 packageAssignmentSchema.pre('save', async function(next) {
   this._wasNew = this.isNew;

@@ -22,12 +22,15 @@ const Branch = require('../models/Branch');
 const ZenotiGuestData = require('../models/ZenotiGuestData');
 const { consultationIdsByKind } = require('../utils/listFilters');
 const { canonicalName } = require('../utils/dermatologistMatch');
-const { addClinicDays, clinicDateKey, clinicDayEnd, clinicDayStart } = require('../utils/bookingTime');
+const { CLINIC_TIME_ZONE, addClinicDays, clinicDateKey, clinicDayEnd, clinicDayStart } = require('../utils/bookingTime');
+const { reportWindow } = require('./analyticsController');
 
 const CONSULT_RX = /consult|counsel/i;
 const dayKey = clinicDateKey;
 const sum = (arr, f) => arr.reduce((n, x) => n + (Number(f(x)) || 0), 0);
 const round = (n) => Math.round((Number(n) || 0) * 100) / 100;
+/** Numbers as the database sees them: a string amount or a null counts as 0, like `sum()` above. */
+const num = (expr) => ({ $convert: { input: expr, to: 'double', onError: 0, onNull: 0 } });
 
 /**
  * The oldest day the clinic has any record for, as a clinic-local YYYY-MM-DD.
@@ -53,36 +56,28 @@ async function earliestDataDay() {
 }
 
 /*
- * A short cache, because the shape of this endpoint is expensive.
- *
- * It loads the window's bookings into memory to shape them: 3.7 seconds for
- * the whole history, against 290ms for the same figures by aggregation. The
- * proper fix is to push that shaping into the database, which is a rewrite of
- * a working controller and not something to do in passing. Meanwhile the desk
- * opens this page constantly and the numbers move slowly, so every load inside
- * a minute of the last one is instant.
+ * Caching lives in routes/analytics.js (utils/responseCache, 60 s, keyed by
+ * URL and caller scope) — the same cache every analytics endpoint uses, so one
+ * POST /cache/clear empties all of them together. This handler used to keep
+ * its own map, which nothing could clear.
  */
-const dashCache = new Map(); // key -> { at, body }
-const DASH_TTL_MS = 60 * 1000;
-
 exports.getDashboard = async (req, res) => {
-  const cacheKey = JSON.stringify([req.query.startDate || '', req.query.endDate || '', req.query.branchId || '']);
-  const hit = dashCache.get(cacheKey);
-  if (hit && Date.now() - hit.at < DASH_TTL_MS) return res.json(hit.body);
   try {
     // ---- window + scope ---------------------------------------------------
-    const today = clinicDateKey(new Date());
-    const endKey = req.query.endDate || today;
     /*
      * Default to EVERYTHING, not the last 30 days.
      *
      * The clinic reads this page to answer "how are we doing", and a 30-day
      * window silently hid four years of history behind a date picker nobody
-     * knew to move — the totals looked small and wrong. The floor is the oldest
-     * thing on record, computed once and cached, so "all time" costs nothing.
+     * knew to move — the totals looked small and wrong. An open start (no
+     * startDate, or the panel's 2015 floor) is pinned to the oldest thing on
+     * record, computed once and cached, so "all time" costs nothing and the
+     * daily series and the previous-period comparison have a real first day.
      */
-    const startKey = req.query.startDate || await earliestDataDay();
-    const end = clinicDayEnd(endKey);
+    const win = reportWindow(req, { defaultDays: null });
+    const endKey = win.endKey;
+    const startKey = win.openStart ? await earliestDataDay() : win.startKey;
+    const end = win.end;
     const start = clinicDayStart(startKey);
     const days = Math.max(1, Math.round((end - start + 1) / 86400000));
     const prevStart = new Date(start.getTime() - days * 86400000);
@@ -115,20 +110,55 @@ exports.getDashboard = async (req, res) => {
     // complete list, by sale date — so the app-side rows must exclude them or
     // every clinic sale is counted twice, once as "app" and once as "clinic".
     const appOnly = { source: { $ne: 'zenoti' } };
-    const [bookings, paidBookings, prevPaidBookings, orders, prevOrders, packages, prevPackages, memberships, prevMemberships] = await Promise.all([
+    /*
+     * Paid visits are only ever SUMMED — by kind, by source, by tender, by
+     * centre and by day — so the database groups them and returns a few hundred
+     * rows at most, where this used to load every paid booking in the window
+     * (the whole history for All time) to add them up here. `consult` is the
+     * same test as isConsult(): catalogue id in the consultation set, else the
+     * Zenoti service name. The slot-window rows below stay in memory: the
+     * leaderboard matches each row against the doctor roster by name, which is
+     * per-row logic no aggregate expresses cleanly.
+     */
+    const consultExpr = {
+      $cond: [
+        { $eq: [{ $type: '$consultationId' }, 'objectId'] },
+        { $in: ['$consultationId', consult] },
+        { $regexMatch: { input: { $ifNull: ['$externalServiceName', ''] }, regex: CONSULT_RX.source, options: 'i' } },
+      ],
+    };
+    const paidGroup = (s, e) => Booking.aggregate([
+      { $match: { $and: [bookingBranch, paidIn(s, e)] } },
+      { $group: {
+        _id: {
+          day: { $dateToString: { format: '%Y-%m-%d', date: { $ifNull: ['$paidAt', '$createdAt'] }, timezone: CLINIC_TIME_ZONE } },
+          consult: consultExpr, source: '$source', method: '$paymentMethod',
+          preferredLocation: '$preferredLocation', branchId: '$branchId',
+        },
+        revenue: { $sum: num('$amount') }, count: { $sum: 1 },
+      } },
+    ]);
+    // The previous window is compared as one figure per stream: a sum and a count.
+    const totalOf = (Model, match, amountExpr, extra = {}) => Model.aggregate([
+      { $match: match }, { $group: { _id: null, revenue: { $sum: amountExpr }, n: { $sum: 1 }, ...extra } },
+    ]).then((r) => r[0] || { revenue: 0, n: 0 });
+
+    const [bookings, paidRows, prevPaid, orders, prevOrders, packages, prevPackages, memberships, prevMemberships] = await Promise.all([
       // $and, not a spread: both the centre filter and the window use `$or`, and
       // spreading them let the window silently replace the centre — so a
       // centre's Overview showed every centre's visits.
       Booking.find({ $and: [bookingBranch, slotIn(start, end)] }).select(bookingFields).lean(),
-      Booking.find({ $and: [bookingBranch, paidIn(start, end)] }).select(bookingFields).lean(),
-      Booking.find({ $and: [bookingBranch, paidIn(prevStart, prevEnd)] }).select('amount').lean(),
+      paidGroup(start, end),
+      totalOf(Booking, { $and: [bookingBranch, paidIn(prevStart, prevEnd)] }, num('$amount')),
       ProductOrder.find({ ...appOnly, createdAt: { $gte: start, $lte: end } }).select('pricing paymentStatus paymentMethod orderStatus createdAt userId items').lean(),
-      ProductOrder.find({ ...appOnly, createdAt: { $gte: prevStart, $lte: prevEnd }, paymentStatus: 'Paid', orderStatus: { $nin: ['Cancelled', 'Returned'] } }).select('pricing').lean(),
+      totalOf(ProductOrder, { ...appOnly, createdAt: { $gte: prevStart, $lte: prevEnd }, paymentStatus: 'Paid', orderStatus: { $nin: ['Cancelled', 'Returned'] } }, num('$pricing.total')),
       PackageAssignment.find({ ...pkgBranch, ...appOnly, createdAt: { $gte: start, $lte: end } }).select('pricing payment status createdAt packageDetails packageId userId preferredLocation branchId').lean(),
-      PackageAssignment.find({ ...pkgBranch, ...appOnly, createdAt: { $gte: prevStart, $lte: prevEnd }, 'payment.isReceived': true }).select('pricing').lean(),
+      totalOf(PackageAssignment, { ...pkgBranch, ...appOnly, createdAt: { $gte: prevStart, $lte: prevEnd }, 'payment.isReceived': true }, num('$pricing.finalAmount')),
       Payment.find({ orderType: 'ZenMembership', status: 'captured', createdAt: { $gte: start, $lte: end } }).select('amount method createdAt userId').lean(),
-      Payment.find({ orderType: 'ZenMembership', status: 'captured', createdAt: { $gte: prevStart, $lte: prevEnd } }).select('amount userId').lean(),
+      totalOf(Payment, { orderType: 'ZenMembership', status: 'captured', createdAt: { $gte: prevStart, $lte: prevEnd } }, num('$amount'), { users: { $addToSet: '$userId' } }),
     ]);
+    const paidCount = sum(paidRows, (r) => r.count);
+    const paidWhere = (f) => sum(paidRows.filter(f), (r) => r.revenue);
 
     // Product orders have no branch; when scoped, attribute by the guest's home centre.
     let ordersScoped = orders;
@@ -169,10 +199,10 @@ exports.getDashboard = async (req, res) => {
     const membershipsUnpriced = membersWithoutPayment.filter((u) => !(Number(u.zenMembershipAmount) > 0)).length;
 
     // ---- revenue by stream ------------------------------------------------
-    const consultRev = sum(paidBookings.filter(isConsult), (x) => x.amount);
-    const treatRev = sum(paidBookings.filter((x) => !isConsult(x)), (x) => x.amount);
-    const clinicConsultRev = sum(paidBookings.filter((x) => x.source === 'zenoti' && isConsult(x)), (x) => x.amount);
-    const clinicTreatRev = sum(paidBookings.filter((x) => x.source === 'zenoti' && !isConsult(x)), (x) => x.amount);
+    const consultRev = paidWhere((r) => r._id.consult);
+    const treatRev = paidWhere((r) => !r._id.consult);
+    const clinicConsultRev = paidWhere((r) => r._id.source === 'zenoti' && r._id.consult);
+    const clinicTreatRev = paidWhere((r) => r._id.source === 'zenoti' && !r._id.consult);
     const productRev = sum(paidOrders, (o) => o.pricing && o.pricing.total);
     const packageRev = sum(paidPackages, (p) => p.pricing && p.pricing.finalAmount);
     const membershipRev = sum(membershipsScoped, (m) => m.amount);
@@ -215,16 +245,16 @@ exports.getDashboard = async (req, res) => {
       memberType: 'Zen Member',
       zenMembershipStartDate: { $gte: prevStart, $lte: prevEnd },
     }).select('_id zenMembershipAmount').lean();
-    const prevPaidMemberIds = new Set(prevMemberships.map((p) => String(p.userId)));
+    const prevPaidMemberIds = new Set((prevMemberships.users || []).map((id) => String(id)));
     // Same composition as the current window (app rows + clinic mirror), or the
     // comparison would flatter every period against a previous one that never
     // included the clinic's own package and retail sales.
-    const prevRevenue = round(sum(prevPaidBookings, (x) => x.amount) + sum(prevOrders, (o) => o.pricing && o.pricing.total) + sum(prevPackages, (p) => p.pricing && p.pricing.finalAmount)
+    const prevRevenue = round(prevPaid.revenue + prevOrders.revenue + prevPackages.revenue
       + prevClinicRev
-      + sum(prevMemberships, (m) => m.amount)
+      + prevMemberships.revenue
       + sum(prevMembers.filter((u) => !prevPaidMemberIds.has(String(u._id))), (u) => u.zenMembershipAmount));
     // A previous window with nothing in it is "no comparable data", not a 0% drop.
-    const prevHasData = prevPaidBookings.length + prevOrders.length + prevPackages.length + prevMemberships.length + prevMembers.length + zPrevOrders.length + zPrevPackages.length > 0;
+    const prevHasData = prevPaid.n + prevOrders.n + prevPackages.n + prevMemberships.n + prevMembers.length + zPrevOrders.length + zPrevPackages.length > 0;
     const growth = prevHasData && prevRevenue > 0 ? round(((totalRevenue - prevRevenue) / prevRevenue) * 100) : null;
 
     // ---- counts -----------------------------------------------------------
@@ -291,8 +321,8 @@ exports.getDashboard = async (req, res) => {
       bookingsBySource: by(bookings, (x) => x.source || 'app'),
       outstanding: round(sum(bookings.filter((x) => x.paymentStatus === 'pending' && !['Cancelled', 'No Show'].includes(x.status)), (x) => x.amount)
         + sum(packages.filter((p) => !(p.payment && p.payment.isReceived) && p.status === 'Active'), (p) => p.pricing && p.pricing.finalAmount)),
-      averageTicket: paidBookings.length + paidOrders.length + paidPackages.length + membershipsScoped.length
-        ? round(totalRevenue / (paidBookings.length + paidOrders.length + paidPackages.length + membershipsScoped.length)) : 0,
+      averageTicket: paidCount + paidOrders.length + paidPackages.length + membershipsScoped.length
+        ? round(totalRevenue / (paidCount + paidOrders.length + paidPackages.length + membershipsScoped.length)) : 0,
     };
 
     // ---- dermatologist leaderboard ---------------------------------------
@@ -365,7 +395,7 @@ exports.getDashboard = async (req, res) => {
     });
 
     // ---- services, centres, payment mix, series --------------------------
-    const svcNames = new Map((await Consultation.find({ _id: { $in: [...new Set(paidBookings.concat(bookings).map((x) => x.consultationId).filter(Boolean).map(String))] } }).select('name category').lean()).map((c) => [String(c._id), c]));
+    const svcNames = new Map((await Consultation.find({ _id: { $in: [...new Set(bookings.map((x) => x.consultationId).filter(Boolean).map(String))] } }).select('name category').lean()).map((c) => [String(c._id), c]));
     const svcAgg = new Map();
     for (const bk of bookings) {
       const c = bk.consultationId ? svcNames.get(String(bk.consultationId)) : null;
@@ -381,7 +411,7 @@ exports.getDashboard = async (req, res) => {
     const centreAgg = {};
     const bump = (name, amt, cnt = 1) => { const k = name || 'Unassigned'; centreAgg[k] = centreAgg[k] || { centre: k, revenue: 0, bookings: 0 }; centreAgg[k].revenue += amt; centreAgg[k].bookings += cnt; };
     const branchNameById = new Map(branches.map((x) => [String(x._id), x.name]));
-    paidBookings.forEach((bk) => bump(bk.preferredLocation || branchNameById.get(String(bk.branchId)), Number(bk.amount) || 0, 0));
+    paidRows.forEach((r) => bump(r._id.preferredLocation || branchNameById.get(String(r._id.branchId)), Number(r.revenue) || 0, 0));
     bookings.forEach((bk) => bump(bk.preferredLocation || branchNameById.get(String(bk.branchId)), 0, 1));
     // Packages sold here carry a centre; clinic package and retail sales carry
     // the guest's home centre. Only app product orders have no centre at all.
@@ -393,7 +423,7 @@ exports.getDashboard = async (req, res) => {
     // "Clinic"; the gateway label belongs only to what the app itself charged.
     const payMix = {};
     const addPay = (m, amt) => { const k = m || 'Other'; payMix[k] = round((payMix[k] || 0) + amt); };
-    paidBookings.forEach((bk) => addPay(bk.source === 'zenoti' ? 'Clinic' : bk.paymentMethod, Number(bk.amount) || 0));
+    paidRows.forEach((r) => addPay(r._id.source === 'zenoti' ? 'Clinic' : r._id.method, Number(r.revenue) || 0));
     paidOrders.forEach((o) => addPay(o.paymentMethod === 'COD' ? 'Cash' : 'Razorpay', (o.pricing && o.pricing.total) || 0));
     paidPackages.forEach((p) => addPay(p.payment && p.payment.paymentMethod, (p.pricing && p.pricing.finalAmount) || 0));
     membershipsScoped.forEach((m) => addPay('Razorpay', m.amount || 0));
@@ -402,7 +432,8 @@ exports.getDashboard = async (req, res) => {
     const series = {};
     for (let i = 0; i < days; i += 1) { const d = new Date(start.getTime() + i * 86400000); series[dayKey(d)] = { date: dayKey(d), consultations: 0, treatments: 0, products: 0, packages: 0, memberships: 0, total: 0, bookings: 0 }; }
     const add = (date, key, amt) => { const row = series[dayKey(date)]; if (!row) return; row[key] = round(row[key] + amt); row.total = round(row.total + amt); };
-    paidBookings.forEach((bk) => add(bk.paidAt || bk.createdAt, isConsult(bk) ? 'consultations' : 'treatments', Number(bk.amount) || 0));
+    // Paid visits arrive already grouped by clinic day (see paidGroup).
+    paidRows.forEach((r) => { const row = series[r._id.day]; if (!row) return; const amt = Number(r.revenue) || 0; const key = r._id.consult ? 'consultations' : 'treatments'; row[key] = round(row[key] + amt); row.total = round(row.total + amt); });
     paidOrders.forEach((o) => add(o.createdAt, 'products', (o.pricing && o.pricing.total) || 0));
     paidPackages.forEach((p) => add((p.payment && p.payment.receivedDate) || p.createdAt, 'packages', (p.pricing && p.pricing.finalAmount) || 0));
     membershipsScoped.forEach((m) => add(m.createdAt, 'memberships', m.amount || 0));
@@ -418,7 +449,8 @@ exports.getDashboard = async (req, res) => {
         period: {
           startDate: dayKey(start), endDate: dayKey(end), days, branch: branchName || 'All centres',
           // So the panel can say "all time" rather than printing a date nobody chose.
-          isAllTime: !req.query.startDate,
+          isAllTime: win.openStart,
+          window: win.openStart ? 'all-time' : { startKey, endKey },
         },
         revenue: { total: totalRevenue, previous: prevRevenue, previousHasData: prevHasData, growthPercent: growth, streams },
         counts, dermatologists, topServices, revenueByCentre,
@@ -426,7 +458,6 @@ exports.getDashboard = async (req, res) => {
         daily: Object.values(series),
       },
     };
-    dashCache.set(cacheKey, { at: Date.now(), body });
     res.json(body);
   } catch (error) {
     console.error('❌ Dashboard analytics failed:', error);

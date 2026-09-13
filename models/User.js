@@ -469,6 +469,10 @@ const UserSchema = new mongoose.Schema({
 
 // Index for faster queries (email and patientId already indexed via unique: true)
 UserSchema.index({ phone: 1 });
+// "Guests joined in this period" — the dashboard's new-guest counts, the
+// acquisition trend and the windowed demographics all count on `createdAt`,
+// which had no index: each was a scan of every guest.
+UserSchema.index({ createdAt: -1 });
 
 // Pre-save hook to generate patient ID
 UserSchema.pre('save', async function(next) {

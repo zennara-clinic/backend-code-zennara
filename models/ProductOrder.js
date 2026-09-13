@@ -316,6 +316,12 @@ productOrderSchema.index({ userId: 1, createdAt: -1 });
 productOrderSchema.index({ orderNumber: 1 }, { unique: true });
 productOrderSchema.index({ orderStatus: 1 });
 productOrderSchema.index({ paymentStatus: 1 });
+// Analytics windows: orders placed in a period ({ createdAt: in window }) and
+// the paid ones ({ paymentStatus: 'Paid', createdAt: in window }) — the
+// dashboard, financial and monthly-revenue reports. `{ userId, createdAt }`
+// above only serves one guest's history, not a clinic-wide window.
+productOrderSchema.index({ createdAt: -1 });
+productOrderSchema.index({ paymentStatus: 1, createdAt: -1 });
 productOrderSchema.index(
   { razorpayOrderId: 1 },
   { unique: true, sparse: true, name: 'one_product_order_per_razorpay_order' }

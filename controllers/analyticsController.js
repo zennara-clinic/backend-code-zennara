@@ -10,7 +10,7 @@ const Inventory = require('../models/Inventory');
 // the first thing to touch packages in a process (scripts, tests).
 require('../models/Package');
 const {
-  addClinicDays, clinicDateKey, clinicDayEnd, clinicDayStart, formatClinicDate, parseClockMinutes,
+  CLINIC_TIME_ZONE, addClinicDays, clinicDateKey, clinicDayEnd, clinicDayStart, formatClinicDate, parseClockMinutes,
 } = require('../utils/bookingTime');
 const { COUNTABLE: BOOKING_COUNTABLE, ATTENDED: BOOKING_PRESENT_OR_DONE } = require('../utils/bookingStatuses');
 const { guestCodeOf } = require('../utils/guestCode');
@@ -33,45 +33,162 @@ const dateScope = (req, field = 'createdAt') => {
   return { [field]: r };
 };
 
+/*
+ * The panel sends "All time" as an endDate with no startDate — or, to the
+ * endpoints that used to fall back to their own last-30-days, a start of
+ * 2015-01-01 (lib/ranges.ts ALL_TIME_FLOOR). Either means "no lower bound".
+ */
+const ALL_TIME_FLOOR_KEY = '2015-01-01';
+
+/**
+ * ONE reading of the report window for every analytics handler.
+ *
+ * Before this each handler read the range its own way — `startDate`/`endDate`
+ * here, `days` there, `from`/`to` for staff sales, and four endpoints took no
+ * range at all — so flipping "This month" to "Last 90 days" moved some tiles
+ * and not others, and the totals stopped agreeing with each other.
+ *
+ * Inputs, in order of precedence: `startDate`/`endDate` (clinic day keys, or
+ * ISO instants converted to their clinic day), then `from`/`to` (the staff
+ * sales report's older names), then `days` (the guests endpoint's older form:
+ * that many clinic days ending today). With nothing given, the last
+ * `defaultDays` clinic days ending today; pass `defaultDays: null` for
+ * "everything" (the dashboard's default).
+ *
+ * A missing start is OPEN — no lower bound — whenever an end was given, and a
+ * start at or before the 2015 floor is open too. Open means `start` is null,
+ * `startKey` is null and `days` is null; callers that need a concrete day (a
+ * daily series, an average per day) pick the oldest record themselves.
+ *
+ * Returns `{ start: Date|null, end: Date, startKey, endKey, days, openStart }`;
+ * `end` is the inclusive end-of-day instant, ready for `$lte`.
+ */
+function reportWindow(req, { defaultDays = 30 } = {}) {
+  const q = (req && req.query) || {};
+  const keyOf = (v) => {
+    if (v === undefined || v === null || v === '') return null;
+    const d = clinicDayStart(v);
+    return d ? clinicDateKey(d) : null;
+  };
+  const today = clinicDateKey(new Date());
+  const endGiven = keyOf(q.endDate) || keyOf(q.to);
+  const endKey = endGiven || today;
+  let startKey = keyOf(q.startDate) || keyOf(q.from);
+  let openStart = false;
+  if (startKey) {
+    if (startKey <= ALL_TIME_FLOOR_KEY) { openStart = true; startKey = null; }
+  } else if (endGiven) {
+    openStart = true;
+  } else {
+    const n = q.days !== undefined && q.days !== '' ? Math.floor(Number(q.days)) : null;
+    const span = n && n > 0 ? n : defaultDays;
+    if (span === null || span === undefined) openStart = true;
+    else startKey = addClinicDays(endKey, -(Math.max(1, span) - 1));
+  }
+  const end = clinicDayEnd(endKey);
+  const start = openStart ? null : clinicDayStart(startKey);
+  const days = openStart ? null : Math.max(1, Math.round((end - start + 1) / 86400000));
+  return { start, end, startKey, endKey, days, openStart };
+}
+exports.reportWindow = reportWindow;
+
+/** `{ field: { $gte?, $lte } }` for a window — no `$gte` when the start is open. */
+const within = (w, field) => ({ [field]: { ...(w.start ? { $gte: w.start } : {}), $lte: w.end } });
+/** Money is recognised when paid; legacy paid rows without `paidAt` fall back to `createdAt`. */
+const paidWithin = (w) => ({ paymentStatus: 'paid', $or: [within(w, 'paidAt'), { paidAt: null, ...within(w, 'createdAt') }] });
+/** Package money by its received date, else the assignment's creation. */
+const receivedWithin = (w) => ({ 'payment.isReceived': true, $or: [within(w, 'payment.receivedDate'), { 'payment.receivedDate': null, ...within(w, 'createdAt') }] });
+/** Bookings "happen" on their slot day: the confirmed date, else the preferred one. */
+const slotWithin = (w) => ({ $or: [within(w, 'confirmedDate'), { confirmedDate: null, ...within(w, 'preferredDate') }] });
+/** The response's account of the window, so a tile can say what it covers. */
+const windowOut = (w) => (w.openStart ? 'all-time' : { startKey: w.startKey, endKey: w.endKey });
+
+/*
+ * Time-series buckets. A window of two months or less is read day by day (the
+ * "This month" chart); anything longer, month by month. Keys are clinic days
+ * and clinic months — `$dateToString` with the clinic zone in the database,
+ * `clinicDateKey` in JavaScript — so both sides agree on where a day ends.
+ */
+const DAY_SERIES_MAX_DAYS = 62;
+const seriesGranularity = (w) => (!w.openStart && w.days <= DAY_SERIES_MAX_DAYS ? 'day' : 'month');
+const bucketFormat = (granularity) => (granularity === 'day' ? '%Y-%m-%d' : '%Y-%m');
+const monthKeyOf = (dayKey) => dayKey.slice(0, 7);
+/** YYYY-MM plus whole months, without touching the server's local calendar. */
+const addMonths = (monthKey, n) => {
+  const [y, m] = monthKey.split('-').map(Number);
+  const d = new Date(Date.UTC(y, m - 1 + n, 1));
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+};
+const monthLabel = (monthKey) => formatClinicDate(clinicDayStart(`${monthKey}-01`), { month: 'short', year: 'numeric' });
+const dayLabel = (dayKey) => formatClinicDate(clinicDayStart(dayKey), { month: 'short', day: 'numeric', year: 'numeric' });
+/** Every bucket key from `fromKey` to `toKey` (clinic days), even the empty ones — a chart needs its zeros. */
+function bucketKeys(granularity, fromKey, toKey) {
+  const keys = [];
+  if (!fromKey || !toKey || fromKey > toKey) return keys;
+  if (granularity === 'day') {
+    for (let k = fromKey; k <= toKey; k = addClinicDays(k, 1)) keys.push(k);
+    return keys;
+  }
+  const last = monthKeyOf(toKey);
+  for (let k = monthKeyOf(fromKey); k <= last; k = addMonths(k, 1)) keys.push(k);
+  return keys;
+}
+/** `$group` a stream into `{ _id: bucketKey, value }` — the sum done in the database, not here. */
+const bucketStage = (granularity, dateExpr, amountExpr) => ({
+  $group: {
+    _id: { $dateToString: { format: bucketFormat(granularity), date: dateExpr, timezone: CLINIC_TIME_ZONE } },
+    value: { $sum: amountExpr },
+  },
+});
+/** Numbers as the database sees them: a string amount or a null counts as 0, like `Number(x) || 0`. */
+const num = (expr) => ({ $convert: { input: expr, to: 'double', onError: 0, onNull: 0 } });
+/** The centre name behind a `branchId` query value — the branch-name filters need it. */
+async function branchNameOf(scope) {
+  if (scope.preferredLocation) return scope.preferredLocation;
+  if (scope.branchId) return (await Branch.findById(scope.branchId).select('name').lean())?.name || null;
+  return null;
+}
+
 exports.getFinancialAnalytics = async (req, res) => {
   try {
-    const { startDate, endDate, branchId } = req.query;
-    
-    // Default to last 30 days if no dates provided
-    const start = startDate ? new Date(startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const end = endDate ? new Date(endDate) : new Date();
-    
+    const { branchId } = req.query;
+    // Clinic-day window; an open start (All time) drops the lower bound.
+    const win = reportWindow(req, { defaultDays: 30 });
+    const { start, end } = win;
+
     // Build query filters
     const bookingFilter = {
-      createdAt: { $gte: start, $lte: end },
+      ...within(win, 'createdAt'),
       status: { $in: BOOKING_COUNTABLE }
     };
-    
+
     const orderFilter = {
-      createdAt: { $gte: start, $lte: end },
+      ...within(win, 'createdAt'),
       orderStatus: { $nin: ['Cancelled', 'Returned'] }
     };
-    
+
     const packageFilter = {
-      createdAt: { $gte: start, $lte: end },
+      ...within(win, 'createdAt'),
       status: { $in: ['Active', 'Completed'] }
     };
-    
+
     if (branchId) {
       bookingFilter.branchId = branchId;
     }
-    
-    // Fetch all bookings with consultation details
-    const bookings = await Booking.find(bookingFilter)
-      .populate('consultationId', 'name price category')
-      .populate('branchId', 'name location');
-    
-    // Fetch all product orders
-    const productOrders = await ProductOrder.find(orderFilter);
-    
-    // Fetch all package assignments
-    const packageAssignments = await PackageAssignment.find(packageFilter)
-      .populate('packageId', 'name price');
+
+    // The three main sets feed several breakdowns (centre, category, tender,
+    // the daily series), so they are still shaped here — but only the fields
+    // those breakdowns read, as plain objects. The whole history used to come
+    // in as full hydrated documents for "All time".
+    const [bookings, productOrders, packageAssignments] = await Promise.all([
+      Booking.find(bookingFilter)
+        .select('consultationId branchId preferredLocation createdAt')
+        .populate('consultationId', 'name price category')
+        .populate('branchId', 'name location')
+        .lean(),
+      ProductOrder.find(orderFilter).select('pricing paymentMethod createdAt').lean(),
+      PackageAssignment.find(packageFilter).select('pricing payment createdAt').lean(),
+    ]);
     
     // Calculate consultation revenue
     const consultationRevenue = bookings.reduce((total, booking) => {
@@ -91,37 +208,25 @@ exports.getFinancialAnalytics = async (req, res) => {
     // Total revenue
     const totalRevenue = consultationRevenue + productRevenue + packageRevenue;
     
-    // Calculate outstanding payments (pending orders and unpaid packages)
-    const pendingOrders = await ProductOrder.find({
-      createdAt: { $gte: start, $lte: end },
-      paymentStatus: 'Pending',
-      orderStatus: { $nin: ['Cancelled'] }
-    });
-    
-    const unpaidPackages = await PackageAssignment.find({
-      createdAt: { $gte: start, $lte: end },
-      'payment.isReceived': false,
-      status: { $ne: 'Cancelled' }
-    });
-    
-    const outstandingPayments = 
-      pendingOrders.reduce((sum, order) => sum + order.pricing.total, 0) +
-      unpaidPackages.reduce((sum, pkg) => sum + pkg.pricing.finalAmount, 0);
-    
-    // Calculate refunds and cancellations
-    const cancelledOrders = await ProductOrder.find({
-      createdAt: { $gte: start, $lte: end },
-      orderStatus: { $in: ['Cancelled', 'Returned'] }
-    });
-    
-    const cancelledBookings = await Booking.find({
-      createdAt: { $gte: start, $lte: end },
-      status: 'Cancelled'
-    }).populate('consultationId', 'price');
-    
-    const refundsLost = 
-      cancelledOrders.reduce((sum, order) => sum + order.pricing.total, 0) +
-      cancelledBookings.reduce((sum, booking) => sum + (booking.consultationId?.price || 0), 0);
+    // Outstanding (pending orders, unpaid packages) and lost (cancelled orders,
+    // cancelled visits at catalogue price) are plain sums — the database adds
+    // them up instead of shipping every row here to be added up.
+    const total = (Model, match, amountExpr) => Model.aggregate([
+      { $match: match }, { $group: { _id: null, value: { $sum: amountExpr } } },
+    ]).then((r) => (r[0] && r[0].value) || 0);
+    const [pendingOrderTotal, unpaidPackageTotal, cancelledOrderTotal, cancelledBookingTotal] = await Promise.all([
+      total(ProductOrder, { ...within(win, 'createdAt'), paymentStatus: 'Pending', orderStatus: { $nin: ['Cancelled'] } }, num('$pricing.total')),
+      total(PackageAssignment, { ...within(win, 'createdAt'), 'payment.isReceived': false, status: { $ne: 'Cancelled' } }, num('$pricing.finalAmount')),
+      total(ProductOrder, { ...within(win, 'createdAt'), orderStatus: { $in: ['Cancelled', 'Returned'] } }, num('$pricing.total')),
+      Booking.aggregate([
+        { $match: { ...within(win, 'createdAt'), status: 'Cancelled' } },
+        { $lookup: { from: 'consultations', localField: 'consultationId', foreignField: '_id', as: 'svc' } },
+        { $group: { _id: null, value: { $sum: num({ $arrayElemAt: ['$svc.price', 0] }) } } },
+      ]).then((r) => (r[0] && r[0].value) || 0),
+    ]);
+
+    const outstandingPayments = pendingOrderTotal + unpaidPackageTotal;
+    const refundsLost = cancelledOrderTotal + cancelledBookingTotal;
     
     // Payment method distribution
     const paymentMethodDistribution = {
@@ -250,8 +355,13 @@ exports.getFinancialAnalytics = async (req, res) => {
         revenueByCategory,
         dailyRevenue,
         period: {
+          // `startDate` is null when the start is open (All time).
           startDate: start,
-          endDate: end
+          endDate: end,
+          startKey: win.startKey,
+          endKey: win.endKey,
+          openStart: win.openStart,
+          window: windowOut(win),
         }
       }
     });
@@ -266,65 +376,106 @@ exports.getFinancialAnalytics = async (req, res) => {
 };
 
 /**
- * Monthly revenue, last 12 clinic months, with the SAME definition as the
- * dashboard: money actually charged (Booking.amount when paid, order and
- * package totals, membership payments, and the clinic's own Zenoti package and
- * retail sales by sale date). The old version priced visits from the catalogue
- * — which every mirrored clinic visit lacks — bucketed by server-local month,
- * and double counted the mirrored clinic sales, so it never matched the tiles.
+ * Monthly revenue with the SAME definition as the dashboard: money actually
+ * charged (Booking.amount when paid, order and package totals, membership
+ * payments, and the clinic's own Zenoti package and retail sales by sale
+ * date). The old version priced visits from the catalogue — which every
+ * mirrored clinic visit lacks — bucketed by server-local month, and double
+ * counted the mirrored clinic sales, so it never matched the tiles.
+ *
+ * Two shapes, chosen by whether a range was sent:
+ *   - no range (older callers): the last 12 clinic months, as before —
+ *     `data: [{ month, monthKey, consultationRevenue, productRevenue,
+ *     packageRevenue, membershipRevenue, totalRevenue }]`
+ *   - startDate/endDate (the panel's range picker): the window bucketed by
+ *     day when it spans 62 days or fewer, else by month —
+ *     `data: { granularity: 'day'|'month', points: [{ key, label, value,
+ *     ...the same four streams }], window }`
+ * The sums are done by the database, per bucket; nothing is loaded here.
  */
+const rangeGiven = (req) => ['startDate', 'endDate', 'from', 'to', 'days'].some((k) => req.query[k] !== undefined && req.query[k] !== '');
+
+async function revenueBuckets(win, scope, granularity) {
+  const ZenotiGuestData = require('../models/ZenotiGuestData');
+  const Payment = require('../models/Payment');
+  const branchName = await branchNameOf(scope);
+  const bookingBranch = scope.branchId ? { $or: [{ branchId: scope.branchId }, { branchId: null, preferredLocation: branchName }] } : scope;
+  const appOnly = { source: { $ne: 'zenoti' } };
+  const clinic = (field, dateField) => ZenotiGuestData.aggregate([
+    { $match: branchName ? { branchName } : {} }, { $unwind: `$${field}` },
+    { $addFields: { d: { $convert: { input: `$${field}.${dateField}`, to: 'date', onError: null, onNull: null } } } },
+    { $match: within(win, 'd') },
+    bucketStage(granularity, '$d', { $ifNull: [`$${field}.price`, 0] }),
+  ]);
+
+  const [bookings, orders, packages, memberships, zOrders, zPackages] = await Promise.all([
+    Booking.aggregate([
+      { $match: { $and: [bookingBranch, paidWithin(win)] } },
+      bucketStage(granularity, { $ifNull: ['$paidAt', '$createdAt'] }, num('$amount')),
+    ]),
+    ProductOrder.aggregate([
+      { $match: { ...appOnly, paymentStatus: 'Paid', orderStatus: { $nin: ['Cancelled', 'Returned'] }, ...within(win, 'createdAt') } },
+      bucketStage(granularity, '$createdAt', num('$pricing.total')),
+    ]),
+    PackageAssignment.aggregate([
+      { $match: { ...appOnly, ...(branchName ? { preferredLocation: branchName } : {}), ...receivedWithin(win) } },
+      bucketStage(granularity, { $ifNull: ['$payment.receivedDate', '$createdAt'] }, num('$pricing.finalAmount')),
+    ]),
+    Payment.aggregate([
+      { $match: { orderType: 'ZenMembership', status: 'captured', ...within(win, 'createdAt') } },
+      bucketStage(granularity, '$createdAt', num('$amount')),
+    ]),
+    clinic('orders', 'saleDate'),
+    clinic('packages', 'purchaseDate'),
+  ]);
+
+  const streams = [
+    ['consultationRevenue', bookings], ['productRevenue', orders], ['packageRevenue', packages],
+    ['membershipRevenue', memberships], ['productRevenue', zOrders], ['packageRevenue', zPackages],
+  ];
+  // With an open start the series begins at the oldest bucket that has money in it.
+  const seen = streams.flatMap(([, rows]) => rows.map((r) => r._id)).filter(Boolean).sort();
+  const fromKey = win.openStart ? (seen[0] ? (granularity === 'day' ? seen[0] : `${seen[0]}-01`) : null) : win.startKey;
+  const buckets = new Map(bucketKeys(granularity, fromKey, win.endKey).map((key) => [key, {
+    key, label: granularity === 'day' ? dayLabel(key) : monthLabel(key),
+    consultationRevenue: 0, productRevenue: 0, packageRevenue: 0, membershipRevenue: 0, totalRevenue: 0,
+  }]));
+  for (const [field, rows] of streams) {
+    for (const r of rows) {
+      const b = buckets.get(r._id);
+      if (!b) continue;
+      const n = Number(r.value) || 0;
+      b[field] += n; b.totalRevenue += n;
+    }
+  }
+  return [...buckets.values()].map((b) => ({ ...b, totalRevenue: Math.round(b.totalRevenue) }));
+}
+
 exports.getMonthlyRevenueTrend = async (req, res) => {
   try {
-    const ZenotiGuestData = require('../models/ZenotiGuestData');
-    const Payment = require('../models/Payment');
-    const todayKey = clinicDateKey(new Date());
-    const months = [];
-    let cursor = `${todayKey.slice(0, 8)}01`;
-    for (let i = 0; i < 12; i += 1) { months.unshift(cursor); cursor = `${addClinicDays(cursor, -1).slice(0, 8)}01`; }
-    const start = clinicDayStart(months[0]);
-    const end = clinicDayEnd(todayKey);
-
     const scope = branchScope(req);
-    const branchName = scope.preferredLocation
-      || (scope.branchId ? (await Branch.findById(scope.branchId).select('name').lean())?.name || null : null);
-    const bookingBranch = scope.branchId ? { $or: [{ branchId: scope.branchId }, { branchId: null, preferredLocation: branchName }] } : scope;
-    const paidWindow = { paymentStatus: 'paid', $or: [{ paidAt: { $gte: start, $lte: end } }, { paidAt: null, createdAt: { $gte: start, $lte: end } }] };
-    const appOnly = { source: { $ne: 'zenoti' } };
-    const clinic = (field, dateField) => ZenotiGuestData.aggregate([
-      { $match: branchName ? { branchName } : {} }, { $unwind: `$${field}` },
-      { $addFields: { d: { $convert: { input: `$${field}.${dateField}`, to: 'date', onError: null, onNull: null } } } },
-      { $match: { d: { $gte: start, $lte: end } } },
-      { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$d', timezone: 'Asia/Kolkata' } }, revenue: { $sum: { $ifNull: [`$${field}.price`, 0] } } } },
-    ]);
+    if (rangeGiven(req)) {
+      const win = reportWindow(req, { defaultDays: null });
+      const granularity = seriesGranularity(win);
+      const rows = await revenueBuckets(win, scope, granularity);
+      return res.status(200).json({
+        success: true,
+        data: {
+          granularity,
+          points: rows.map((b) => ({ ...b, value: b.totalRevenue })),
+          window: windowOut(win),
+        },
+      });
+    }
 
-    const [bookings, orders, packages, memberships, zOrders, zPackages] = await Promise.all([
-      Booking.find({ $and: [bookingBranch, paidWindow] }).select('amount paidAt createdAt').lean(),
-      ProductOrder.find({ ...appOnly, paymentStatus: 'Paid', orderStatus: { $nin: ['Cancelled', 'Returned'] }, createdAt: { $gte: start, $lte: end } }).select('pricing createdAt').lean(),
-      PackageAssignment.find({
-        ...appOnly, 'payment.isReceived': true, ...(branchName ? { preferredLocation: branchName } : {}),
-        $or: [{ 'payment.receivedDate': { $gte: start, $lte: end } }, { 'payment.receivedDate': null, createdAt: { $gte: start, $lte: end } }],
-      }).select('pricing payment createdAt').lean(),
-      Payment.find({ orderType: 'ZenMembership', status: 'captured', createdAt: { $gte: start, $lte: end } }).select('amount createdAt').lean(),
-      clinic('orders', 'saleDate'),
-      clinic('packages', 'purchaseDate'),
-    ]);
-
-    const buckets = new Map(months.map((m) => [m.slice(0, 7), {
-      month: formatClinicDate(clinicDayStart(m), { month: 'short', year: 'numeric' }),
-      monthKey: m.slice(0, 7), consultationRevenue: 0, productRevenue: 0, packageRevenue: 0, membershipRevenue: 0, totalRevenue: 0,
-    }]));
-    const add = (key, field, amt) => { const b = buckets.get(key); if (!b) return; const n = Number(amt) || 0; b[field] += n; b.totalRevenue += n; };
-    const monthOf = (d) => (d ? clinicDateKey(d).slice(0, 7) : null);
-    bookings.forEach((b) => add(monthOf(b.paidAt || b.createdAt), 'consultationRevenue', b.amount));
-    orders.forEach((o) => add(monthOf(o.createdAt), 'productRevenue', o.pricing && o.pricing.total));
-    packages.forEach((p) => add(monthOf((p.payment && p.payment.receivedDate) || p.createdAt), 'packageRevenue', p.pricing && p.pricing.finalAmount));
-    memberships.forEach((m) => add(monthOf(m.createdAt), 'membershipRevenue', m.amount));
-    zOrders.forEach((r) => add(r._id, 'productRevenue', r.revenue));
-    zPackages.forEach((r) => add(r._id, 'packageRevenue', r.revenue));
-
-    res.status(200).json({
+    // Older callers: the last 12 clinic months, oldest first.
+    const todayKey = clinicDateKey(new Date());
+    const firstKey = `${addMonths(monthKeyOf(todayKey), -11)}-01`;
+    const win = { start: clinicDayStart(firstKey), end: clinicDayEnd(todayKey), startKey: firstKey, endKey: todayKey, days: null, openStart: false };
+    const rows = await revenueBuckets(win, scope, 'month');
+    return res.status(200).json({
       success: true,
-      data: [...buckets.values()].map((b) => ({ ...b, totalRevenue: Math.round(b.totalRevenue) })),
+      data: rows.map(({ key, label, ...b }) => ({ month: label, monthKey: key, ...b })),
     });
   } catch (error) {
     console.error('Error fetching monthly revenue trend:', error);
@@ -392,27 +543,24 @@ exports.getDailyTargetProgress = async (req, res) => {
 // Get Patient Analytics Overview
 exports.getPatientAnalytics = async (req, res) => {
   try {
-    const { days = 30 } = req.query;
-    // Accept an explicit window too, so the panel's range picker applies here.
-    const startDate = req.query.startDate ? new Date(req.query.startDate) : new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-    const endDate = req.query.endDate ? new Date(req.query.endDate) : new Date();
-    
-    // Get all patients
-    const totalPatients = await User.countDocuments();
-    
-    // Get new patients in period - use lean() to avoid date conversion issues
-    const allUsersInPeriod = await User.find().select('createdAt').lean();
-    const newPatients = allUsersInPeriod.filter(user => {
-      if (!user.createdAt) return false;
-      const createdDate = new Date(user.createdAt);
-      return createdDate >= startDate && createdDate <= endDate;
-    }).length;
-    
+    // startDate/endDate from the panel's range picker; `days` is the older
+    // form this endpoint always took (that many clinic days ending today).
+    const win = reportWindow(req, { defaultDays: 30 });
+    const endDate = win.end;
+
+    // Total guests, and the ones who joined inside the window — a count over
+    // the `createdAt` index. This used to load every user's createdAt (7,000+
+    // rows) into memory on every call and count them in JavaScript.
+    const [totalPatients, newPatients] = await Promise.all([
+      User.countDocuments(),
+      User.countDocuments(within(win, 'createdAt')),
+    ]);
+
     // Get returning patients (patients with more than 1 booking)
     const returningPatients = await Booking.aggregate([
       {
         $match: {
-          createdAt: { $gte: startDate, $lte: endDate },
+          ...within(win, 'createdAt'),
           status: { $in: BOOKING_COUNTABLE },
           ...branchScope(req)
         }
@@ -527,56 +675,26 @@ exports.getPatientAnalytics = async (req, res) => {
     
     console.log(`✅ Total birthdays today: ${todayBirthdays.length}`);
     
-    // Get inactive patients (no booking in 3+ months)
-    const inactivePatients = await User.aggregate([
-      {
-        $lookup: {
-          from: 'bookings',
-          localField: '_id',
-          foreignField: 'userId',
-          as: 'bookings'
-        }
-      },
-      {
-        $addFields: {
-          lastBooking: { $max: '$bookings.createdAt' }
-        }
-      },
-      {
-        $match: {
-          $or: [
-            { lastBooking: { $lte: threeMonthsAgo } },
-            { lastBooking: null }
-          ]
-        }
-      },
-      {
-        $count: 'total'
-      }
-    ]);
-    
-    const inactiveCount = inactivePatients[0]?.total || 0;
-    
+    // Inactive guests (no booking in 3+ months) = everyone minus the guests
+    // with a booking made since the threshold. Same set as the old per-user
+    // `$lookup` of every booking — "latest booking on or before the threshold,
+    // or none at all" — without joining 7,000 users to the bookings collection
+    // on every load. The `$in` against users drops bookings whose guest record
+    // no longer exists, which the lookup never counted either.
+    const recentlyBookedIds = await Booking.distinct('userId', { createdAt: { $gt: threeMonthsAgo } });
+    const recentlyActive = recentlyBookedIds.length
+      ? await User.countDocuments({ _id: { $in: recentlyBookedIds } })
+      : 0;
+    const inactiveCount = Math.max(0, totalPatients - recentlyActive);
+
     // Get membership status
-    const activeMemberships = await User.countDocuments({
-      membershipStatus: 'Active'
-    }).catch(() => 0);
-    
-    // Get expired and pending memberships - use lean() to avoid date issues
-    const zenMembers = await User.find({ 
-      memberType: 'Zen Member' 
-    }).select('zenMembershipExpiryDate').lean();
-    
     const now = new Date();
-    const expiredMemberships = zenMembers.filter(member => {
-      if (!member.zenMembershipExpiryDate) return false;
-      const expiryDate = new Date(member.zenMembershipExpiryDate);
-      return expiryDate < now;
-    }).length;
-    
-    const pendingMemberships = zenMembers.filter(member => 
-      !member.zenMembershipExpiryDate
-    ).length;
+    const [activeMemberships, expiredMemberships, pendingMemberships] = await Promise.all([
+      User.countDocuments({ membershipStatus: 'Active' }).catch(() => 0),
+      // Expired: an expiry date that has passed. Pending: a member with no expiry recorded.
+      User.countDocuments({ memberType: 'Zen Member', zenMembershipExpiryDate: { $lt: now } }),
+      User.countDocuments({ memberType: 'Zen Member', zenMembershipExpiryDate: null }),
+    ]);
     
     res.status(200).json({
       success: true,
@@ -598,7 +716,8 @@ exports.getPatientAnalytics = async (req, res) => {
           active: activeMemberships,
           expired: expiredMemberships,
           pending: pendingMemberships
-        }
+        },
+        window: windowOut(win),
       }
     });
   } catch (error) {
@@ -611,36 +730,45 @@ exports.getPatientAnalytics = async (req, res) => {
   }
 };
 
-// Get Patient Acquisition Trend (Monthly)
+/**
+ * Guests joined, over time.
+ *
+ * Two shapes, chosen by whether a range was sent (like the revenue trend):
+ *   - no range (older callers): the last 12 clinic months — `data: [{ month, count }]`
+ *   - startDate/endDate: the window, by day when it spans 62 days or fewer,
+ *     else by month — `data: { granularity, points: [{ key, label, value }], window }`
+ * Counted by the database per bucket, in the clinic's calendar. This used to
+ * load every user's createdAt and count them in JavaScript, in the SERVER's
+ * calendar — a guest who joined at 2am IST on the 1st sat in the previous
+ * month's column on a UTC host.
+ */
 exports.getPatientAcquisitionTrend = async (req, res) => {
   try {
-    // Get all users with createdAt using lean() to avoid date conversion issues
-    const allUsers = await User.find().select('createdAt').lean();
-    
-    const monthlyData = [];
-    
-    for (let i = 11; i >= 0; i--) {
-      const date = new Date();
-      date.setMonth(date.getMonth() - i);
-      const startOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
-      const endOfMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0, 23, 59, 59);
-      
-      // Filter in JavaScript instead of MongoDB
-      const count = allUsers.filter(user => {
-        if (!user.createdAt) return false;
-        const createdDate = new Date(user.createdAt);
-        return createdDate >= startOfMonth && createdDate <= endOfMonth;
-      }).length;
-      
-      monthlyData.push({
-        month: startOfMonth.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', month: 'short', year: 'numeric' }),
-        count
-      });
-    }
-    
+    const branchName = await branchNameOf(branchScope(req));
+    const userBranch = branchName ? { location: branchName } : {};
+    const ranged = rangeGiven(req);
+    const todayKey = clinicDateKey(new Date());
+    const win = ranged
+      ? reportWindow(req, { defaultDays: null })
+      : (() => { const firstKey = `${addMonths(monthKeyOf(todayKey), -11)}-01`; return { start: clinicDayStart(firstKey), end: clinicDayEnd(todayKey), startKey: firstKey, endKey: todayKey, days: null, openStart: false }; })();
+    const granularity = ranged ? seriesGranularity(win) : 'month';
+
+    const rows = await User.aggregate([
+      { $match: { ...userBranch, ...within(win, 'createdAt') } },
+      bucketStage(granularity, '$createdAt', 1),
+    ]);
+    const seen = rows.map((r) => r._id).filter(Boolean).sort();
+    const fromKey = win.openStart ? (seen[0] ? (granularity === 'day' ? seen[0] : `${seen[0]}-01`) : null) : win.startKey;
+    const counts = new Map(rows.map((r) => [r._id, Number(r.value) || 0]));
+    const points = bucketKeys(granularity, fromKey, win.endKey).map((key) => ({
+      key, label: granularity === 'day' ? dayLabel(key) : monthLabel(key), value: counts.get(key) || 0,
+    }));
+
     res.status(200).json({
       success: true,
-      data: monthlyData
+      data: ranged
+        ? { granularity, points, window: windowOut(win) }
+        : points.map((p) => ({ month: p.label, count: p.value })),
     });
   } catch (error) {
     console.error('Error fetching patient acquisition trend:', error);
@@ -664,10 +792,12 @@ exports.getTopPatients = async (req, res) => {
     const ZenotiGuestData = require('../models/ZenotiGuestData');
     const { publicEmail } = require('../config/zenoti');
     const scope = branchScope(req);
-    const branchName = scope.preferredLocation
-      || (scope.branchId ? (await Branch.findById(scope.branchId).select('name').lean())?.name || null : null);
-    const start = req.query.startDate ? clinicDayStart(req.query.startDate) : null;
-    const end = req.query.endDate ? clinicDayEnd(req.query.endDate) : null;
+    const branchName = await branchNameOf(scope);
+    // No range at all means everything; an open start keeps only the end bound.
+    const ranged = rangeGiven(req);
+    const win = reportWindow(req, { defaultDays: null });
+    const start = ranged ? win.start : null;
+    const end = ranged ? win.end : null;
     const inWindow = (d) => Boolean(d) && (!start || d >= start) && (!end || d <= end);
     const windowOn = (field) => (start || end ? { [field]: { ...(start ? { $gte: start } : {}), ...(end ? { $lte: end } : {}) } } : {});
 
@@ -706,6 +836,7 @@ exports.getTopPatients = async (req, res) => {
     const byId = new Map(users.map((u) => [String(u._id), u]));
     res.status(200).json({
       success: true,
+      window: ranged ? windowOut(win) : 'all-time',
       data: top.map(([id, totalSpent]) => {
         const u = byId.get(id) || {};
         const visitCount = visits.get(id) || 0;
@@ -722,11 +853,24 @@ exports.getTopPatients = async (req, res) => {
   }
 };
 
-// Get Patient Demographics
+/**
+ * Age and gender of the guest population — of guests who joined inside the
+ * window when one is given, of everyone otherwise. The response says which
+ * (`window: 'all-time' | { startKey, endKey }`) so the tile can be labelled.
+ * Age stays in JavaScript: dateOfBirth is stored as a Date OR as a string in
+ * two written formats, which no aggregation expression parses cleanly.
+ */
 exports.getPatientDemographics = async (req, res) => {
   try {
+    const win = reportWindow(req, { defaultDays: null });
+    const branchName = await branchNameOf(branchScope(req));
+    const population = {
+      ...(branchName ? { location: branchName } : {}),
+      ...(win.openStart ? {} : within(win, 'createdAt')),
+    };
+
     // Age distribution
-    const patients = await User.find({ dateOfBirth: { $exists: true, $ne: null } }).lean();
+    const patients = await User.find({ ...population, dateOfBirth: { $exists: true, $ne: null } }).select('dateOfBirth').lean();
     
     const ageGroups = {
       '0-18': 0,
@@ -762,10 +906,15 @@ exports.getPatientDemographics = async (req, res) => {
       percentage: total > 0 ? (count / total) * 100 : 0
     }));
     
-    // Gender distribution
-    const male = await User.countDocuments({ gender: 'Male' });
-    const female = await User.countDocuments({ gender: 'Female' });
-    const other = await User.countDocuments({ gender: { $nin: ['Male', 'Female'] } });
+    // Gender distribution — one pass; anything that is not Male/Female
+    // (including no gender at all) is "other", as the three counts were.
+    const genderRows = await User.aggregate([{ $match: population }, { $group: { _id: '$gender', count: { $sum: 1 } } }]);
+    let male = 0; let female = 0; let other = 0;
+    for (const g of genderRows) {
+      if (g._id === 'Male') male += g.count;
+      else if (g._id === 'Female') female += g.count;
+      else other += g.count;
+    }
     const totalGender = male + female + other;
     
     res.status(200).json({
@@ -777,7 +926,8 @@ exports.getPatientDemographics = async (req, res) => {
           female,
           other,
           total: totalGender
-        }
+        },
+        window: windowOut(win),
       }
     });
   } catch (error) {
@@ -793,9 +943,18 @@ exports.getPatientDemographics = async (req, res) => {
 // Get Patient Sources
 exports.getPatientSources = async (req, res) => {
   try {
+    // Guests who joined inside the window when one is given, everyone otherwise;
+    // the response's `window` says which.
+    const win = reportWindow(req, { defaultDays: null });
+    const branchName = await branchNameOf(branchScope(req));
+    const population = {
+      ...(branchName ? { location: branchName } : {}),
+      ...(win.openStart ? {} : within(win, 'createdAt')),
+    };
     // Since referralSource field doesn't exist in User model, 
     // we'll use location as a proxy for now or return default data
     const sources = await User.aggregate([
+      { $match: population },
       {
         $group: {
           _id: '$location',
@@ -828,6 +987,7 @@ exports.getPatientSources = async (req, res) => {
     
     res.status(200).json({
       success: true,
+      window: windowOut(win),
       data: sourcesWithPercentage
     });
   } catch (error) {
@@ -896,14 +1056,10 @@ exports.sendBirthdayWish = async (req, res) => {
 // Get Comprehensive Appointment Analytics
 exports.getAppointmentAnalytics = async (req, res) => {
   try {
-    const { startDate, endDate } = req.query;
-    
-    // Default to last 30 days
+    // Default to last 30 clinic days; an open start (All time) has no lower bound.
+    const win = reportWindow(req, { defaultDays: 30 });
     const today = clinicDateKey(new Date());
-    const startKey = startDate || addClinicDays(today, -29);
-    const endKey = endDate || today;
-    const start = clinicDayStart(startKey);
-    const end = clinicDayEnd(endKey);
+    const { end } = win;
     const slotRange = (from, to) => ({
       $or: [
         { confirmedDate: { $gte: from, $lte: to } },
@@ -911,11 +1067,17 @@ exports.getAppointmentAnalytics = async (req, res) => {
       ],
     });
     
-    // Get all bookings in date range
+    // Get all bookings in date range. Peak hours, weekday spread, the per-guest
+    // gap and the no-show split each read a different field of every row, so
+    // the rows are still shaped here — but only those fields, as plain objects.
     const bookings = await Booking.find({
-      ...slotRange(start, end),
+      ...slotWithin(win),
       ...branchScope(req)
-    }).populate('consultationId', 'name category');
+    }).select('status confirmedTime slotTime preferredTimeSlots confirmedDate preferredDate consultationId externalServiceCategory userId')
+      .populate('consultationId', 'name category').lean();
+
+    // With an open start the averages run from the oldest visit on record.
+    const start = win.start || bookings.reduce((m, b) => { const d = new Date(b.confirmedDate || b.preferredDate); return !Number.isNaN(d.getTime()) && (!m || d < m) ? d : m; }, null) || clinicDayStart(today);
 
     const totalBookings = bookings.length;
     const completedBookings = bookings.filter(b => b.status === 'Completed').length;
@@ -1074,7 +1236,8 @@ exports.getAppointmentAnalytics = async (req, res) => {
         noShowByService,
         avgTimeBetweenBookings: parseFloat(avgTimeBetweenBookings.toFixed(1)),
         upcomingThisWeek,
-        pendingConfirmations
+        pendingConfirmations,
+        window: windowOut(win),
       }
     });
   } catch (error) {
@@ -1094,22 +1257,20 @@ exports.getAppointmentAnalytics = async (req, res) => {
 // Get Comprehensive Service Analytics
 exports.getServiceAnalytics = async (req, res) => {
   try {
-    const { startDate, endDate } = req.query;
-    
-    // Default to last 30 days
-    const start = startDate ? new Date(startDate) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
-    const end = endDate ? new Date(endDate) : new Date();
+    // Default to last 30 clinic days; an open start (All time) has no lower bound.
+    const win = reportWindow(req, { defaultDays: 30 });
     
     // Visits by their slot day (like the dashboard), revenue = what was charged
     // when paid. Clinic visits without a catalogue link keep their Zenoti
     // service name and category instead of vanishing from every chart.
-    const slotStart = startDate ? clinicDayStart(startDate) : start;
-    const slotEnd = endDate ? clinicDayEnd(endDate) : end;
+    // Per-service and per-category rows need the catalogue name and category
+    // of each visit, so the rows are shaped here — only the fields read, lean.
     const bookings = await Booking.find({
-      $or: [{ confirmedDate: { $gte: slotStart, $lte: slotEnd } }, { confirmedDate: null, preferredDate: { $gte: slotStart, $lte: slotEnd } }],
+      ...slotWithin(win),
       status: { $in: BOOKING_COUNTABLE },
       ...branchScope(req)
-    }).populate('consultationId', 'name category price duration_minutes');
+    }).select('consultationId externalServiceName externalServiceCategory paymentStatus amount')
+      .populate('consultationId', 'name category price duration_minutes').lean();
 
     // The live catalogue only — hidden Zenoti shells would otherwise fill the
     // "needs attention" list with services nobody can book.
@@ -1216,7 +1377,7 @@ exports.getServiceAnalytics = async (req, res) => {
     // `sessions[]` list (Scheduled/Booked/Completed/Cancelled); the old code
     // read a `services` field that does not exist, so this was always empty.
     const packageAssignments = await PackageAssignment.find({
-      createdAt: { $gte: slotStart, $lte: slotEnd },
+      ...within(win, 'createdAt'),
       status: { $ne: 'Cancelled' },
       ...(branchScope(req).preferredLocation ? { preferredLocation: branchScope(req).preferredLocation } : {}),
     }).select('packageId packageDetails sessions').populate('packageId', 'name').lean();
@@ -1263,7 +1424,8 @@ exports.getServiceAnalytics = async (req, res) => {
           avgRevenuePerService: Object.keys(serviceRevenue).length > 0 
             ? Object.values(serviceRevenue).reduce((sum, s) => sum + s.revenue, 0) / Object.keys(serviceRevenue).length
             : 0
-        }
+        },
+        window: windowOut(win),
       }
     });
   } catch (error) {
@@ -1578,11 +1740,13 @@ exports.getTodaysSales = async (req, res) => {
 exports.getSalesByStaff = async (req, res) => {
   try {
     const Invoice = require('../models/Invoice');
-    const from = req.query.from ? clinicDayStart(req.query.from) : clinicDayStart(new Date(Date.now() - 29 * 86400000));
-    const to = req.query.to ? clinicDayEnd(req.query.to) : clinicDayEnd(new Date());
+    // `from`/`to` are this report's older names; startDate/endDate work too.
+    // Default: the last 30 clinic days. An open start has no lower bound.
+    const win = reportWindow(req, { defaultDays: 30 });
+    const { start: from, end: to } = win;
     const scope = branchScope(req);
     const invScope = scope.branchId ? { branchId: scope.branchId } : {};
-    const invoices = await Invoice.find({ ...invScope, status: 'closed', closedAt: { $gte: from, $lte: to } }).select('lines closedAt invoiceNumber').lean();
+    const invoices = await Invoice.find({ ...invScope, status: 'closed', ...within(win, 'closedAt') }).select('lines closedAt invoiceNumber').lean();
     const rows = new Map();
     const bump = (name, kind, amount, qty = 1) => {
       const k = name || 'Unattributed';
@@ -1593,10 +1757,11 @@ exports.getSalesByStaff = async (req, res) => {
       const kind = l.kind === 'service' ? 'services' : l.kind === 'product' ? 'products' : l.kind === 'package' ? 'packages' : l.kind === 'membership' ? 'memberships' : 'other';
       const r = bump(l.soldByName, kind, Number(l.total) || 0, Number(l.qty) || 1); r.bills.add(String(inv._id));
     }
-    const visits = await Booking.find({ ...scope, invoiceId: null, paymentStatus: 'paid', amount: { $gt: 0 }, paidAt: { $gte: from, $lte: to } }).select('specialistName amount').lean();
+    const visits = await Booking.find({ ...scope, invoiceId: null, paymentStatus: 'paid', amount: { $gt: 0 }, ...within(win, 'paidAt') }).select('specialistName amount').lean();
     for (const b of visits) bump(b.specialistName, 'services', Number(b.amount) || 0);
     const data = [...rows.values()].map((r) => ({ ...r, bills: r.bills.size, total: Math.round(r.total * 100) / 100 })).sort((a, b) => b.total - a.total);
-    return res.json({ success: true, data, range: { from, to }, totals: { total: data.reduce((n, r) => n + r.total, 0), staff: data.length, invoices: invoices.length } });
+    // `range.from` is null when the start is open (All time).
+    return res.json({ success: true, data, range: { from, to, window: windowOut(win) }, totals: { total: data.reduce((n, r) => n + r.total, 0), staff: data.length, invoices: invoices.length } });
   } catch (error) {
     console.error('sales by staff error:', error);
     return res.status(500).json({ success: false, message: 'Could not build the staff sales report' });
