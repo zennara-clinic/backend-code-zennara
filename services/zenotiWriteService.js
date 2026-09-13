@@ -1508,7 +1508,9 @@ async function syncOrder(orderId) {
   try {
     const user = await User.findById(order.userId);
     const guestId = await ensureGuest(user);
-    const centerId = clinicCenterIdForBranch(user?.location);
+    // The sale is recorded at the centre the order belongs to — where a pickup
+    // is collected, or where the guest was shopping — else their home centre.
+    const centerId = clinicCenterIdForBranch(order.fulfilment?.branchName || user?.location);
 
     // Resolve each line item to a Zenoti product id.
     const productIds = await Promise.all(

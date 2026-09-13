@@ -725,6 +725,65 @@ Thank you for shopping with Zennara Clinic. Please rate your experience in the a
   }
 
   /**
+   * Store pickup: the order is packed and waiting at the centre. Carries the
+   * pickup code the guest shows at the desk. Template vars: name, order no,
+   * centre, code, address.
+   */
+  async sendOrderReadyForPickup(phoneNumber, data) {
+    if (process.env.WHATSAPP_ORDER_READY_PICKUP_SID &&
+        !process.env.WHATSAPP_ORDER_READY_PICKUP_SID.includes('xxx')) {
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_ORDER_READY_PICKUP_SID,
+        {
+          '1': data.customerName,
+          '2': data.orderNumber,
+          '3': data.centreName || 'our centre',
+          '4': data.pickupCode || '',
+          '5': data.centreAddress || '',
+        }
+      );
+    }
+
+    const message = `Hello ${data.customerName}!
+
+Your order is ready to collect at ${data.centreName || 'our centre'}.
+
+Order Number: ${data.orderNumber}
+Pickup code: ${data.pickupCode || ''}
+${data.centreAddress ? `Address: ${data.centreAddress}\n` : ''}${data.centreHours ? `Hours: ${data.centreHours}\n` : ''}
+Show the pickup code at the reception desk. Your order is already paid, so there is nothing more to settle.`;
+
+    return await this.sendMessage(phoneNumber, message);
+  }
+
+  /**
+   * Store pickup: the guest has taken the order from the centre.
+   */
+  async sendOrderCollected(phoneNumber, data) {
+    if (process.env.WHATSAPP_ORDER_COLLECTED_SID &&
+        !process.env.WHATSAPP_ORDER_COLLECTED_SID.includes('xxx')) {
+      return await this.sendTemplateMessage(
+        phoneNumber,
+        process.env.WHATSAPP_ORDER_COLLECTED_SID,
+        {
+          '1': data.customerName,
+          '2': data.orderNumber,
+          '3': data.centreName || 'our centre',
+        }
+      );
+    }
+
+    const message = `Hello ${data.customerName}!
+
+Your order ${data.orderNumber} was collected at ${data.centreName || 'our centre'}${data.collectedAt ? ` on ${data.collectedAt}` : ''}.
+
+Thank you for shopping with Zennara Clinic. If anything is not right, request a return from the order in the app within 7 days.`;
+
+    return await this.sendMessage(phoneNumber, message);
+  }
+
+  /**
    * Send order cancelled notification
    */
   async sendOrderCancelled(phoneNumber, data) {

@@ -1,4 +1,5 @@
 const ProductOrder = require('../models/ProductOrder');
+const { customerCancellable, isFulfilled, fulfilledAt, isPickup } = require('../utils/orderFulfilment');
 const Product = require('../models/Product');
 const ProductStockMovement = require('../models/ProductStockMovement');
 const Address = require('../models/Address');
@@ -417,6 +418,10 @@ exports.updateOrderStatus = async (req, res) => {
       'Out for Delivery', 'Delivery Failed', 'Delivered', 'Cancelled',
       'Return Requested', 'Returned'
     ];
+    // Collection is confirmed by the desk against the pickup code, never by the guest.
+    if (['Ready for Pickup', 'Collected'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Pickup steps are recorded by the centre.' });
+    }
 
     if (!validStatuses.includes(status)) {
       return res.status(400).json({
@@ -656,12 +661,14 @@ exports.cancelOrder = async (req, res) => {
      * stuck — unable to cancel, unable to return (never delivered), with their
      * money held. Cancelling here refunds them and restores the stock.
      */
-    const customerCancellable = ['Order Placed', 'Confirmed', 'Processing', 'Packed', 'Delivery Failed'];
-    if (order.orderStatus !== 'Cancelled' && !customerCancellable.includes(order.orderStatus)) {
+    // Which statuses a guest may cancel from depends on the flow: a pickup
+    // order can be cancelled right up to collection (utils/orderFulfilment).
+    const cancellable = customerCancellable(order);
+    if (order.orderStatus !== 'Cancelled' && !cancellable.includes(order.orderStatus)) {
       return res.status(400).json({
         success: false,
-        message: order.orderStatus === 'Delivered'
-          ? 'Cannot cancel a delivered order. Please request a return instead.'
+        message: isFulfilled(order.orderStatus)
+          ? `Cannot cancel a${order.orderStatus === 'Collected' ? ' collected' : ' delivered'} order. Please request a return instead.`
           : 'This order has already shipped. Please contact the clinic for help.'
       });
     }
@@ -705,7 +712,7 @@ exports.cancelOrder = async (req, res) => {
     try {
       const user = populatedOrder.userId;
       const data = {
-        customerName: populatedOrder.shippingAddress.fullName,
+        customerName: populatedOrder.shippingAddress?.fullName || user?.fullName || 'there',
         orderNumber: populatedOrder.orderNumber,
         reason: reason || 'As per your request',
         cancelledAt: order.cancelledAt.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: 'numeric', month: 'short', year: 'numeric' }),
@@ -774,11 +781,11 @@ exports.returnOrder = async (req, res) => {
       });
     }
     
-    // Check if order is delivered
-    if (order.orderStatus !== 'Delivered') {
+    // Check if order reached the guest (delivered, or collected at a centre)
+    if (!isFulfilled(order.orderStatus)) {
       return res.status(400).json({
         success: false,
-        message: 'Only delivered orders can be returned'
+        message: 'Only delivered or collected orders can be returned'
       });
     }
     
@@ -789,15 +796,15 @@ exports.returnOrder = async (req, res) => {
       });
     }
     
-    // Check if return window is valid (e.g., within 7 days of delivery)
-    if (!order.deliveredAt) {
+    // Check if return window is valid (e.g., within 7 days of delivery / collection)
+    if (!fulfilledAt(order)) {
       return res.status(400).json({
         success: false,
         message: 'Order delivery date not found. Cannot process return.'
       });
     }
     
-    const deliveryDate = new Date(order.deliveredAt);
+    const deliveryDate = new Date(fulfilledAt(order));
     const currentDate = new Date();
     
     // Validate delivery date is valid
@@ -1067,7 +1074,7 @@ exports.rejectReturn = async (req, res) => {
     }
     
     // Update order status back to Delivered
-    order.orderStatus = 'Delivered';
+    order.orderStatus = isPickup(order) ? 'Collected' : 'Delivered';
     order.returnRejected = true;
     order.returnRejectedAt = new Date();
     order.returnRejectedBy = req.admin?._id || req.user?._id || null;

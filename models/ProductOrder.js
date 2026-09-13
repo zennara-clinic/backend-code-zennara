@@ -1,5 +1,12 @@
 const mongoose = require('mongoose');
 
+/**
+ * The shipping address is only required when the order is being delivered.
+ * A store-pickup order carries the centre in `fulfilment` instead. Nested
+ * paths validate with `this` = the order, so the rule can read the type.
+ */
+const deliveryOnly = function deliveryOnly() { return !(this.fulfilment && this.fulfilment.type === 'pickup'); };
+
 const productOrderSchema = new mongoose.Schema({
   userId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -33,6 +40,32 @@ const productOrderSchema = new mongoose.Schema({
       required: true
     }
   }],
+  /**
+   * Delivery or store pickup (utils/orderFulfilment.js).
+   *
+   * `branchId` is the centre the order belongs to in either flow: the centre
+   * the guest was shopping at (which sets centre-wise prices) and, for pickup,
+   * the centre they collect from. Pickup orders carry a six-character code the
+   * guest shows at the desk, the centre's address as it stood when the order
+   * was placed, and the timestamps of the two pickup steps.
+   */
+  fulfilment: {
+    type: { type: String, enum: ['delivery', 'pickup'], default: 'delivery', index: true },
+    branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', default: null, index: true },
+    branchName: { type: String, default: null, trim: true },
+    pickupCode: { type: String, default: null, trim: true, uppercase: true },
+    pickupAddress: {
+      addressLine1: { type: String, default: null },
+      city: { type: String, default: null },
+      state: { type: String, default: null },
+      pincode: { type: String, default: null },
+      phone: { type: String, default: null },
+    },
+    readyAt: { type: Date, default: null },
+    collectedAt: { type: Date, default: null },
+    collectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', default: null },
+    collectedNote: { type: String, default: null },
+  },
   shippingAddress: {
     addressId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -40,28 +73,28 @@ const productOrderSchema = new mongoose.Schema({
     },
     fullName: {
       type: String,
-      required: true
+      required: deliveryOnly
     },
     phone: {
       type: String,
-      required: true
+      required: deliveryOnly
     },
     addressLine1: {
       type: String,
-      required: true
+      required: deliveryOnly
     },
     addressLine2: String,
     city: {
       type: String,
-      required: true
+      required: deliveryOnly
     },
     state: {
       type: String,
-      required: true
+      required: deliveryOnly
     },
     postalCode: {
       type: String,
-      required: true
+      required: deliveryOnly
     },
     country: {
       type: String,
@@ -120,10 +153,14 @@ const productOrderSchema = new mongoose.Schema({
   },
   orderStatus: {
     type: String,
+    // 'Ready for Pickup' and 'Collected' are the store-pickup flow's last two
+    // steps; 'Shipped' → 'Delivered' belong to delivery only. Which ladder an
+    // order follows is decided by fulfilment.type (utils/orderFulfilment.js).
     enum: [
       'Order Placed', 'Confirmed', 'Processing', 'Packed', 'Shipped',
-      'Out for Delivery', 'Delivery Failed', 'Delivered', 'Cancelled',
-      'Return Requested', 'Returned'
+      'Out for Delivery', 'Delivery Failed', 'Delivered',
+      'Ready for Pickup', 'Collected',
+      'Cancelled', 'Return Requested', 'Returned'
     ],
     default: 'Order Placed'
   },
@@ -332,5 +369,9 @@ productOrderSchema.index(
 );
 
 productOrderSchema.index({ zenotiSaleId: 1 }, { unique: true, partialFilterExpression: { zenotiSaleId: { $type: 'string' } } });
+// The desk's pickup queue: open pickup orders at one centre, newest first.
+productOrderSchema.index({ 'fulfilment.type': 1, 'fulfilment.branchId': 1, orderStatus: 1, createdAt: -1 });
+// A code is looked up when the guest reads it out; only open pickup orders keep one live.
+productOrderSchema.index({ 'fulfilment.pickupCode': 1 }, { partialFilterExpression: { 'fulfilment.pickupCode': { $type: 'string' } } });
 
 module.exports = mongoose.model('ProductOrder', productOrderSchema);

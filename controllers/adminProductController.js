@@ -13,6 +13,39 @@ async function formulationError(name) {
 const { DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { s3Client, S3_BUCKET } = require('../config/s3');
 const NotificationHelper = require('../utils/notificationHelper');
+const Branch = require('../models/Branch');
+const { normaliseListings, listingSummary, listingRow } = require('../utils/productCentre');
+
+/**
+ * The clinic centres a product can be listed at, keyed by id. Pharmacies and
+ * the training centre are stock locations, never shop fronts, so a listing
+ * row for one of them is dropped on save.
+ */
+async function clinicMap() {
+  const rows = await Branch.find({ isPharmacy: { $ne: true }, centreType: { $in: ['clinic', null] } }).select('name isActive').lean();
+  return new Map(rows.map((b) => [String(b._id), b]));
+}
+
+/**
+ * Centre-wise listing from the panel. `centreListings` replaces the whole
+ * set (the editor sends every centre's row); `centreListing` merges one
+ * centre's row (the bulk action sends one centre at a time).
+ */
+async function applyCentreListings(product, body, clinics) {
+  if (Array.isArray(body.centreListings)) {
+    product.centreListings = normaliseListings(body.centreListings, clinics);
+    return true;
+  }
+  if (body.centreListing && body.centreListing.branchId) {
+    const current = (product.centreListings || []).map((r) => ({ branchId: String(r.branchId), branchName: r.branchName, visible: r.visible, price: r.price, pickup: r.pickup }));
+    const existing = listingRow(product, body.centreListing.branchId);
+    const merged = { ...(existing ? { branchId: String(existing.branchId), visible: existing.visible, price: existing.price, pickup: existing.pickup } : { branchId: String(body.centreListing.branchId) }) };
+    for (const k of ['visible', 'price', 'pickup']) if (body.centreListing[k] !== undefined) merged[k] = body.centreListing[k];
+    product.centreListings = normaliseListings([...current.filter((r) => r.branchId !== String(body.centreListing.branchId)), merged], clinics);
+    return true;
+  }
+  return false;
+}
 
 /**
  * Catalogue attributes the panel may set beyond the original store fields.
@@ -103,6 +136,11 @@ exports.getAllProducts = async (req, res) => {
     else if (kind === 'rx') query.isRx = true;
     else if (kind === 'unpriced') { query.$and = [...(query.$and || []), { $or: [{ price: 0 }, { price: null }] }]; }
     if (branchId && /^[0-9a-f]{24}$/i.test(branchId)) query['centres.branchId'] = branchId;
+    // Shop-front filter (the panel's own centre listings, not Zenoti's shelf feed):
+    // `listedAt` = on sale for guests at that centre; `hiddenAt` = switched off there.
+    const { listedAt, hiddenAt } = req.query;
+    if (listedAt && /^[0-9a-f]{24}$/i.test(listedAt)) query.centreListings = { $not: { $elemMatch: { branchId: listedAt, visible: false } } };
+    if (hiddenAt && /^[0-9a-f]{24}$/i.test(hiddenAt)) query.centreListings = { $elemMatch: { branchId: hiddenAt, visible: false } };
     if (category && category !== 'All') query.productCategory = category;
     
     if (isActive !== undefined) {
@@ -254,6 +292,7 @@ exports.createProduct = async (req, res) => {
       isPopular: isPopular || false
     });
     applyProductExtras(product, req.body);
+    await applyCentreListings(product, req.body, await clinicMap());
     // Category / sub-category / formulation snap to the catalogue's spelling.
     snapProduct(product, await loadCanon(Product));
     await product.save();
@@ -339,6 +378,7 @@ exports.updateProduct = async (req, res) => {
     if (isActive !== undefined) product.isActive = isActive;
     if (isPopular !== undefined) product.isPopular = isPopular;
     applyProductExtras(product, req.body);
+    const listingsChanged = await applyCentreListings(product, req.body, await clinicMap());
 
     // Additional safety check: ensure code is null if empty string before saving
     if (product.code === '') {
@@ -356,6 +396,10 @@ exports.updateProduct = async (req, res) => {
     const prev = stockChanged ? Number((await Product.findById(product._id).select('stock').lean())?.stock) || 0 : null;
     await product.save();
     if (stockChanged && prev !== Number(product.stock)) await ProductStockMovement.create({ productId: product._id, source: 'panel', delta: Number(product.stock) - prev, before: prev, after: Number(product.stock), note: 'Edited on the product page', by: req.admin?._id || null }).catch(() => {});
+    if (listingsChanged) {
+      const clinics = [...(await clinicMap()).entries()].map(([id, b]) => ({ _id: id, name: b.name }));
+      console.log(`Centre listing for ${product.name}: ${listingSummary(product, clinics)}`);
+    }
     console.log('Product saved successfully with code:', product.code);
 
     // Create notification for product update
@@ -563,9 +607,34 @@ exports.bulkUpdateProducts = async (req, res) => {
       });
     }
 
+    /*
+     * One centre's listing across many products — "hide these at Kondapur",
+     * "put these on sale at Jubilee Hills only". Each product's other centre
+     * rows are kept; only the named centre's row is merged.
+     */
+    if (updates.centreListing && updates.centreListing.branchId) {
+      const clinics = await clinicMap();
+      if (!clinics.has(String(updates.centreListing.branchId))) {
+        return res.status(400).json({ success: false, message: 'Choose one of the clinic centres' });
+      }
+      const products = await Product.find({ _id: { $in: productIds } }).select('centreListings name price');
+      let modified = 0;
+      for (const product of products) {
+        await applyCentreListings(product, { centreListing: updates.centreListing }, clinics);
+        if (product.isModified('centreListings')) { await product.save({ validateModifiedOnly: true }); modified += 1; }
+      }
+      return res.json({ success: true, message: `${modified} products updated successfully`, modifiedCount: modified });
+    }
+
+    // Plain field sets stay limited to what the panel may edit in bulk.
+    const allowed = ['isActive', 'isPopular', 'isAppProduct', 'gstPercentage', 'productCategory', 'productSubCategory', 'vendorName', 'isRx', 'trackStock'];
+    const $set = Object.fromEntries(Object.entries(updates).filter(([k]) => allowed.includes(k)));
+    if (!Object.keys($set).length) {
+      return res.status(400).json({ success: false, message: 'None of those fields can be changed in bulk' });
+    }
     const result = await Product.updateMany(
       { _id: { $in: productIds } },
-      { $set: updates }
+      { $set }
     );
 
     res.json({

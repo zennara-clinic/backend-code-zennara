@@ -132,6 +132,23 @@ const productSchema = new mongoose.Schema({
     zenotiCenterId: { type: String, default: null, trim: true },
     branchName: { type: String, default: '', trim: true },
   }],
+  /**
+   * Centre-wise listing, set in the admin panel (utils/productCentre.js).
+   *
+   * One row per CLINIC centre: whether guests shopping at that centre see the
+   * product, what it costs there (null = the base `price`), and whether it can
+   * be collected there. A centre with no row gets the defaults — visible, base
+   * price, collectable — so untouched products behave as they always did.
+   * `centres` above is Zenoti's stock feed and is never consulted for this.
+   */
+  centreListings: [{
+    _id: false,
+    branchId: { type: mongoose.Schema.Types.ObjectId, ref: 'Branch', required: true },
+    branchName: { type: String, default: '', trim: true },
+    visible: { type: Boolean, default: true },
+    price: { type: Number, default: null, min: 0 },
+    pickup: { type: Boolean, default: true },
+  }],
   barcodes: { type: [String], default: [] },
   isKit: { type: Boolean, default: false },
   zenotiCategoryId: { type: String, default: null, trim: true },
@@ -224,5 +241,6 @@ productSchema.index(
   { unique: true, partialFilterExpression: { zenotiProductId: { $type: 'string' } } },
 );
 productSchema.index({ 'branchStock.branchId': 1 });
+productSchema.index({ 'centreListings.branchId': 1, 'centreListings.visible': 1 });
 
 module.exports = mongoose.model('Product', productSchema);

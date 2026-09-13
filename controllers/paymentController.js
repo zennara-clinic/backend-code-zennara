@@ -8,6 +8,43 @@ const razorpayService = require('../services/razorpayService');
 const NotificationHelper = require('../utils/notificationHelper');
 const { clinicDateKey, clinicDayStart, clock24, parseClockMinutes } = require('../utils/bookingTime');
 const { computeOrderPricing } = require('../utils/orderPricing');
+const Branch = require('../models/Branch');
+const { generatePickupCode, recipientName } = require('../utils/orderFulfilment');
+
+/*
+ * The centre a product order belongs to.
+ *
+ * The app sends `fulfilment: { type, branchId }`. For store pickup the centre
+ * is required and must be an active clinic (never a pharmacy or the training
+ * centre). For delivery it is the centre the guest was shopping at, which sets
+ * centre-wise prices; when the app sends none, the guest's home centre
+ * (`user.location`, a centre name) stands in, and if even that resolves to
+ * nothing the order prices at base rates as it did before centres existed.
+ */
+async function resolveOrderCentre(fulfilment, user) {
+  const type = fulfilment && fulfilment.type === 'pickup' ? 'pickup' : 'delivery';
+  const clinic = { isActive: true, isPharmacy: { $ne: true }, centreType: { $in: ['clinic', null] } };
+  let branch = null;
+  if (fulfilment && mongoose.isValidObjectId(fulfilment.branchId)) {
+    branch = await Branch.findOne({ _id: fulfilment.branchId, ...clinic }).select('name address contact').lean();
+    if (!branch) return { type, branch: null, error: type === 'pickup' ? 'Choose one of our clinic centres to collect from.' : 'That centre is not available.' };
+  } else if (type === 'pickup') {
+    return { type, branch: null, error: 'Choose the centre you will collect from.' };
+  } else if (user?.location) {
+    branch = await Branch.findOne({ name: user.location, ...clinic }).select('name address contact').lean();
+  }
+  return { type, branch, error: null };
+}
+
+/** A code no other open pickup order at any centre is using right now. */
+async function freshPickupCode() {
+  for (let i = 0; i < 8; i += 1) {
+    const code = generatePickupCode();
+    const clash = await ProductOrder.exists({ 'fulfilment.pickupCode': code, orderStatus: { $nin: ['Collected', 'Cancelled', 'Returned'] } });
+    if (!clash) return code;
+  }
+  return generatePickupCode();
+}
 
 class PaymentFlowError extends Error {
   constructor(status, message, code = 'PAYMENT_VERIFICATION_FAILED') {
@@ -223,14 +260,24 @@ exports.createProductOrderPayment = async (req, res) => {
         message: 'Cart contains an invalid item quantity'
       });
     }
-    if (!mongoose.isValidObjectId(orderData.addressId)) {
-      return res.status(400).json({ success: false, message: 'Select a valid delivery address' });
+    // Delivery to the door, or collection at a centre (utils/orderFulfilment).
+    const centre = await resolveOrderCentre(orderData.fulfilment, req.user);
+    if (centre.error) {
+      return res.status(400).json({ success: false, code: 'PICKUP_CENTRE_REQUIRED', message: centre.error });
     }
-    // The delivery fee is city-dependent, so the address must be read here, not
-    // merely proven to exist.
-    const deliveryAddress = await Address.findOne({ _id: orderData.addressId, userId: req.user._id });
-    if (!deliveryAddress) {
-      return res.status(400).json({ success: false, message: 'Select a valid delivery address' });
+    const isPickup = centre.type === 'pickup';
+
+    let deliveryAddress = null;
+    if (!isPickup) {
+      if (!mongoose.isValidObjectId(orderData.addressId)) {
+        return res.status(400).json({ success: false, message: 'Select a valid delivery address' });
+      }
+      // The delivery fee is city-dependent, so the address must be read here, not
+      // merely proven to exist.
+      deliveryAddress = await Address.findOne({ _id: orderData.addressId, userId: req.user._id });
+      if (!deliveryAddress) {
+        return res.status(400).json({ success: false, message: 'Select a valid delivery address' });
+      }
     }
 
     // Authoritative charge amount — computed from the database, never from the
@@ -239,10 +286,12 @@ exports.createProductOrderPayment = async (req, res) => {
     const priced = await computeOrderPricing({
       items: orderData.items,
       couponCode: orderData.coupon?.code,
-      city: deliveryAddress.city,
+      city: deliveryAddress ? deliveryAddress.city : null,
       // Needed for the coupon's perUserLimit — without it a one-per-customer
       // coupon is spendable on every order the same guest places.
       userId: req.user._id,
+      branch: centre.branch,
+      fulfilment: centre.type,
     });
     if (!priced.ok) {
       // Carries `code`/`minOrderValue` for BELOW_MIN_ORDER so the app can show
@@ -251,6 +300,7 @@ exports.createProductOrderPayment = async (req, res) => {
         success: false,
         message: priced.message,
         ...(priced.code ? { code: priced.code } : {}),
+        ...(priced.productId ? { productId: priced.productId } : {}),
         ...(priced.minOrderValue !== undefined ? { minOrderValue: priced.minOrderValue } : {}),
       });
     }
@@ -291,20 +341,26 @@ exports.createProductOrderPayment = async (req, res) => {
         // allowed to replace these after the customer has paid.
         orderData: {
           items: orderData.items.map(({ productId, quantity }) => ({ productId, quantity })),
-          addressId: orderData.addressId,
+          addressId: isPickup ? null : orderData.addressId,
           coupon: priced.coupon || undefined,
           notes: orderData.notes || '',
+          fulfilment: {
+            type: centre.type,
+            branchId: centre.branch ? String(centre.branch._id) : null,
+            branchName: centre.branch ? centre.branch.name : null,
+          },
         },
         pricingSnapshot: {
           pricing: priced.pricing,
           coupon: priced.coupon,
-          items: priced.items.map(({ product, quantity }) => ({
+          // `price` is the centre's price the guest was shown, not the base list price.
+          items: priced.items.map(({ product, quantity, price }) => ({
             productId: product._id,
             productName: product.name,
             productImage: product.image,
             quantity,
-            price: product.price,
-            subtotal: product.price * quantity,
+            price,
+            subtotal: price * quantity,
           })),
         },
       }
@@ -344,6 +400,11 @@ exports.createProductOrderPayment = async (req, res) => {
           applied: Boolean(priced.couponOutcome?.applied),
           reason: priced.couponOutcome?.reason ?? null,
         },
+        fulfilment: {
+          type: centre.type,
+          branchId: centre.branch ? String(centre.branch._id) : null,
+          branchName: centre.branch ? centre.branch.name : null,
+        },
       }
     });
   } catch (error) {
@@ -367,7 +428,8 @@ exports.verifyProductPayment = async (req, res) => {
     
     payment = await verifyOwnedCapturedPayment(req, 'ProductOrder');
     const orderData = payment.metadata?.orderData;
-    if (!orderData?.addressId || !Array.isArray(orderData.items)) {
+    const isPickup = orderData?.fulfilment?.type === 'pickup';
+    if (!Array.isArray(orderData?.items) || (!isPickup && !orderData.addressId)) {
       throw new PaymentFlowError(422, 'Stored order details are incomplete');
     }
 
@@ -401,19 +463,38 @@ exports.verifyProductPayment = async (req, res) => {
     // Create product order
     console.log('📦 Creating product order...');
     
-    // Validate and get address
-    const address = await Address.findOne({
-      _id: orderData.addressId,
-      userId: req.user._id
-    });
-    
-    if (!address) {
-      await markFulfilmentFailure(payment, 'order', 'Delivery address not found');
-      await refundUnfulfilledPayment(payment, 'Delivery address was unavailable after payment').catch(() => {});
-      return res.status(404).json({
-        success: false,
-        message: 'Your payment was received, but the address was unavailable. A full refund has been initiated.'
+    // Validate and get address (delivery), or the centre (pickup).
+    let address = null;
+    let pickupBranch = null;
+    // The centre the order belongs to — where a pickup is collected, and in
+    // both flows the centre whose prices were quoted.
+    const orderBranch = mongoose.isValidObjectId(orderData.fulfilment?.branchId)
+      ? await Branch.findById(orderData.fulfilment.branchId).select('name address contact isActive').lean()
+      : null;
+    if (isPickup) {
+      pickupBranch = orderBranch;
+      if (!pickupBranch) {
+        await markFulfilmentFailure(payment, 'order', 'Pickup centre not found');
+        await refundUnfulfilledPayment(payment, 'Pickup centre was unavailable after payment').catch(() => {});
+        return res.status(404).json({
+          success: false,
+          message: 'Your payment was received, but the centre was unavailable. A full refund has been initiated.'
+        });
+      }
+    } else {
+      address = await Address.findOne({
+        _id: orderData.addressId,
+        userId: req.user._id
       });
+      
+      if (!address) {
+        await markFulfilmentFailure(payment, 'order', 'Delivery address not found');
+        await refundUnfulfilledPayment(payment, 'Delivery address was unavailable after payment').catch(() => {});
+        return res.status(404).json({
+          success: false,
+          message: 'Your payment was received, but the address was unavailable. A full refund has been initiated.'
+        });
+      }
     }
     
     // Honour the exact server-side snapshot the customer paid for. This also
@@ -425,8 +506,10 @@ exports.verifyProductPayment = async (req, res) => {
       const priced = await computeOrderPricing({
         items: orderData.items,
         couponCode: orderData.coupon?.code,
-        city: address.city,
+        city: address ? address.city : null,
         userId: req.user._id,
+        branch: orderBranch,
+        fulfilment: isPickup ? 'pickup' : 'delivery',
       });
       if (!priced.ok) {
         await markFulfilmentFailure(payment, 'order', priced.message);
@@ -439,13 +522,13 @@ exports.verifyProductPayment = async (req, res) => {
       pricingSnapshot = {
         pricing: priced.pricing,
         coupon: priced.coupon,
-        items: priced.items.map(({ product, quantity }) => ({
+        items: priced.items.map(({ product, quantity, price }) => ({
           productId: product._id,
           productName: product.name,
           productImage: product.image,
           quantity,
-          price: product.price,
-          subtotal: product.price * quantity,
+          price,
+          subtotal: price * quantity,
         })),
       };
     }
@@ -523,6 +606,27 @@ exports.verifyProductPayment = async (req, res) => {
     const orderCount = await ProductOrder.countDocuments();
     const orderNumber = `ORD${Date.now()}${String(orderCount + 1).padStart(4, '0')}`;
     
+    // Where the goods go: the guest's address, or the centre they collect from.
+    const fulfilment = isPickup
+      ? {
+        type: 'pickup',
+        branchId: pickupBranch._id,
+        branchName: pickupBranch.name,
+        pickupCode: await freshPickupCode(),
+        pickupAddress: {
+          addressLine1: [pickupBranch.address?.line1 || pickupBranch.address?.street, pickupBranch.address?.line2].filter(Boolean).join(', ') || null,
+          city: pickupBranch.address?.city || null,
+          state: pickupBranch.address?.state || null,
+          pincode: pickupBranch.address?.pincode || null,
+          phone: Array.isArray(pickupBranch.contact?.phone) ? (pickupBranch.contact.phone[0] || null) : (pickupBranch.contact?.phone || null),
+        },
+      }
+      : {
+        type: 'delivery',
+        branchId: mongoose.isValidObjectId(orderData.fulfilment?.branchId) ? orderData.fulfilment.branchId : null,
+        branchName: orderData.fulfilment?.branchName || null,
+      };
+
     // Create product order
     let order;
     try {
@@ -530,7 +634,8 @@ exports.verifyProductPayment = async (req, res) => {
       userId: req.user._id,
       orderNumber,
       items: processedItems,
-      shippingAddress: {
+      fulfilment,
+      shippingAddress: address ? {
         addressId: address._id,
         fullName: address.fullName,
         phone: address.phone,
@@ -540,7 +645,7 @@ exports.verifyProductPayment = async (req, res) => {
         state: address.state,
         postalCode: address.postalCode,
         country: address.country
-      },
+      } : undefined,
       pricing: pricingSnapshot.pricing,
       coupon: pricingSnapshot.coupon || undefined,
       paymentMethod: 'Razorpay',
@@ -638,9 +743,11 @@ exports.verifyProductPayment = async (req, res) => {
     try {
       await NotificationHelper.orderCreated({
         _id: populatedOrder._id,
+        userId: populatedOrder.userId?._id || populatedOrder.userId,
         orderNumber: populatedOrder.orderNumber,
         totalAmount: populatedOrder.pricing.total,
-        shippingAddress: { name: populatedOrder.shippingAddress.fullName }
+        shippingAddress: { name: recipientName(populatedOrder, populatedOrder.userId) },
+        fulfilment: populatedOrder.fulfilment,
       });
     } catch (notifError) {
       console.error('⚠️ Failed to create notification:', notifError);

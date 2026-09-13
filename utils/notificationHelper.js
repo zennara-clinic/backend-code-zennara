@@ -335,7 +335,9 @@ class NotificationHelper {
           userId: order.userId,
           type: 'order',
           title: 'Order Placed Successfully',
-          message: `Your order #${order.orderNumber} has been placed successfully. Total: ₹${order.totalAmount?.toFixed(2)}`,
+          message: order.fulfilment?.type === 'pickup'
+            ? `Your order #${order.orderNumber} is placed. We will message you when it is ready to collect at ${order.fulfilment.branchName || 'the centre'}. Total: ₹${order.totalAmount?.toFixed(2)}`
+            : `Your order #${order.orderNumber} has been placed successfully. Total: ₹${order.totalAmount?.toFixed(2)}`,
           relatedId: order._id,
           relatedModel: 'ProductOrder',
           priority: 'high',
@@ -362,6 +364,14 @@ class NotificationHelper {
         case 'Delivered':
           adminMessage = `Order #${order.orderNumber} has been delivered successfully`;
           adminPriority = 'medium';
+          break;
+        case 'Ready for Pickup':
+          adminMessage = `Order #${order.orderNumber} is ready to collect at the desk`;
+          adminPriority = 'medium';
+          break;
+        case 'Collected':
+          adminMessage = `Order #${order.orderNumber} was collected by the guest`;
+          adminPriority = 'low';
           break;
         case 'Cancelled':
           adminMessage = `Order #${order.orderNumber} has been cancelled`;
@@ -406,6 +416,14 @@ class NotificationHelper {
             break;
           case 'Delivered':
             userMessage = `Your order #${order.orderNumber} has been delivered. Enjoy your products!`;
+            priority = 'high';
+            break;
+          case 'Ready for Pickup':
+            userMessage = `Your order #${order.orderNumber} is ready to collect${order.centreName ? ` at ${order.centreName}` : ''}. Show your pickup code at the desk.`;
+            priority = 'high';
+            break;
+          case 'Collected':
+            userMessage = `Your order #${order.orderNumber} was collected. Enjoy your products!`;
             priority = 'high';
             break;
           case 'Cancelled':

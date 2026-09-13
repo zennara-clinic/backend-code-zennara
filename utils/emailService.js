@@ -26,6 +26,8 @@ const getOrderShippedTemplate = require('../Email Templates/orderShipped');
 const getOrderOutForDeliveryTemplate = require('../Email Templates/orderOutForDelivery');
 const getOrderDeliveredTemplate = require('../Email Templates/orderDelivered');
 const getOrderCancelledTemplate = require('../Email Templates/orderCancelled');
+const getOrderReadyForPickupTemplate = require('../Email Templates/orderReadyForPickup');
+const getOrderCollectedTemplate = require('../Email Templates/orderCollected');
 const getReturnRequestReceivedTemplate = require('../Email Templates/returnRequestReceived');
 const getReturnApprovedTemplate = require('../Email Templates/returnApproved');
 const getReturnRejectedTemplate = require('../Email Templates/returnRejected');
@@ -741,6 +743,32 @@ exports.sendOrderCancelledEmail = async (email, customerName, orderData) => {
     return response;
   } catch (error) {
     console.error('Order cancelled email sending failed');
+    throw error;
+  }
+};
+
+// Send Order Ready for Pickup Email (store-pickup orders)
+exports.sendOrderReadyForPickupEmail = async (email, customerName, orderData) => {
+  try {
+    const htmlContent = getOrderReadyForPickupTemplate(customerName, orderData);
+    const response = await sendEmail(email, `Ready to collect at ${orderData.centreName || 'the centre'} [${orderData.orderNumber}]`, htmlContent);
+    console.log('Order ready-for-pickup email sent successfully');
+    return response;
+  } catch (error) {
+    console.error('Order ready-for-pickup email sending failed');
+    throw error;
+  }
+};
+
+// Send Order Collected Email (store-pickup orders)
+exports.sendOrderCollectedEmail = async (email, customerName, orderData) => {
+  try {
+    const htmlContent = getOrderCollectedTemplate(customerName, orderData);
+    const response = await sendEmail(email, `Order Collected [${orderData.orderNumber}]`, htmlContent);
+    console.log('Order collected email sent successfully');
+    return response;
+  } catch (error) {
+    console.error('Order collected email sending failed');
     throw error;
   }
 };

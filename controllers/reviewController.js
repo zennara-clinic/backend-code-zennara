@@ -33,7 +33,7 @@ exports.submitReview = async (req, res) => {
     }
 
     // Check if order is delivered
-    if (order.orderStatus !== 'Delivered') {
+    if (!['Delivered', 'Collected'].includes(order.orderStatus)) {
       return res.status(400).json({
         success: false,
         message: 'You can only review products after delivery is completed'
@@ -353,7 +353,7 @@ exports.canReviewProduct = async (req, res) => {
     }
 
     // Check if order is delivered
-    if (order.orderStatus !== 'Delivered') {
+    if (!['Delivered', 'Collected'].includes(order.orderStatus)) {
       return res.json({
         success: true,
         data: { canReview: false, reason: 'Order not delivered yet' }

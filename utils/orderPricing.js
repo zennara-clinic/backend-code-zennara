@@ -13,6 +13,7 @@
  */
 const Product = require('../models/Product');
 const Coupon = require('../models/Coupon');
+const { resolveListing } = require('./productCentre');
 
 /**
  * Commercial rules for the store (2026-09 policy).
@@ -33,6 +34,14 @@ const Coupon = require('../models/Coupon');
  */
 const MIN_ORDER_VALUE = Number(process.env.STORE_MIN_ORDER_VALUE || 1000);
 const DELIVERY_FEE = Number(process.env.STORE_DELIVERY_FEE || 150);
+/*
+ * Store pickup (2026-09): the guest pays online and collects at a clinic
+ * centre, so there is no delivery fee to cover — and the ₹1,000 floor exists
+ * to make paid delivery viable, not to stop a guest walking in for one item.
+ * Pickup therefore has its own floor, off by default; set
+ * STORE_MIN_ORDER_VALUE_PICKUP to raise it without a deploy.
+ */
+const PICKUP_MIN_ORDER_VALUE = Number(process.env.STORE_MIN_ORDER_VALUE_PICKUP || 0);
 
 const DELIVERY_FEE_BY_CITY = (() => {
   try {
@@ -54,10 +63,16 @@ function deliveryFeeForCity(city) {
   return Number.isFinite(hit) ? hit : DELIVERY_FEE;
 }
 
+/** The floor that applies to a fulfilment type. */
+const minOrderValueFor = (fulfilment) => (fulfilment === 'pickup' ? PICKUP_MIN_ORDER_VALUE : MIN_ORDER_VALUE);
+
 /** Human copy for a rejected cart, shared by every caller so it reads the same. */
-function belowMinimumMessage(subtotal) {
-  const short = Math.max(0, MIN_ORDER_VALUE - subtotal);
-  return `Minimum order value is ₹${MIN_ORDER_VALUE}. Add ₹${short} more to place this order.`;
+function belowMinimumMessage(subtotal, fulfilment = 'delivery') {
+  const floor = minOrderValueFor(fulfilment);
+  const short = Math.max(0, floor - subtotal);
+  return fulfilment === 'pickup'
+    ? `Minimum order value for store pickup is ₹${floor}. Add ₹${short} more to place this order.`
+    : `Minimum order value is ₹${MIN_ORDER_VALUE}. Add ₹${short} more to place this order.`;
 }
 
 /**
@@ -149,18 +164,35 @@ async function validateCouponForOrder(code, orderValue, productIds, { userId = n
  * `userId` is optional but should be passed wherever one is known: it is what
  * lets the coupon's perUserLimit be enforced.
  *
- * @param {{ items: Array<{productId:string, quantity:number}>, couponCode?: string, city?: string, userId?: any }} params
+ * `branch` is the centre the order belongs to — the one the guest is shopping
+ * at, which for store pickup is also where they collect. It decides two
+ * things per line: whether the product is on sale there at all, and what it
+ * costs there (utils/productCentre.js). With no branch every product prices
+ * at its base price, as before centres existed.
+ *
+ * `fulfilment` is 'delivery' (default) or 'pickup'. Pickup charges no
+ * delivery fee and has its own (by default zero) minimum.
+ *
+ * @param {{ items: Array<{productId:string, quantity:number}>, couponCode?: string, city?: string, userId?: any,
+ *           branch?: { _id: any, name?: string } | null, fulfilment?: 'delivery'|'pickup' }} params
  * @returns {Promise<
- *   | { ok:false, status:number, message:string, availableStock?:number }
+ *   | { ok:false, status:number, message:string, code?:string, availableStock?:number }
  *   | { ok:true, pricing:{subtotal:number,gst:number,discount:number,deliveryFee:number,total:number},
- *       items: Array<{product:object, quantity:number}>, coupon: {code:string,discount:number}|null,
- *       couponOutcome: {code:string|null, applied:boolean, reason:string|null} }
+ *       items: Array<{product:object, quantity:number, price:number, basePrice:number}>, coupon: {code:string,discount:number}|null,
+ *       couponOutcome: {code:string|null, applied:boolean, reason:string|null},
+ *       fulfilment: 'delivery'|'pickup', branch: { _id: any, name: string } | null }
  * >}
  */
-async function computeOrderPricing({ items, couponCode, city, userId = null }) {
+async function computeOrderPricing({ items, couponCode, city, userId = null, branch = null, fulfilment = 'delivery' }) {
   if (!Array.isArray(items) || items.length === 0) {
     return { ok: false, status: 400, message: 'Order must contain at least one item' };
   }
+  const isPickup = fulfilment === 'pickup';
+  if (isPickup && !branch) {
+    return { ok: false, status: 400, code: 'PICKUP_CENTRE_REQUIRED', message: 'Choose the centre you will collect from.' };
+  }
+  const branchId = branch ? branch._id : null;
+  const centreName = branch?.name || 'this centre';
 
   let subtotal = 0;
   let gst = 0;
@@ -195,29 +227,42 @@ async function computeOrderPricing({ items, couponCode, city, userId = null }) {
       };
     }
 
-    const lineSubtotal = product.price * item.quantity;
+    // Centre-wise listing: hidden here, or not collectable here, is a refusal
+    // with the centre named, so the app can say which item and where.
+    const listing = resolveListing(product, branchId);
+    if (branchId && !listing.visible) {
+      return { ok: false, status: 400, code: 'NOT_AT_CENTRE', message: `${product.name} is not available at ${centreName}.`, productId: String(product._id) };
+    }
+    if (isPickup && !listing.pickup) {
+      return { ok: false, status: 400, code: 'NO_PICKUP_AT_CENTRE', message: `${product.name} cannot be collected at ${centreName}. Choose another centre or home delivery.`, productId: String(product._id) };
+    }
+
+    const unitPrice = listing.price;
+    const lineSubtotal = unitPrice * item.quantity;
     subtotal += lineSubtotal;
     gst += (lineSubtotal * (product.gstPercentage || 0)) / 100;
     productIds.push(product._id.toString());
-    lineItems.push({ product, quantity: item.quantity });
+    lineItems.push({ product, quantity: item.quantity, price: unitPrice, basePrice: listing.basePrice });
   }
 
   gst = Math.round(gst);
 
   // Minimum-order gate. Deliberately on the subtotal, so adding GST or paying a
   // delivery fee can never lift an under-value cart over the line.
-  if (subtotal < MIN_ORDER_VALUE) {
+  const floor = minOrderValueFor(fulfilment);
+  if (subtotal < floor) {
     return {
       ok: false,
       status: 400,
       code: 'BELOW_MIN_ORDER',
-      minOrderValue: MIN_ORDER_VALUE,
+      minOrderValue: floor,
       subtotal,
-      message: belowMinimumMessage(subtotal),
+      message: belowMinimumMessage(subtotal, fulfilment),
     };
   }
 
-  const deliveryFee = deliveryFeeForCity(city);
+  // Store pickup is what the guest chooses INSTEAD of paying for delivery.
+  const deliveryFee = isPickup ? 0 : deliveryFeeForCity(city);
 
   let discount = 0;
   let coupon = null;
@@ -254,6 +299,8 @@ async function computeOrderPricing({ items, couponCode, city, userId = null }) {
     items: lineItems,
     coupon,
     couponOutcome,
+    fulfilment: isPickup ? 'pickup' : 'delivery',
+    branch: branch ? { _id: branch._id, name: branch.name || '' } : null,
   };
 }
 
@@ -262,6 +309,8 @@ module.exports = {
   validateCouponForOrder,
   deliveryFeeForCity,
   belowMinimumMessage,
+  minOrderValueFor,
   MIN_ORDER_VALUE,
+  PICKUP_MIN_ORDER_VALUE,
   DELIVERY_FEE,
 };

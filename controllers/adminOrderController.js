@@ -1,4 +1,7 @@
 const ProductOrder = require('../models/ProductOrder');
+const Branch = require('../models/Branch');
+const { isPickup, sequenceFor, statusMismatch, isFulfilled, normalisePickupCode, destinationLine, recipientName, STATUS_LABEL } = require('../utils/orderFulfilment');
+const { clinicHoursLine } = require('../utils/centreHours');
 const { clinicDateKey, clinicDayEnd, clinicDayStart } = require('../utils/bookingTime');
 const Product = require('../models/Product');
 const NotificationHelper = require('../utils/notificationHelper');
@@ -14,13 +17,21 @@ const {
 // @access  Private/Admin
 exports.getAllOrders = async (req, res) => {
   try {
-    const { status, paymentStatus, userId, search, source, startDate, endDate, limit, page = 1 } = req.query;
+    const { status, paymentStatus, userId, search, source, startDate, endDate, limit, page = 1, fulfilment, branchId, pickupCode } = req.query;
     
     const query = {};
     
     if (status) {
       query.orderStatus = status;
     }
+
+    // Delivery vs store pickup, and the centre a pickup queue belongs to.
+    // Legacy rows predate `fulfilment` and are delivery orders.
+    if (fulfilment === 'pickup') query['fulfilment.type'] = 'pickup';
+    else if (fulfilment === 'delivery') query.$and = [...(query.$and || []), { $or: [{ 'fulfilment.type': 'delivery' }, { 'fulfilment.type': { $exists: false } }, { 'fulfilment.type': null }] }];
+    if (branchId && /^[0-9a-f]{24}$/i.test(branchId)) query['fulfilment.branchId'] = branchId;
+    // The desk types the code the guest reads out.
+    if (pickupCode && normalisePickupCode(pickupCode)) query['fulfilment.pickupCode'] = normalisePickupCode(pickupCode);
     
     if (paymentStatus) {
       query.paymentStatus = paymentStatus;
@@ -52,6 +63,7 @@ exports.getAllOrders = async (req, res) => {
           { orderNumber: rx },
           { 'shippingAddress.fullName': rx },
           { 'shippingAddress.phone': rx },
+          { 'fulfilment.pickupCode': normalisePickupCode(search) || '__none__' },
           { userId: { $in: users.map((u) => u._id) } },
         ],
       }];
@@ -136,6 +148,7 @@ exports.updateOrderStatus = async (req, res) => {
     const validStatuses = [
       'Order Placed', 'Confirmed', 'Processing', 'Packed', 
       'Shipped', 'Out for Delivery', 'Delivery Failed', 'Delivered',
+      'Ready for Pickup', 'Collected',
       'Cancelled', 'Return Requested', 'Returned'
     ];
     
@@ -148,6 +161,28 @@ exports.updateOrderStatus = async (req, res) => {
 
     if (status === order.orderStatus) {
       return res.json({ success: true, message: 'Order already has this status', data: order });
+    }
+    // Delivery statuses on a pickup order (and the reverse) are a mistake, not a step.
+    const mismatch = statusMismatch(order, status);
+    if (mismatch) {
+      return res.status(400).json({ success: false, code: 'FULFILMENT_MISMATCH', message: mismatch });
+    }
+    /*
+     * Handing over a pickup order: the guest reads out the six-character code
+     * from their app or message and the desk types it. A wrong code stops the
+     * handover. When the guest cannot produce it (phone dead, message gone),
+     * the desk may skip it by saying so — `skipCode` plus a note about how the
+     * guest was identified — and that reason is kept on the order.
+     */
+    if (status === 'Collected') {
+      const typed = normalisePickupCode(req.body.pickupCode);
+      const expected = normalisePickupCode(order.fulfilment?.pickupCode);
+      if (!req.body.skipCode) {
+        if (!typed) return res.status(400).json({ success: false, code: 'PICKUP_CODE_REQUIRED', message: 'Enter the pickup code the guest shows you, or skip it with a note on how you verified them.' });
+        if (expected && typed !== expected) return res.status(400).json({ success: false, code: 'PICKUP_CODE_MISMATCH', message: 'That pickup code does not match this order.' });
+      } else if (!String(note || '').trim()) {
+        return res.status(400).json({ success: false, code: 'PICKUP_NOTE_REQUIRED', message: 'Say how the guest was identified when skipping the code.' });
+      }
     }
     if (status === 'Delivery Failed') {
       return res.status(400).json({
@@ -169,13 +204,13 @@ exports.updateOrderStatus = async (req, res) => {
     }
     // Guests phone the clinic to return things. The desk raises the request on
     // their behalf here; completing it still goes through the return workflow.
-    if (status === 'Return Requested' && order.orderStatus !== 'Delivered') {
+    if (status === 'Return Requested' && !isFulfilled(order.orderStatus)) {
       return res.status(400).json({
         success: false,
-        message: 'Only a delivered order can be returned',
+        message: 'Only a delivered or collected order can be returned',
       });
     }
-    if (['Delivered', 'Return Requested', 'Returned', 'Cancelled'].includes(order.orderStatus)) {
+    if (['Delivered', 'Collected', 'Return Requested', 'Returned', 'Cancelled'].includes(order.orderStatus)) {
       return res.status(409).json({
         success: false,
         message: `A ${order.orderStatus.toLowerCase()} order cannot move to ${status}`,
@@ -188,11 +223,8 @@ exports.updateOrderStatus = async (req, res) => {
       });
     }
     
-    // Define status sequence
-    const statusSequence = [
-      'Order Placed', 'Confirmed', 'Processing', 'Packed', 
-      'Shipped', 'Out for Delivery', 'Delivered'
-    ];
+    // The ladder depends on how the order is fulfilled (utils/orderFulfilment).
+    const statusSequence = sequenceFor(order);
     
     // Get current and new status indices
     const currentStatusIndex = statusSequence.indexOf(order.orderStatus);
@@ -244,6 +276,17 @@ exports.updateOrderStatus = async (req, res) => {
       order.deliveredAt = new Date();
       if (order.paymentMethod === 'COD') order.paymentStatus = 'Paid';
     }
+    if (status === 'Ready for Pickup') {
+      order.fulfilment.readyAt = new Date();
+    }
+    if (status === 'Collected') {
+      const now = new Date();
+      order.fulfilment.collectedAt = now;
+      order.fulfilment.collectedBy = req.admin?._id || null;
+      order.fulfilment.collectedNote = req.body.skipCode ? `Code skipped: ${String(note || '').trim()}` : (note || null);
+      // The return window and every "when did the guest get it" read this.
+      order.deliveredAt = now;
+    }
     
     if (status === 'Cancelled' && !order.cancelledAt) {
       order.cancelledAt = new Date();
@@ -293,7 +336,8 @@ exports.updateOrderStatus = async (req, res) => {
         {
           _id: order._id,
           userId: userId,
-          orderNumber: order.orderNumber
+          orderNumber: order.orderNumber,
+          centreName: order.fulfilment?.branchName || null,
         },
         oldStatus,
         status
@@ -315,17 +359,40 @@ exports.updateOrderStatus = async (req, res) => {
       } else {
         console.log('User:', user.fullName, '| Phone:', user.phone, '| Email:', user.email);
         
-        const formattedAddress = `${order.shippingAddress.addressLine1}, ${order.shippingAddress.city}, ${order.shippingAddress.state} - ${order.shippingAddress.postalCode}`;
+        // "Where the goods go" reads differently for the two flows.
+        const formattedAddress = destinationLine(order);
+        const pickup = isPickup(order);
+        const centre = pickup ? await Branch.findById(order.fulfilment.branchId).select('name address contact operatingHours').lean().catch(() => null) : null;
+        const pa = order.fulfilment?.pickupAddress || {};
         
         const data = {
-          customerName: order.shippingAddress.fullName,
+          customerName: recipientName(order, user),
           orderNumber: order.orderNumber,
-          shippingAddress: formattedAddress
+          shippingAddress: formattedAddress,
+          fulfilment: pickup ? 'pickup' : 'delivery',
+          centreName: order.fulfilment?.branchName || centre?.name || null,
+          centreAddress: [pa.addressLine1, pa.city, pa.pincode].filter(Boolean).join(', ') || null,
+          centrePhone: pa.phone || null,
+          centreHours: centre ? clinicHoursLine(centre) : null,
+          pickupCode: order.fulfilment?.pickupCode || null,
         };
 
         let notificationsSent = false;
 
         switch (status) {
+          case 'Ready for Pickup':
+            console.log('Sending Ready for Pickup notifications...');
+            if (user.phone) await whatsappService.sendOrderReadyForPickup(user.phone, data);
+            if (user.email) await emailService.sendOrderReadyForPickupEmail(user.email, data.customerName, data);
+            notificationsSent = true;
+            break;
+          case 'Collected':
+            console.log('Sending Collected notifications...');
+            data.collectedAt = order.fulfilment.collectedAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
+            if (user.phone) await whatsappService.sendOrderCollected(user.phone, data);
+            if (user.email) await emailService.sendOrderCollectedEmail(user.email, data.customerName, data);
+            notificationsSent = true;
+            break;
           case 'Confirmed':
             console.log('Sending Order Confirmed notifications...');
             // Send "Order Confirmed" notification
@@ -572,6 +639,11 @@ exports.getOrderStats = async (req, res) => {
       orderStatus: { $in: ['Shipped', 'Out for Delivery'] } 
     }));
     const deliveredOrders = await ProductOrder.countDocuments(within({ orderStatus: 'Delivered' }));
+    // Store pickup: what is waiting at a desk right now, and what went out that way.
+    const readyForPickupOrders = await ProductOrder.countDocuments(within({ orderStatus: 'Ready for Pickup' }));
+    const collectedOrders = await ProductOrder.countDocuments(within({ orderStatus: 'Collected' }));
+    const pickupOrders = await ProductOrder.countDocuments(within({ 'fulfilment.type': 'pickup' }));
+    const openPickupOrders = await ProductOrder.countDocuments(within({ 'fulfilment.type': 'pickup', orderStatus: { $in: ['Order Placed', 'Confirmed', 'Processing', 'Packed', 'Ready for Pickup'] } }));
     const cancelledOrders = await ProductOrder.countDocuments(within({ orderStatus: 'Cancelled' }));
     const failedDeliveryOrders = await ProductOrder.countDocuments(within({ orderStatus: 'Delivery Failed' }));
     const returnRequestedOrders = await ProductOrder.countDocuments(within({ orderStatus: 'Return Requested' }));
@@ -594,6 +666,10 @@ exports.getOrderStats = async (req, res) => {
         processingOrders,
         shippedOrders,
         deliveredOrders,
+        readyForPickupOrders,
+        collectedOrders,
+        pickupOrders,
+        openPickupOrders,
         cancelledOrders,
         failedDeliveryOrders,
         returnRequestedOrders,
@@ -624,6 +700,12 @@ exports.deleteOrder = async (req, res) => {
         success: false,
         message: 'Order not found'
       });
+    }
+    if (isPickup(order)) {
+      return res.status(400).json({ success: false, code: 'FULFILMENT_MISMATCH', message: 'This is a store-pickup order — there is no delivery partner to record. Mark it ready to collect instead.' });
+    }
+    if (isPickup(order)) {
+      return res.status(400).json({ success: false, code: 'FULFILMENT_MISMATCH', message: 'This is a store-pickup order — there is no delivery attempt to record. Mark it ready to collect instead.' });
     }
     
     /*
