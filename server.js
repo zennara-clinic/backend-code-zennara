@@ -318,6 +318,29 @@ app.use('/api/contact-change', require('./routes/contactChange'));
 app.use('/api/admin/contact-change-requests', require('./routes/adminContactChange'));
 
 /* ------------------------------ Health Check -------------------------------- */
+/*
+ * A machine-readable health answer, unauthenticated, on the API path that the
+ * reverse proxy forwards. The HTML page on "/" is for a person; an uptime
+ * monitor, pm2 and a colleague on the box need one line that says whether the
+ * process is up AND whether it can reach the database — a 502 from nginx and a
+ * process that is alive but cut off from Atlas look identical from a browser
+ * and need different fixes. Never writes anything; safe to poll every minute.
+ */
+app.get('/api/health', (req, res) => {
+  const mongoose = require('mongoose');
+  const states = ['disconnected', 'connected', 'connecting', 'disconnecting'];
+  const db = states[mongoose.connection.readyState] || 'unknown';
+  const ok = db === 'connected';
+  res.status(ok ? 200 : 503).json({
+    ok,
+    db,
+    uptimeSeconds: Math.floor(process.uptime()),
+    memoryMb: Math.round(process.memoryUsage().rss / 1048576),
+    node: process.version,
+    time: new Date().toISOString(),
+  });
+});
+
 app.get('/', (req, res) => {
   const uptime = process.uptime();
   const hours = Math.floor(uptime / 3600);

@@ -25,7 +25,37 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const PDFDocument = require('pdfkit');
+/*
+ * pdfkit is loaded on first use, never at boot.
+ *
+ * On 2026-09-13 production went to 502 on every route: the box had pulled
+ * the commit that added this dependency but had not run `npm install`, so a
+ * top-level require threw "Cannot find module 'pdfkit'" while the controllers
+ * were being loaded, the process died before it could listen, and pm2 gave up
+ * after a crash loop. A prescription PDF is one feature; it must never be the
+ * reason nobody can sign in. Missing module → the PDF renderer reports itself
+ * unavailable and everything else keeps running.
+ */
+let PDFDocumentCtor = null;
+let pdfkitError = null;
+function PDFDocument(...args) {
+  if (!PDFDocumentCtor) {
+    try {
+      PDFDocumentCtor = require('pdfkit');
+    } catch (error) {
+      pdfkitError = error;
+      const err = new Error(`PDF rendering is unavailable on this server (${error.message}). Run "npm install" and reload.`);
+      err.code = 'PDF_UNAVAILABLE';
+      throw err;
+    }
+  }
+  return new PDFDocumentCtor(...args);
+}
+/** True when the PDF library is present; lets callers degrade before rendering. */
+function pdfAvailable() {
+  if (PDFDocumentCtor) return true;
+  try { PDFDocumentCtor = require('pdfkit'); return true; } catch (error) { pdfkitError = error; return false; }
+}
 const {
   TEMPLATES, buildView, fmtDate, fmtDateTime, SCHEDULE_H_TAG, BRAND,
 } = require('./prescriptionTemplates');
@@ -715,6 +745,7 @@ function shareUrl(token) {
 }
 
 module.exports = {
+  pdfAvailable,
   renderPrescriptionPdf,
   prescriptionFilename,
   makeShareToken,
