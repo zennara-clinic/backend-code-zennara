@@ -236,6 +236,28 @@ async function centerDiary(centerId, date) {
  * They are independent reads, so they go together: measured 3.9s → 1.4s for a
  * 30-day month even with no competing traffic.
  */
+/**
+ * The last day this roster has any shift on it, or null.
+ *
+ * The diary is only worth reading where somebody is working: a 61-day
+ * calendar was pulling nine weeks of appointments when the roster stopped
+ * after ten days, so seven of the nine calls answered about days nobody
+ * could be booked on anyway. Those calls are not free — they queue against
+ * Zenoti's rate limit and slow the ones that matter.
+ */
+function lastRosteredDay(rows, employeeIds = null) {
+  let last = null;
+  for (const row of rows || []) {
+    if (employeeIds && !employeeIds.has(norm(row.employeeId))) continue;
+    for (const shift of row.shifts || []) {
+      if (Number(shift.status) !== 0) continue;
+      const day = writtenDate(shift.date) || String(shift.date).slice(0, 10);
+      if (day && (!last || day > last)) last = day;
+    }
+  }
+  return last;
+}
+
 async function centerDiaryRange(centerId, from, to) {
   return cached(`diary-range:${centerId}:${from}:${to}`, async () => {
     const windows = [];
@@ -424,10 +446,19 @@ async function availabilityRange(doctorId, from, to, options = {}) {
     Promise.all(branches.map(async (branch) => {
       const centerId = centerForBranch(branch);
       const practitioner = await practitionerFor(doctor.doctorId, centerId);
-      const [rows, diary] = await Promise.all([
-        centerSchedule(centerId, from, to),
-        centerDiaryRange(centerId, from, to),
-      ]);
+      /*
+       * Roster first, then the diary only as far as the roster reaches.
+       *
+       * Read together, the diary covered the whole sixty days while the
+       * roster stopped after ten — most of those appointment pages described
+       * days with nobody working. Reading the roster first costs one round
+       * trip of latency and saves most of the diary ones.
+       */
+      const rows = await centerSchedule(centerId, from, to);
+      const rosterEnd = lastRosteredDay(rows, new Set([norm(practitioner.zenotiEmployeeId)]));
+      const diary = rosterEnd
+        ? await centerDiaryRange(centerId, from, rosterEnd < to ? rosterEnd : to)
+        : { appointments: [], blockouts: [] };
       return { rows, diary, employeeId: practitioner.zenotiEmployeeId };
     })),
     localHoldsRange(doctor.doctorId, from, to, options.excludeBookingId),
@@ -618,13 +649,18 @@ async function branchSlots(branchId, date, options = {}) {
 async function branchAvailabilityRange(branchId, from, to, options = {}) {
   const branch = await branchById(branchId);
   const centerId = centerForBranch(branch);
-  const [schedules, diary, practitioners] = await Promise.all([
+  const [schedules, practitioners] = await Promise.all([
     centerSchedule(centerId, from, to),
-    centerDiaryRange(centerId, from, to),
     ZenotiPractitioner.find({ active: true, centerIds: centerId, jobName: /^(doctor|therapist)$/i })
       .select('zenotiEmployeeId').lean(),
   ]);
   const providerIds = new Set(practitioners.map((row) => norm(row.zenotiEmployeeId)));
+  // Same economy as the per-dermatologist range: no appointments are worth
+  // reading for days on which nobody is rostered.
+  const rosterEnd = lastRosteredDay(schedules, providerIds);
+  const diary = rosterEnd
+    ? await centerDiaryRange(centerId, from, rosterEnd < to ? rosterEnd : to)
+    : { appointments: [], blockouts: [] };
   const now = options.now || new Date();
   const days = [];
 
