@@ -1954,7 +1954,16 @@ exports.createBookingAdmin = async (req, res) => {
         specialistTier: line.specialistTier || (lineSpecialistId ? specialistTier : undefined) || undefined,
         amount: lineAmount,
         paymentStatus: assignment ? 'paid' : (paymentStatus || 'pending'),
-        paymentMethod: assignment ? 'Package' : undefined,
+        /*
+         * A booking made at the desk is settled at the desk.
+         *
+         * It defaults to 'Razorpay' on the model because that is how a guest
+         * booking in the app pays. Nobody is paying a gateway for a visit
+         * reception just wrote down, so an unpaid desk booking is marked
+         * 'Clinic' — which is what the till, the bill and the revenue-by-tender
+         * report all already understand.
+         */
+        paymentMethod: assignment ? 'Package' : (paymentStatus === 'paid' ? undefined : 'Clinic'),
         isPackageIncluded: Boolean(assignment),
         packageAssignmentId: assignment ? assignment._id : undefined,
         packageSessionId: session ? session._id : undefined,
