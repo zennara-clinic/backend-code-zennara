@@ -787,17 +787,35 @@ exports.createMembershipPayment = async (req, res) => {
     /*
      * ONE price. resolveZenPricing() (utils/zenMembership.js) is the single
      * authority for what the membership costs: Zenoti's list price for the
-     * variant the clinic sells, or App Studio's `priceInr` when the card is
-     * set to manual or Zenoti cannot be read. The app card, the panel and this
-     * charge all read that one function, so a guest is charged exactly the
-     * figure they were shown. Charging from a second field is how consultation
-     * pricing ended up living in four places that only agreed by accident.
-     * The 135000 literal is the last resort only if the resolver returns
-     * nothing sane — it never throws, so that path should not be reachable.
+     * variant the clinic sells. The app card, the panel and this charge all read
+     * that one function, so a guest is charged exactly the figure they were
+     * shown. Charging from a second field is how consultation pricing ended up
+     * living in four places that only agreed by accident.
+     *
+     * There is no hand-typed fallback: if Zenoti cannot be read the resolver
+     * serves the last figure Zenoti gave, and failing that the sale is refused
+     * rather than charging a number nobody approved.
      */
     const { resolveZenPricing } = require('../utils/zenMembership');
     const pricing = await resolveZenPricing().catch(() => null);
-    const amount = Number(pricing?.amount) > 0 ? Number(pricing.amount) : 135000;
+    const amount = Number(pricing?.amount) > 0 ? Number(pricing.amount) : 0;
+
+    /*
+     * No price, no sale.
+     *
+     * The membership is priced by Zenoti. A hard-coded 135000 used to stand in
+     * when the resolver had nothing to say, which meant a misconfigured or
+     * unreachable catalogue quietly charged a figure nobody had approved —
+     * and after the price moved to ₹1,05,000 that would have overcharged by
+     * thirty thousand rupees. Refuse instead, and say so.
+     */
+    if (!amount) {
+      return res.status(503).json({
+        success: false,
+        code: 'MEMBERSHIP_PRICE_UNAVAILABLE',
+        message: 'The membership price could not be read just now. Please try again shortly or speak to the clinic.',
+      });
+    }
 
     if (pricing?.isActive === false) {
       return res.status(409).json({

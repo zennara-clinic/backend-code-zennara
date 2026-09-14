@@ -8,18 +8,24 @@
  * card, the panel plan list and Razorpay must all show and charge the SAME
  * figure, so every one of them now reads it from resolveZenPricing() here.
  *
- * Where the figure comes from (probed live 2026-09-12): Zenoti's centre
- * membership catalogue carries `price.final` for each Zen-family row, and
- * nothing else of use — is_active is false, duration_in_months is 0, benefits
- * and terms are null. So Zenoti is the authority for the PRICE only; validity,
- * benefits, terms and copy stay in App Studio → Membership.
+ * Where the figure comes from (re-probed live 2026-09-14): Zenoti's centre
+ * membership catalogue carries `price.final` for each Zen-family row, plus
+ * `htmlBenefits`, `terms` and `description` fields — all three currently null
+ * on every Zen row, and isActive false with durationMonths 0. So Zenoti is
+ * the authority for the PRICE, and for the inclusions TOO whenever somebody
+ * fills them in there; App Studio supplies only what Zenoti leaves empty.
  *
  * Rules:
- *   · priceSource 'zenoti' (default) + a configured zenotiMembershipVersionId
- *     + Zenoti credentials → the catalogue row's final price, source 'zenoti'.
- *   · Anything else — 'manual', no version id, Zenoti unreachable, a zero
- *     price — → App Studio's `priceInr`, source 'manual'. Never throws: a
- *     Zenoti outage must not stop a guest paying.
+ *   · Zenoti is the price. A configured zenotiMembershipVersionId + working
+ *     credentials → the catalogue row's final price, source 'zenoti'.
+ *   · The hand-typed `priceInr` is NOT a price source any more. If Zenoti
+ *     cannot be read we serve the LAST price Zenoti gave us (source
+ *     'zenoti-cached') rather than a different number nobody agreed to; with
+ *     nothing cached the membership reports itself unavailable (amount 0,
+ *     source 'unavailable') and the sale is refused. Charging a stale typed
+ *     figure because a CRM was briefly down is how a guest pays a price the
+ *     clinic stopped selling.
+ *   · Copy, benefits and terms prefer Zenoti's own when present.
  *   · Cached in-process for five minutes so a guest who sees ₹X on the card is
  *     charged ₹X a minute later; `fresh:true` (the panel's "refresh price")
  *     bypasses it and drops zenotiService's hour-long catalogue cache too.
@@ -28,8 +34,19 @@ const zenoti = require('../services/zenotiService');
 const { CENTERS, DEFAULT_BRANCH_NAME, isZenMembership } = require('../config/zenoti');
 
 const FIVE_MINUTES = 5 * 60 * 1000;
+/** Kept for older call sites that import it; never used as a price. */
 const FALLBACK_PRICE_INR = 135000;
 const FALLBACK_NAME = 'Zen Membership';
+
+/*
+ * The last price Zenoti actually gave us, for the life of the process.
+ *
+ * A CRM that is briefly unreachable must not change what a guest is charged.
+ * This is the only thing allowed to stand in, and it is still a Zenoti figure
+ * — just an older one — which is why it is reported as 'zenoti-cached' rather
+ * than passed off as live.
+ */
+let lastZenotiPrice = null;
 
 /*
  * Everything that touches the database or Zenoti goes through `deps`, so the
@@ -72,17 +89,36 @@ function findVariant(rows, versionId) {
     || null;
 }
 
+/**
+ * Zenoti writes benefits as HTML. Turn that into the plain lines the card
+ * shows — one per list item or paragraph — and drop anything that is markup.
+ */
+function benefitsFromHtml(html) {
+  const raw = str(html).trim();
+  if (!raw) return [];
+  return raw
+    .split(/<\/(?:li|p|div|h[1-6])>|<br\s*\/?>/i)
+    .map((chunk) => chunk.replace(/<[^>]*>/g, ' ')
+      .replace(/&nbsp;/gi, ' ').replace(/&amp;/gi, '&').replace(/&lt;/gi, '<').replace(/&gt;/gi, '>')
+      .replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .map((title) => ({ title, copy: '' }));
+}
+
+/** Zenoti copy with its markup taken off. */
+const plain = (v) => str(v).replace(/<[^>]*>/g, ' ').replace(/&nbsp;/gi, ' ').replace(/\s+/g, ' ').trim();
+
 async function resolveZenPricing({ fresh = false } = {}) {
   if (!fresh && cache.value && Date.now() - cache.at < FIVE_MINUTES) return cache.value;
 
   let m = {};
   try { m = (await deps.settings())?.membership || {}; } catch { m = {}; }
 
-  const manualPrice = num(m.priceInr) > 0 ? num(m.priceInr) : FALLBACK_PRICE_INR;
   const out = {
-    amount: manualPrice,
+    // Filled in from Zenoti below. There is no hand-typed price any more.
+    amount: 0,
     currency: str(m.currency).trim() || 'INR',
-    source: 'manual',
+    source: 'unavailable',
     zenotiListPrice: null,
     zenotiName: str(m.zenotiMembershipName).trim() || null,
     zenotiCode: null,
@@ -101,13 +137,17 @@ async function resolveZenPricing({ fresh = false } = {}) {
       .filter((b) => b && str(b.title).trim())
       .map((b) => ({ title: str(b.title).trim(), copy: str(b.copy).trim() })),
     terms: str(m.terms).trim(),
+    /** Where each piece of copy came from — 'zenoti' once Zenoti carries any. */
+    benefitsSource: 'manual',
+    termsSource: 'manual',
+    descriptionSource: 'manual',
     isActive: m.isActive !== false,
     image: str(m.image).trim(),
     ctaText: str(m.ctaText).trim(),
   };
 
-  const useZenoti = m.priceSource !== 'manual' && !!out.zenotiVersionId && (() => { try { return !!deps.configured(); } catch { return false; } })();
-  if (useZenoti) {
+  const canAskZenoti = !!out.zenotiVersionId && (() => { try { return !!deps.configured(); } catch { return false; } })();
+  if (canAskZenoti) {
     try {
       if (fresh) { try { deps.forgetCatalog('memberships:'); } catch { /* cache is best-effort */ } }
       const rows = await deps.catalog(clinicCenterId());
@@ -119,11 +159,33 @@ async function resolveZenPricing({ fresh = false } = {}) {
         out.zenotiCode = str(row.code).trim() || null;
         out.zenotiIsActive = typeof row.isActive === 'boolean' ? row.isActive : null;
         // A zero price is a misconfigured row, not a free membership.
-        if (price > 0) { out.amount = price; out.source = 'zenoti'; }
+        if (price > 0) { out.amount = price; out.source = 'zenoti'; lastZenotiPrice = price; }
+
+        /*
+         * Zenoti's own words win wherever it has any.
+         *
+         * The clinic asked for the inclusions to come from Zenoti. All three
+         * fields are null there today, so App Studio still supplies them —
+         * but the moment somebody writes them in Zenoti they reach the app,
+         * the panel and the card with no deploy and no second edit.
+         */
+        const zBenefits = benefitsFromHtml(row.htmlBenefits ?? row.raw?.htmlBenefits);
+        if (zBenefits.length) { out.benefits = zBenefits; out.benefitsSource = 'zenoti'; }
+        const zTerms = plain(row.terms ?? row.raw?.terms);
+        if (zTerms) { out.terms = zTerms; out.termsSource = 'zenoti'; }
+        const zDesc = plain(row.description ?? row.raw?.description);
+        if (zDesc) { out.description = zDesc; out.descriptionSource = 'zenoti'; }
+        const zMonths = num(row.durationMonths ?? row.raw?.durationMonths);
+        if (zMonths > 0) out.validityMonths = zMonths;
       }
     } catch (_) {
-      // Zenoti down or a bad response: charge the manual price, say so via `source`.
+      // Fall through to the last Zenoti figure below — never to a typed one.
     }
+  }
+
+  if (out.source !== 'zenoti' && num(lastZenotiPrice) > 0) {
+    out.amount = num(lastZenotiPrice);
+    out.source = 'zenoti-cached';
   }
 
   cache = { at: Date.now(), value: out };
@@ -157,9 +219,10 @@ async function zenPlanRow() {
   return require('../services/zenotiMembershipMirror').zenPlan();
 }
 
-/** Forget the five-minute figure (tests, and after the panel edits the card). */
+/** Forget the five-minute figure AND the last Zenoti price (tests, and after the panel edits the card). */
 function resetPricingCache() {
   cache = { at: 0, value: null };
+  lastZenotiPrice = null;
 }
 
 module.exports = {

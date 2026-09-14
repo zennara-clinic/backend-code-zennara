@@ -41,40 +41,84 @@ test('the live Zenoti list price is charged when the card points at a catalogue 
   assert.deepEqual(p.benefits, [{ title: '15% off', copy: 'on services' }]);
 });
 
-test('the row is found by product id too, and priceSource manual keeps App Studio in charge', async () => {
+test('the row is found by product id too, and a typed price is never charged', async () => {
+  // The version id may be written as Zenoti's product id rather than its version id.
   stub({ membership: { priceInr: 99000, zenotiMembershipVersionId: 'PROD-MVPJH' } });
-  assert.equal((await pricing.resolveZenPricing()).amount, 135000);
+  const byProductId = await pricing.resolveZenPricing();
+  assert.equal(byProductId.amount, 135000);
+  assert.equal(byProductId.source, 'zenoti');
 
+  // priceSource 'manual' no longer exists as an escape hatch: Zenoti is the price.
   stub({ membership: { priceInr: 99000, priceSource: 'manual', zenotiMembershipVersionId: MVPJH.versionId } });
   const p = await pricing.resolveZenPricing();
-  assert.equal(p.amount, 99000);
-  assert.equal(p.source, 'manual');
+  assert.equal(p.amount, 135000, 'the Zenoti figure wins over anything typed');
+  assert.equal(p.source, 'zenoti');
 });
 
-test('no version id, Zenoti not configured, a failed read or a zero price all fall back to priceInr and never throw', async () => {
+test('with no usable Zenoti answer the membership is unavailable, never priced by hand', async () => {
+  // Nothing configured to point at: there is no price to charge.
   stub({ membership: { priceInr: 99000 } });
-  assert.equal((await pricing.resolveZenPricing()).source, 'manual');
+  const none = await pricing.resolveZenPricing();
+  assert.equal(none.source, 'unavailable');
+  assert.equal(none.amount, 0, 'the typed 99000 is not a price');
 
+  // Credentials missing.
   stub({ membership: { priceInr: 99000, zenotiMembershipVersionId: MVPJH.versionId }, configured: false });
-  assert.equal((await pricing.resolveZenPricing()).amount, 99000);
+  assert.equal((await pricing.resolveZenPricing()).amount, 0);
 
-  stub({ membership: { priceInr: 99000, zenotiMembershipVersionId: MVPJH.versionId }, catalogThrows: true });
-  const failed = await pricing.resolveZenPricing();
-  assert.equal(failed.amount, 99000);
-  assert.equal(failed.source, 'manual');
-
+  // A row priced at zero is a misconfiguration, and is reported as one —
+  // but the row itself still comes back so the panel can show what is wrong.
   stub({ membership: { priceInr: 99000, zenotiMembershipVersionId: MVPJH.versionId }, rows: [{ ...MVPJH, price: { final: 0 } }] });
   const zero = await pricing.resolveZenPricing();
-  assert.equal(zero.amount, 99000);
-  assert.equal(zero.source, 'manual');
+  assert.equal(zero.amount, 0);
+  assert.equal(zero.source, 'unavailable');
   assert.equal(zero.zenotiName, 'MVP Jh', 'the row is still reported so the panel can see the misconfiguration');
 
-  // A settings read that blows up still yields the bundled fallback.
+  // A settings read that blows up must not throw either.
   pricing._deps.settings = async () => { throw new Error('db down'); };
   pricing.resetPricingCache();
-  const noDb = await pricing.resolveZenPricing();
-  assert.equal(noDb.amount, pricing.FALLBACK_PRICE_INR);
-  assert.equal(noDb.source, 'manual');
+  const broken = await pricing.resolveZenPricing();
+  assert.equal(broken.source, 'unavailable');
+  assert.equal(broken.amount, 0);
+});
+
+test('a Zenoti outage serves the LAST Zenoti price, not a typed one', async () => {
+  // One good read teaches it the real figure…
+  stub({ membership: { priceInr: 99000, zenotiMembershipVersionId: MVPJH.versionId } });
+  assert.equal((await pricing.resolveZenPricing()).amount, 135000);
+
+  // …then Zenoti goes down. `fresh` skips the five-minute memo without
+  // forgetting what Zenoti last said, which is exactly the outage case.
+  pricing._deps.catalog = async () => { throw new Error('Zenoti 503'); };
+  const stale = await pricing.resolveZenPricing({ fresh: true });
+  assert.equal(stale.amount, 135000, 'the last Zenoti price, never the typed 99000');
+  assert.equal(stale.source, 'zenoti-cached');
+
+  // And once it has been forgotten entirely, there is no price at all.
+  pricing.resetPricingCache();
+  const cold = await pricing.resolveZenPricing();
+  assert.equal(cold.amount, 0);
+  assert.equal(cold.source, 'unavailable');
+});
+
+test("Zenoti's own benefits and terms win over App Studio's when it has any", async () => {
+  stub({
+    membership: { zenotiMembershipVersionId: MVPJH.versionId, benefits: [{ title: 'typed', copy: '' }], terms: 'typed terms' },
+    rows: [{ ...MVPJH, htmlBenefits: '<ul><li>15% off every service</li><li>Free skin analysis</li></ul>', terms: '<p>Valid 12 months</p>', description: '<p>The Zen plan</p>', durationMonths: 18 }, OTHER],
+  });
+  const p = await pricing.resolveZenPricing();
+  assert.deepEqual(p.benefits, [{ title: '15% off every service', copy: '' }, { title: 'Free skin analysis', copy: '' }]);
+  assert.equal(p.benefitsSource, 'zenoti');
+  assert.equal(p.terms, 'Valid 12 months');
+  assert.equal(p.description, 'The Zen plan');
+  assert.equal(p.validityMonths, 18, 'Zenoti\'s own duration wins when it has one');
+
+  // With Zenoti silent, App Studio still supplies the copy.
+  stub({ membership: { zenotiMembershipVersionId: MVPJH.versionId, benefits: [{ title: 'typed', copy: 'c' }], terms: 'typed terms' } });
+  const fallback = await pricing.resolveZenPricing();
+  assert.deepEqual(fallback.benefits, [{ title: 'typed', copy: 'c' }]);
+  assert.equal(fallback.benefitsSource, 'manual');
+  assert.equal(fallback.terms, 'typed terms');
 });
 
 test('the figure is cached for five minutes so card, panel and charge agree; fresh bypasses and drops the catalogue cache', async () => {
