@@ -186,8 +186,41 @@ function interval(row) {
 
 const overlaps = (ranges, start, end) => ranges.some((range) => start < range.end && range.start < end);
 
+/*
+ * Zenoti's roster endpoint refuses a span longer than 30 days ("Invalid date
+ * range. Date range should be in 0-30 days"), and the app's calendar asks for
+ * sixty. Every one of those calls failed, the app's catch left its
+ * open/closed map empty, and so no date was ever greyed out — a guest could
+ * tap three weeks ahead and only learn it was dead once the day's own slot
+ * call came back with nothing.
+ *
+ * Longer spans are composed from windows the API will accept, in parallel,
+ * exactly as the diary is. Shifts from each window are merged per employee.
+ */
+const SCHEDULE_WINDOW_DAYS = 28;
+
 async function centerSchedule(centerId, from, to) {
-  return cached(`schedule:${centerId}:${from}:${to}`, () => zenoti.getCenterEmployeeSchedules(centerId, { from, to }));
+  return cached(`schedule:${centerId}:${from}:${to}`, async () => {
+    const windows = [];
+    for (let start = from; start && start <= to; start = addClinicDays(start, SCHEDULE_WINDOW_DAYS)) {
+      let end = addClinicDays(start, SCHEDULE_WINDOW_DAYS - 1);
+      if (!end || end > to) end = to;
+      windows.push([start, end]);
+    }
+    if (windows.length === 1) return zenoti.getCenterEmployeeSchedules(centerId, { from, to });
+
+    const pages = await Promise.all(windows.map(([start, end]) =>
+      zenoti.getCenterEmployeeSchedules(centerId, { from: start, to: end })));
+    const byEmployee = new Map();
+    for (const page of pages) {
+      for (const row of page || []) {
+        const hit = byEmployee.get(row.employeeId);
+        if (hit) hit.shifts.push(...(row.shifts || []));
+        else byEmployee.set(row.employeeId, { ...row, shifts: [...(row.shifts || [])] });
+      }
+    }
+    return [...byEmployee.values()];
+  });
 }
 
 async function centerDiary(centerId, date) {
@@ -422,7 +455,25 @@ async function availabilityRange(doctorId, from, to, options = {}) {
     }
     days.push({ date, open: freeStarts.size > 0, total: allStarts.size, free: freeStarts.size });
   }
-  return { configured: true, source: 'zenoti-live', slotMinutes: SESSION_SLOT_MINUTES, days };
+  /*
+   * How far the clinic has actually published.
+   *
+   * A roster is written a fortnight or so ahead, so most of a sixty-day
+   * calendar is not "fully booked" — it is "not rostered yet", which is a
+   * different thing and reads very differently to a guest. `rosteredTo` is
+   * the last day this dermatologist has any shift at all (free or not), so
+   * the app can say when bookings open that far rather than showing weeks of
+   * dead dates.
+   */
+  const rostered = days.filter((d) => d.total > 0);
+  return {
+    configured: true,
+    source: 'zenoti-live',
+    slotMinutes: SESSION_SLOT_MINUTES,
+    days,
+    rosteredTo: rostered.length ? rostered[rostered.length - 1].date : null,
+    lastOpen: (() => { const open = days.filter((d) => d.open); return open.length ? open[open.length - 1].date : null; })(),
+  };
 }
 
 async function team() {
@@ -497,7 +548,20 @@ async function anyAvailabilityRange(from, to, options = {}) {
     merged.set(day.date, current);
     });
   });
-  return { configured: true, source: 'zenoti-live', slotMinutes: SESSION_SLOT_MINUTES, days: [...merged.values()], warnings };
+  const days = [...merged.values()].sort((a, b) => (a.date < b.date ? -1 : 1));
+  // The team's horizon is the furthest any one of them is rostered to — the
+  // "any dermatologist" calendar can offer a day if anybody is working it.
+  const rostered = days.filter((d) => d.total > 0);
+  const open = days.filter((d) => d.open);
+  return {
+    configured: true,
+    source: 'zenoti-live',
+    slotMinutes: SESSION_SLOT_MINUTES,
+    days,
+    rosteredTo: rostered.length ? rostered[rostered.length - 1].date : null,
+    lastOpen: open.length ? open[open.length - 1].date : null,
+    warnings,
+  };
 }
 
 async function branchSlots(branchId, date, options = {}) {
@@ -645,6 +709,9 @@ module.exports = {
   _clearCache: () => cache.clear(),
   ZenotiAvailabilityError,
   anyAvailabilityRange,
+  // Exported for the windowing test: Zenoti refuses a roster span over 30 days,
+  // and the calendar asks for sixty.
+  centerSchedule,
   anySlotsForDate,
   availabilityRange,
   branchSlots,
