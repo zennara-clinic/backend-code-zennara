@@ -7,6 +7,7 @@ const { protect, protectAdmin, requirePermission } = require('../middleware/auth
 router.get('/', branchController.getAllBranches);
 router.get('/:id', branchController.getBranchById);
 router.get('/:id/slots', branchController.getBranchSlots);
+router.get('/:id/availability', branchController.getBranchAvailability);
 
 // Admin protected routes (specific routes before parameterized routes)
 router.patch('/reorder', protectAdmin, requirePermission('branches.manage'), branchController.updateBranchOrder);

@@ -605,6 +605,63 @@ async function branchSlots(branchId, date, options = {}) {
   };
 }
 
+/**
+ * Which days a centre can take a treatment booking at all, across a span.
+ *
+ * The treatment and package calendars had no equivalent of the dermatologist
+ * one: they greyed out yesterday and nothing else, so every future date was
+ * offered and a guest could pick one three weeks out and find it empty. The
+ * cause is the same — a centre can only sell time its practitioners are
+ * rostered for — so the answer is shaped the same, and `rosteredTo` says
+ * where the written roster ends.
+ */
+async function branchAvailabilityRange(branchId, from, to, options = {}) {
+  const branch = await branchById(branchId);
+  const centerId = centerForBranch(branch);
+  const [schedules, diary, practitioners] = await Promise.all([
+    centerSchedule(centerId, from, to),
+    centerDiaryRange(centerId, from, to),
+    ZenotiPractitioner.find({ active: true, centerIds: centerId, jobName: /^(doctor|therapist)$/i })
+      .select('zenotiEmployeeId').lean(),
+  ]);
+  const providerIds = new Set(practitioners.map((row) => norm(row.zenotiEmployeeId)));
+  const now = options.now || new Date();
+  const days = [];
+
+  for (let date = from; date && date <= to; date = addClinicDays(date, 1)) {
+    const freeStarts = new Set();
+    const allStarts = new Set();
+    for (const employee of schedules || []) {
+      const employeeId = norm(employee.employeeId);
+      if (!providerIds.has(employeeId)) continue;
+      const busy = [
+        ...(diary.appointments || []).filter((row) => writtenDate(row.startTime) === date && norm(row.therapistId) === employeeId && activeAppointment(row)).map(interval),
+        ...(diary.blockouts || []).filter((row) => writtenDate(row.startTime) === date && norm(row.therapistId) === employeeId).map(interval),
+      ].filter(Boolean);
+      for (const range of clampToBookingWindow(workingRanges(schedules, employee.employeeId, date), date)) {
+        for (let at = parseClockMinutes(range.start); at + SESSION_SLOT_MINUTES <= parseClockMinutes(range.end); at += SESSION_SLOT_MINUTES) {
+          allStarts.add(at);
+          if (!overlaps(busy, at, at + SESSION_SLOT_MINUTES) && clinicDateTime(date, toHHMM(at)) >= now) freeStarts.add(at);
+        }
+      }
+    }
+    days.push({ date, open: freeStarts.size > 0, total: allStarts.size, free: freeStarts.size });
+  }
+
+  const rostered = days.filter((d) => d.total > 0);
+  const open = days.filter((d) => d.open);
+  return {
+    configured: true,
+    source: 'zenoti-live',
+    slotMinutes: SESSION_SLOT_MINUTES,
+    branchId: String(branch._id),
+    branchName: branch.name,
+    days,
+    rosteredTo: rostered.length ? rostered[rostered.length - 1].date : null,
+    lastOpen: open.length ? open[open.length - 1].date : null,
+  };
+}
+
 async function dayShifts(date, branchId) {
   const branch = await branchById(branchId);
   const centerId = centerForBranch(branch);
@@ -714,6 +771,7 @@ module.exports = {
   centerSchedule,
   anySlotsForDate,
   availabilityRange,
+  branchAvailabilityRange,
   branchSlots,
   dayShifts,
   isSlotBookable,

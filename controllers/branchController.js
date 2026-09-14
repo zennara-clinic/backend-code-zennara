@@ -1,6 +1,6 @@
 const Branch = require('../models/Branch');
 const { SESSION_SLOT_MINUTES } = require('../config/scheduling');
-const { clinicDayStart } = require('../utils/bookingTime');
+const { addClinicDays, clinicDateKey, clinicDayStart } = require('../utils/bookingTime');
 
 /**
  * Mongoose validation failures are the caller's fault, not the server's.
@@ -94,6 +94,41 @@ exports.getBranchById = async (req, res) => {
 };
 
 // Get available slots for a branch on a specific date
+/**
+ * Which days this centre can take a booking on, across a span.
+ *
+ * The treatment and package calendars used to grey out yesterday and nothing
+ * else, so a guest could pick any future date and find it empty. A centre can
+ * only sell time its practitioners are rostered for, and the roster is
+ * written about a fortnight ahead — `rosteredTo` is where it currently ends.
+ *
+ * @route GET /api/branches/:id/availability?from=&to=
+ */
+exports.getBranchAvailability = async (req, res) => {
+  try {
+    const branch = await Branch.findById(req.params.id);
+    if (!branch) return res.status(404).json({ success: false, message: 'Branch not found' });
+    if (!branch.isActive) return res.status(400).json({ success: false, message: 'Branch is currently inactive' });
+
+    const DATE = /^\d{4}-\d{2}-\d{2}$/;
+    const from = DATE.test(req.query.from || '') ? req.query.from : clinicDateKey(new Date());
+    let to = req.query.to;
+    if (!DATE.test(to || '')) to = addClinicDays(from, 60);
+    if (to < from) return res.status(400).json({ success: false, message: '`to` must not be before `from`' });
+
+    const data = await require('../services/zenotiAvailabilityService')
+      .branchAvailabilityRange(branch._id, from, to);
+    return res.json({ success: true, data });
+  } catch (error) {
+    console.error('Error fetching branch availability:', error);
+    return res.status(error.status || 503).json({
+      success: false,
+      code: error.code || 'ZENOTI_AVAILABILITY_UNAVAILABLE',
+      message: error.message || 'Could not load live availability',
+    });
+  }
+};
+
 exports.getBranchSlots = async (req, res) => {
   try {
     const { id } = req.params;
