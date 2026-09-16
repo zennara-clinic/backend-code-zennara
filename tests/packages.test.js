@@ -98,3 +98,10 @@ test('package priceAt honours a centre override', () => {
   assert.equal(p.priceAt(b).total, 57600);
   assert.equal(p.priceAt(oid()).price, 57600);
 });
+
+test('a mirrored line with no catalogue match (blank serviceId, name kept) still validates', async () => {
+  const p = pkg({ services: [{ serviceId: '', serviceName: 'Medi Facials', sessions: 3, redemptionOrder: 1 }] });
+  await p.validate();
+  assert.equal(p.services[0].serviceId, '');
+  assert.equal(p.services[0].serviceName, 'Medi Facials');
+});

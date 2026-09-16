@@ -21,9 +21,14 @@ const packageSchema = new mongoose.Schema({
     trim: true
   }],
   services: [{
+    /**
+     * Blank on a mirrored Zenoti line whose treatment has no match in our
+     * catalogue yet (the name is kept in serviceName). Such lines survive a
+     * panel edit instead of blocking it; panel-built rows always resolve.
+     */
     serviceId: {
       type: String,
-      required: true
+      default: ''
     },
     serviceName: String,
     servicePrice: Number,
@@ -49,7 +54,7 @@ const packageSchema = new mongoose.Schema({
   consultationServices: [{
     serviceId: {
       type: String,
-      required: true
+      default: ''
     },
     serviceName: String,
     servicePrice: Number,

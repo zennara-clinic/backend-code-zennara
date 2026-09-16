@@ -2,14 +2,8 @@ const Product = require('../models/Product');
 const AdminAuditLog = require('../models/AdminAuditLog');
 const ProductStockMovement = require('../models/ProductStockMovement');
 const { loadCanon, snapProduct } = require('../utils/taxonomy');
-const Formulation = require('../models/Formulation');
-
-/** A product's formulation must be one the clinic has defined. */
-async function formulationError(name) {
-  if (!name) return null;
-  const exists = await Formulation.exists({ name: String(name).trim() });
-  return exists ? null : `Unknown formulation "${name}" — add it under Formulations first`;
-}
+// A product may carry any formulation; saving registers it (see utils/formulations).
+const { registerFormulation } = require('../utils/formulations');
 const { DeleteObjectCommand } = require('@aws-sdk/client-s3');
 const { s3Client, S3_BUCKET } = require('../config/s3');
 const NotificationHelper = require('../utils/notificationHelper');
@@ -274,9 +268,6 @@ exports.createProduct = async (req, res) => {
       });
     }
 
-    const fErr = await formulationError(formulation);
-    if (fErr) return res.status(400).json({ success: false, message: fErr });
-
     // Create product
     const product = new Product({
       name,
@@ -295,6 +286,7 @@ exports.createProduct = async (req, res) => {
     await applyCentreListings(product, req.body, await clinicMap());
     // Category / sub-category / formulation snap to the catalogue's spelling.
     snapProduct(product, await loadCanon(Product));
+    product.formulation = (await registerFormulation(product.formulation)) || product.formulation;
     await product.save();
     if (Number(product.stock) > 0) await ProductStockMovement.create({ productId: product._id, source: 'panel', delta: product.stock, before: 0, after: product.stock, note: 'Created', by: req.admin?._id || null }).catch(() => {});
 
@@ -356,11 +348,6 @@ exports.updateProduct = async (req, res) => {
       isPopular
     } = req.body;
 
-    if (formulation) {
-      const fErr = await formulationError(formulation);
-      if (fErr) return res.status(400).json({ success: false, message: fErr });
-    }
-
     // Update fields
     if (name) product.name = name;
     if (description) product.description = description;
@@ -392,6 +379,7 @@ exports.updateProduct = async (req, res) => {
     });
     
     snapProduct(product, await loadCanon(Product));
+    if (product.formulation) product.formulation = (await registerFormulation(product.formulation)) || product.formulation;
     const stockChanged = product.isModified('stock');
     const prev = stockChanged ? Number((await Product.findById(product._id).select('stock').lean())?.stock) || 0 : null;
     await product.save();
@@ -900,6 +888,9 @@ async function applyAppStockPlan(plan, { adminName = 'import', creates = [] } = 
   }
   void adminName;
   if (ledger.length) await ProductStockMovement.insertMany(ledger, { ordered: false }).catch(() => {});
+  // The sheet's formulations become registered buckets, like a save from the product page does.
+  const names = new Set([...creates.map((t) => t.formulation || t.subCategory), ...[...plan.values()].map((e) => e.template?.formulation)].filter(Boolean));
+  for (const n of names) await registerFormulation(n).catch(() => {});
   return stats;
 }
 exports.applyAppStockPlan = applyAppStockPlan;

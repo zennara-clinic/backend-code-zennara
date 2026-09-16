@@ -20,7 +20,20 @@ async function resolveServices(input, customPrices) {
   if (!Array.isArray(input)) return [];
   return Promise.all(input.map(async (item) => {
     const key = typeof item === 'string' ? item : (item.serviceId || item._id || item.id || item.slug);
-    if (!key) throw new Error('Each service needs an id');
+    if (!key) {
+      // A mirrored Zenoti line whose treatment is not in our catalogue: keep
+      // it by name so a photo or price edit on the package still saves.
+      const label = typeof item === 'object' ? String(item.serviceName || item.name || '').trim() : '';
+      if (!label) throw new Error('Each service needs an id');
+      return {
+        serviceId: '',
+        serviceName: label,
+        servicePrice: Number(item.servicePrice) || 0,
+        sessions: Number(item.sessions) >= 1 ? Math.round(Number(item.sessions)) : 1,
+        redemptionOrder: Number(item.redemptionOrder) >= 1 ? Math.round(Number(item.redemptionOrder)) : 1,
+        ...(item.customPrice !== undefined && item.customPrice !== null ? { customPrice: Number(item.customPrice) } : {}),
+      };
+    }
     const or = [{ id: key }, { slug: key }];
     if (mongoose.Types.ObjectId.isValid(key)) or.unshift({ _id: key });
     const service = await Consultation.findOne({ $or: or });

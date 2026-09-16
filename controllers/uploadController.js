@@ -11,17 +11,24 @@ const uploadToS3 = async (buffer, resourceType = 'image', folder = 'consultation
     let fileExtension = '';
 
     if (resourceType === 'image') {
-      // Process image with sharp
-      processedBuffer = await sharp(buffer)
-        .resize(1200, 800, {
-          fit: 'inside',
-          withoutEnlargement: true
-        })
-        .jpeg({ quality: 85 })
-        .toBuffer();
-      
-      contentType = 'image/jpeg';
-      fileExtension = '.jpg';
+      // Honour the phone's EXIF orientation (a sideways photo otherwise stays
+      // sideways once the metadata is stripped) and keep transparency: product
+      // cut-outs on a transparent background were being flattened onto black
+      // by the unconditional JPEG conversion.
+      const pipeline = sharp(buffer).rotate().resize(1200, 800, {
+        fit: 'inside',
+        withoutEnlargement: true
+      });
+      const { hasAlpha } = await sharp(buffer).metadata();
+      if (hasAlpha) {
+        processedBuffer = await pipeline.png({ compressionLevel: 8 }).toBuffer();
+        contentType = 'image/png';
+        fileExtension = '.png';
+      } else {
+        processedBuffer = await pipeline.jpeg({ quality: 85 }).toBuffer();
+        contentType = 'image/jpeg';
+        fileExtension = '.jpg';
+      }
     } else if (resourceType === 'video') {
       contentType = 'video/mp4';
       fileExtension = '.mp4';
