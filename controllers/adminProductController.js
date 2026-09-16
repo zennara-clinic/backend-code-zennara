@@ -713,7 +713,7 @@ exports.getProductStatistics = async (req, res) => {
  * the import is one-directional by design (product master lives in Zenoti;
  * commerce facts — price, stock, HSN, vendor, re-order levels — live here).
  */
-const { parseAppStockWorkbook, toTemplateRows, TEMPLATE_HEADERS } = require('../utils/appStockTemplate');
+const { parseAppStockWorkbook, toTemplateRows, templateDiff, buildTemplateWorkbook, TEMPLATE_SELECT } = require('../utils/appStockTemplate');
 
 function sheetsFromUpload(file) {
   if (!file) throw Object.assign(new Error('Attach the App Stock template (.xlsx or .csv).'), { status: 400 });
@@ -728,7 +728,7 @@ function sheetsFromUpload(file) {
 }
 
 async function matchTemplateRows(sheets) {
-  const all = await Product.find({}).select('_id name code sku isActive isAppProduct isRx price stock image').lean();
+  const all = await Product.find({}).select(TEMPLATE_SELECT).lean();
   const byCode = new Map(); const byName = new Map();
   for (const p of all) {
     if (p.code) byCode.set(String(p.code).trim().toUpperCase(), p);
@@ -737,10 +737,20 @@ async function matchTemplateRows(sheets) {
   }
   const plan = new Map(); // productId → { product, template?, otc?, rx? }
   const unmatched = [];
+  // Template rows for products that do not exist yet. A row can create a
+  // product only with a name, a code and a selling price; the code is the key,
+  // so two rows with one new code create one product (the later row wins).
+  const creates = new Map();
   for (const sheet of sheets) {
     for (const row of sheet.rows) {
       const hit = (row.code && byCode.get(row.code.toUpperCase())) || (row.name && byName.get(row.name.toLowerCase())) || null;
-      if (!hit) { unmatched.push(`${row.code || ''} ${row.name || ''}`.trim()); continue; }
+      if (!hit && sheet.kind === 'template') {
+        const missing = [!row.name && 'Item Name', !row.code && 'Code', !(row.price > 0) && 'Selling Price'].filter(Boolean);
+        if (missing.length) unmatched.push(`${row.code || row.name || 'Row'} (new product needs ${missing.join(', ')})`);
+        else creates.set(row.code.toUpperCase(), row);
+        continue;
+      }
+      if (!hit) { unmatched.push(`${`${row.code || ''} ${row.name || ''}`.trim()} (not in the catalogue)`); continue; }
       const entry = plan.get(String(hit._id)) || { product: hit };
       if (sheet.kind === 'template') entry.template = row;
       else if (sheet.classification === 'rx') entry.rx = row;
@@ -748,7 +758,7 @@ async function matchTemplateRows(sheets) {
       plan.set(String(hit._id), entry);
     }
   }
-  return { plan, unmatched };
+  return { plan, unmatched, creates: [...creates.values()] };
 }
 
 /** Which of our fields a row would change on a product (for the preview and the audit). */
@@ -756,8 +766,14 @@ function changesFor(entry) {
   const fields = [];
   const t = entry.template; const c = entry.otc || entry.rx;
   const p = entry.product;
-  if (t) fields.push('stock', 'price', 'buyingPrice', 'reorderLevel', 'targetLevel', 'gst', 'vendor', 'pack', 'batchTracking');
-  if (c) { if (c.hsn) fields.push('hsn'); if (c.subCategory) fields.push('subCategory'); if (!t && c.stock !== null) fields.push('stock'); if (c.mrp) fields.push('mrp'); }
+  if (t) fields.push(...templateDiff(p, t));
+  if (c) {
+    const add = (label) => { if (!fields.includes(label)) fields.push(label); };
+    if (c.hsn && String(c.hsn) !== String(p.hsn || '')) add('HSN');
+    if (c.subCategory && c.subCategory !== p.productSubCategory) add('sub category');
+    if (!t && c.stock !== null && Math.max(0, c.stock) !== (Number(p.stock) || 0)) add('stock');
+    if (c.mrp && Number(c.mrp) !== Number(p.mrp)) add('MRP');
+  }
   if (entry.otc && !p.isAppProduct) fields.push('→ commerce catalogue');
   if (entry.otc && !p.isActive && (Number(p.price) > 0 || (t && t.price) || entry.otc.mrp)) fields.push('→ live in app');
   if (entry.rx && p.isRx !== true) fields.push('→ Rx');
@@ -765,15 +781,21 @@ function changesFor(entry) {
   return fields;
 }
 
-function summarisePlan(plan, unmatched, sheets) {
-  const out = { sheets: sheets.map((s) => ({ sheetName: s.sheetName, kind: s.kind, classification: s.classification, rows: s.rows.length, skipped: s.skipped })), matched: plan.size, unmatched: unmatched.length, willUpdate: 0, willPublish: 0, willUnpublish: 0, rxFlagged: 0, samples: { unmatched: unmatched.slice(0, 10), changes: [] } };
+function summarisePlan(plan, unmatched, sheets, creates = []) {
+  const out = {
+    sheets: sheets.map((s) => ({ sheetName: s.sheetName, kind: s.kind, classification: s.classification, rows: s.rows.length, skipped: s.skipped })),
+    hasClassification: sheets.some((s) => s.kind === 'classification'),
+    matched: plan.size, unmatched: unmatched.length, willCreate: creates.length, willUpdate: 0, unchanged: 0,
+    willPublish: 0, willUnpublish: 0, rxFlagged: 0,
+    samples: { unmatched: unmatched.slice(0, 20), changes: [], creates: creates.slice(0, 20).map((r) => ({ name: r.name, code: r.code, price: r.price, stock: r.stock })) },
+  };
   for (const e of plan.values()) {
     const f = changesFor(e);
-    if (f.length) out.willUpdate += 1;
+    if (f.length) out.willUpdate += 1; else out.unchanged += 1;
     if (f.includes('→ live in app')) out.willPublish += 1;
     if (f.includes('→ off the app')) out.willUnpublish += 1;
     if (e.rx) out.rxFlagged += 1;
-    if (out.samples.changes.length < 12 && f.length) out.samples.changes.push({ name: e.product.name, code: e.product.code || e.product.sku || null, fields: f });
+    if (out.samples.changes.length < 100 && f.length) out.samples.changes.push({ name: e.product.name, code: e.product.code || e.product.sku || null, fields: f });
   }
   return out;
 }
@@ -783,20 +805,46 @@ exports.appStockPreview = async (req, res) => {
   try {
     const sheets = parseAppStockWorkbook(sheetsFromUpload(req.file));
     if (!sheets.length) return res.status(400).json({ success: false, message: 'That file is not the App Stock template or the Rx/OTC classification sheet. Export the template from this page and fill it in.' });
-    const { plan, unmatched } = await matchTemplateRows(sheets);
-    return res.json({ success: true, data: summarisePlan(plan, unmatched, sheets) });
+    const { plan, unmatched, creates } = await matchTemplateRows(sheets);
+    return res.json({ success: true, data: summarisePlan(plan, unmatched, sheets, creates) });
   } catch (error) {
     return res.status(error.status || 500).json({ success: false, message: error.message || 'Could not read that file' });
   }
 };
 
 /** Apply the plan. Exported so the one-time bootstrap script can reuse it. */
-async function applyAppStockPlan(plan, {
- adminName = 'import' } = {}) {
+async function applyAppStockPlan(plan, { adminName = 'import', creates = [] } = {}) {
   const canon = await loadCanon(Product);
   const ledger = [];
   const now = new Date();
-  const stats = { applied: 0, published: 0, unpublished: 0, rxFlagged: 0 };
+  const stats = { applied: 0, created: 0, published: 0, unpublished: 0, rxFlagged: 0, failed: [] };
+  // New products join the Commerce catalogue hidden: a product with no photo
+  // or copy should not appear in the app until someone switches it on.
+  for (const t of creates) {
+    try {
+      const product = new Product({
+        name: t.name, description: t.name, code: t.code,
+        formulation: t.formulation || t.subCategory || 'Not specified',
+        OrgName: t.brand || 'Zennara', brand: t.brand || null,
+        productCategory: t.category || null, productSubCategory: t.subCategory || null,
+        price: t.price, priceSource: 'template', mrp: t.mrp ?? null,
+        gstPercentage: t.gst ?? 18, hsn: t.hsn || null,
+        stock: Math.max(0, t.stock ?? 0), trackStock: true, stockSource: 'template', stockUpdatedAt: now,
+        reorderLevel: t.reorderLevel ?? null, lowStockThreshold: t.reorderLevel ?? undefined, targetLevel: t.targetLevel ?? null,
+        packName: t.packName || null, packSize: t.packSize ? String(t.packSize) : null,
+        buyingPrice: t.buyingPrice ?? null, vendorName: t.vendorName || null, templateStatus: t.templateStatus || null,
+        batchTracking: t.batchTracking ? (/non/i.test(t.batchTracking) ? 'Non Batchable' : 'Batchable') : null,
+        consumptionOrder: t.consumptionOrder ? (/exp/i.test(t.consumptionOrder) ? 'ByExpiry' : 'FIFO') : null,
+        isAppProduct: true, isRetail: true, isActive: false,
+      });
+      snapProduct(product, canon);
+      await product.save();
+      if (product.stock > 0) ledger.push({ productId: product._id, source: 'template', delta: product.stock, before: 0, after: product.stock, note: 'Created by template import', at: now });
+      stats.created += 1;
+    } catch (err) {
+      stats.failed.push(`${t.code} ${t.name}: ${err.code === 11000 ? 'code already used' : err.message}`);
+    }
+  }
   for (const e of plan.values()) {
     const product = await Product.findById(e.product._id);
     if (!product) continue;
@@ -822,6 +870,9 @@ async function applyAppStockPlan(plan, {
       if (t.gst !== null) product.gstPercentage = t.gst;
       if (t.vendorName) product.vendorName = t.vendorName;
       if (t.templateStatus) product.templateStatus = t.templateStatus;
+      if (t.subCategory) product.productSubCategory = t.subCategory;
+      if (t.hsn) product.hsn = String(t.hsn);
+      if (t.mrp !== null && t.mrp > 0) product.mrp = t.mrp;
       if (t.code && !product.code) product.code = t.code;
     }
     if (c) {
@@ -859,37 +910,30 @@ exports.appStockImport = async (req, res) => {
   try {
     const sheets = parseAppStockWorkbook(sheetsFromUpload(req.file));
     if (!sheets.length) return res.status(400).json({ success: false, message: 'That file is not the App Stock template or the Rx/OTC classification sheet.' });
-    const { plan, unmatched } = await matchTemplateRows(sheets);
-    const summary = summarisePlan(plan, unmatched, sheets);
-    const stats = await applyAppStockPlan(plan, { adminName: req.admin?.name });
+    const { plan, unmatched, creates } = await matchTemplateRows(sheets);
+    const summary = summarisePlan(plan, unmatched, sheets, creates);
+    const stats = await applyAppStockPlan(plan, { adminName: req.admin?.name, creates });
     await AdminAuditLog.logAction({ adminId: req.admin?._id, adminEmail: req.admin?.email, action: 'BULK_IMPORT', resource: 'PRODUCT', details: { source: 'app-stock-template', file: req.file?.originalname, ...stats, unmatched: unmatched.length }, ipAddress: req.adminIp || req.ip, userAgent: req.adminUserAgent, status: 'SUCCESS' }).catch(() => {});
-    return res.json({ success: true, message: `${stats.applied} product${stats.applied === 1 ? '' : 's'} updated${stats.published ? `, ${stats.published} published to the app` : ''}${stats.unpublished ? `, ${stats.unpublished} taken off the app (Rx)` : ''}${unmatched.length ? `, ${unmatched.length} rows not found` : ''}.`, data: { ...summary, ...stats } });
+    return res.json({ success: true, message: `${stats.applied} product${stats.applied === 1 ? '' : 's'} updated${stats.created ? `, ${stats.created} added (hidden until switched on)` : ''}${stats.failed.length ? `, ${stats.failed.length} could not be added` : ''}${stats.published ? `, ${stats.published} published to the app` : ''}${stats.unpublished ? `, ${stats.unpublished} taken off the app (Rx)` : ''}${unmatched.length ? `, ${unmatched.length} rows not found` : ''}.`, data: { ...summary, ...stats } });
   } catch (error) {
     console.error('app stock import failed:', error);
     return res.status(error.status || 500).json({ success: false, message: error.message || 'Could not import that file' });
   }
 };
 
-// GET /api/admin/products/app-stock/export?catalogue=app|all
+// GET /api/admin/products/app-stock/export?catalogue=app|all — the products themselves.
 exports.appStockExport = async (req, res) => {
   try {
-    const XLSX = require('xlsx');
-    const q = req.query.catalogue === 'all' ? {} : { isAppProduct: true };
-    const products = await Product.find(q).sort({ productCategory: 1, name: 1 }).lean();
+    const all = req.query.catalogue === 'all';
+    const products = await Product.find(all ? {} : { isAppProduct: true }).sort({ productCategory: 1, name: 1 }).lean();
     const stamp = new Date().toISOString().slice(0, 10);
-    const aoa = [
-      [`Zennara — App Stock Template (Commerce catalogue, exported ${stamp})`],
-      ['Edit and re-import from Commerce › Products › Import. Code is the match key; Opening Quantity becomes the stock on hand. Nothing here is written to Zenoti.'],
-      TEMPLATE_HEADERS,
-      ...toTemplateRows(products),
-    ];
-    const ws = XLSX.utils.aoa_to_sheet(aoa);
-    ws['!cols'] = TEMPLATE_HEADERS.map((h) => ({ wch: Math.max(12, h.length + 4) }));
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Stock_Import_Template');
-    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+    const buf = buildTemplateWorkbook({
+      title: `Zennara — Products export (${all ? 'all products' : 'Commerce catalogue'}, ${stamp})`,
+      note: 'Edit and upload back from Commerce › Products › Import. Code is the match key; Opening Quantity becomes the stock on hand. Nothing here is written to Zenoti.',
+      rows: toTemplateRows(products),
+    });
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="AppStock_Template_${req.query.catalogue === 'all' ? 'AllProducts' : 'Commerce'}_${stamp}.xlsx"`);
+    res.setHeader('Content-Disposition', `attachment; filename="Zennara_Products_${all ? 'All' : 'Commerce'}_${stamp}.xlsx"`);
     return res.send(buf);
   } catch (error) {
     console.error('app stock export failed:', error);
@@ -897,6 +941,28 @@ exports.appStockExport = async (req, res) => {
   }
 };
 
+// GET /api/admin/products/app-stock/template?kind=import|export — the structure only, no products.
+exports.appStockTemplate = async (req, res) => {
+  try {
+    const kind = req.query.kind === 'export' ? 'export' : 'import';
+    const buf = kind === 'import'
+      ? buildTemplateWorkbook({
+        title: 'Zennara — Product import template',
+        note: 'One product per row below the headings. See the "How to fill" sheet. Upload from Commerce › Products › Import.',
+        guide: true,
+      })
+      : buildTemplateWorkbook({
+        title: 'Zennara — Product export template',
+        note: 'The column layout of Commerce › Products › Export. Same headings as the import template, so an export can be edited and imported back.',
+      });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="Zennara_Product_${kind === 'import' ? 'Import' : 'Export'}_Template.xlsx"`);
+    return res.send(buf);
+  } catch (error) {
+    console.error('app stock template failed:', error);
+    return res.status(500).json({ success: false, message: 'Could not build the template' });
+  }
+};
 
 // @desc    A product's own stock ledger (template imports, panel edits, app orders, Zenoti sales)
 // @route   GET /api/admin/products/:id/stock-movements

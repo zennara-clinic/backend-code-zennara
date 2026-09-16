@@ -32,6 +32,7 @@ router.get('/:id/stock-movements', VIEW, productCtrl.getStockMovements);
 
 // App Stock template — the Commerce catalogue's import / export sheet. One-way: never writes to Zenoti.
 router.get('/app-stock/export', VIEW, productCtrl.appStockExport);
+router.get('/app-stock/template', VIEW, productCtrl.appStockTemplate);
 router.post('/app-stock/preview', MANAGE, appStockUpload.single('file'), productCtrl.appStockPreview);
 router.post('/app-stock/import', MANAGE, appStockUpload.single('file'), auditLog('BULK_IMPORT', 'PRODUCT'), productCtrl.appStockImport);
 
