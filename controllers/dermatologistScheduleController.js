@@ -24,6 +24,9 @@ const {
 } = require('../utils/dermatologistSlots');
 
 const DATE_KEY = /^\d{4}-\d{2}-\d{2}$/;
+const { clinicDateKey, addClinicDays } = require('../utils/bookingTime');
+/** How far ahead a linked dermatologist's page lists Zenoti's roster. */
+const ROSTER_DAYS = 28;
 
 const fail = (res, code, message) => res.status(code).json({ success: false, message });
 
@@ -98,10 +101,28 @@ exports.getSchedule = async (req, res) => {
       onboardedDoctorId: String(doctorId).toLowerCase(), active: true,
     });
 
+    /*
+     * A linked dermatologist's page shows Zenoti's roster itself — the next
+     * four weeks, per centre: Working with the hours, Not scheduled, or leave.
+     * Read live; a roster that cannot be read right now is reported as such
+     * rather than hiding the page.
+     */
+    let roster = null;
+    if (linked) {
+      const from = clinicDateKey(new Date());
+      const to = addClinicDays(from, ROSTER_DAYS - 1);
+      try {
+        roster = await require('../services/zenotiAvailabilityService').rosterForDoctor(doctorId, from, to);
+      } catch (error) {
+        roster = { source: 'zenoti-live', from, to, centres: [], days: [], error: error.message };
+      }
+    }
+
     return res.json({
       success: true,
       data: {
         dermatologist: doctor,
+        ...(roster ? { roster } : {}),
         // A dermatologist nobody has configured yet gets a blank week rather
         // than a 404, so the panel can render the editor instead of an error.
         schedule: linked
@@ -357,77 +378,6 @@ exports.getDayShifts = async (req, res) => {
     if (!branchId) return fail(res, 400, 'branchId is required for the Zenoti day book');
     const data = await require('../services/zenotiAvailabilityService').dayShifts(date, branchId);
     return res.json({ success: true, data });
-    /* istanbul ignore next -- legacy local day-book implementation retained temporarily for migrations */
-    if (false) {
-    const { rangesFor } = require('../utils/dermatologistSlots');
-    const Branch = require('../models/Branch');
-    const ProviderBlock = require('../models/ProviderBlock');
-
-    const branch = branchId ? await Branch.findById(branchId).select('name operatingHours closures').lean() : null;
-    const doctors = await Doctor.find({ isActive: true })
-      .select('doctorId name tier level designation availableCentres displayOrder onlineBookingEnabled photo').lean();
-    const visible = branch
-      ? doctors.filter((d) => !d.availableCentres?.length || d.availableCentres.includes(branch.name))
-      : doctors;
-    const schedules = await DermatologistSchedule.find({ doctorId: { $in: visible.map((d) => d.doctorId) } }).lean();
-    const byDoctor = new Map(schedules.map((s) => [s.doctorId, s]));
-    const dayStart = new Date(`${date}T00:00:00+05:30`);
-    const dayEnd = new Date(`${date}T23:59:59.999+05:30`);
-    const blocks = await ProviderBlock.find({ active: true, date: { $gte: dayStart, $lte: dayEnd }, ...(branchId ? { $or: [{ branchId }, { branchId: null }] } : {}) }).lean();
-
-    const rows = visible.map((d) => {
-      const schedule = byDoctor.get(d.doctorId);
-      let ranges = []; let onLeave = false; let note = ''; let source = null; let configured = false;
-      if (schedule && schedule.isActive !== false) {
-        configured = true;
-        const resolved = rangesFor(schedule, date);
-        source = resolved.source;
-        note = resolved.note || '';
-        const override = (schedule.overrides || []).find((o) => o.date === date);
-        onLeave = Boolean(override?.unavailable);
-        let list = resolved.perBranch && branchId
-          ? resolved.perBranch.filter((p) => !p.branchId || String(p.branchId) === String(branchId)).flatMap((p) => p.ranges)
-          : resolved.ranges;
-        if (branchId && resolved.source === 'override' && resolved.branchId && String(resolved.branchId) !== String(branchId)) list = [];
-        ranges = (list || []).map((r) => ({ start: r.start, end: r.end }));
-      }
-      return {
-        doctorId: d.doctorId,
-        name: d.name,
-        tier: d.tier,
-        designation: d.designation || (d.tier === 'senior-consultant' ? 'Senior Dermatologist' : 'Dermatologist'),
-        photo: d.photo || null,
-        displayOrder: d.displayOrder || 0,
-        onlineBookingEnabled: d.onlineBookingEnabled !== false,
-        configured,
-        onLeave,
-        note,
-        source,
-        ranges,
-        blocks: blocks.filter((b) => b.doctorId === d.doctorId).map((b) => ({
-          _id: b._id, startTime: b.startTime, endTime: b.endTime, title: b.title, notes: b.notes, source: b.source, color: b.color, providerName: b.providerName,
-        })),
-      };
-    }).sort((a, b) => (a.displayOrder - b.displayOrder) || a.name.localeCompare(b.name));
-
-    // Blocks on employees who are not onboarded dermatologists (therapists,
-    // Zenoti-only staff) still belong on the day book.
-    const orphanBlocks = blocks.filter((b) => !b.doctorId).map((b) => ({
-      _id: b._id, startTime: b.startTime, endTime: b.endTime, title: b.title, notes: b.notes, source: b.source, color: b.color, providerName: b.providerName, zenotiEmployeeId: b.zenotiEmployeeId,
-    }));
-
-    const weekday = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][new Date(`${date}T12:00:00+05:30`).getUTCDay()];
-    const hours = branch?.operatingHours?.[weekday] || null;
-    return res.json({
-      success: true,
-      data: {
-        date,
-        branch: branch ? { _id: branch._id, name: branch.name, open: hours?.isOpen !== false ? (hours?.openTime || '09:00') : null, close: hours?.isOpen !== false ? (hours?.closeTime || '19:00') : null } : null,
-        providers: rows,
-        otherBlocks: orphanBlocks,
-      },
-    });
-    }
   } catch (error) {
     console.error('getDayShifts error:', error);
     return res.status(error.status || 503).json({ success: false, code: error.code || 'ZENOTI_AVAILABILITY_UNAVAILABLE', message: error.message || 'Could not load the live Zenoti day book' });

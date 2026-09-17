@@ -48,6 +48,15 @@ async function ensureDefaultSchedule(doctor, adminId = null) {
     const centres = (doctor?.availableCentres || []).map((n) => String(n).trim()).filter(Boolean);
     if (!centres.length) return null;
 
+    // A dermatologist rostered in Zenoti gets no local week at all: Zenoti's
+    // shifts are the only schedule the app, the desk and the panels read.
+    // Seeding "Mon–Sat, centre opening hours" here is what once made every
+    // linked doctor look available six days a week.
+    const linked = await require('../models/ZenotiPractitioner').exists({
+      onboardedDoctorId: String(doctor.doctorId).toLowerCase(), active: true,
+    });
+    if (linked) return null;
+
     const DermatologistSchedule = require('../models/DermatologistSchedule');
     const existing = await DermatologistSchedule.findOne({ doctorId: doctor.doctorId }).select('_id').lean();
     if (existing) return null;

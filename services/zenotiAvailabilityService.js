@@ -771,6 +771,72 @@ async function dayShifts(date, branchId) {
   };
 }
 
+/**
+ * The roster as Zenoti holds it, day by day, for one dermatologist.
+ *
+ * What the panels show on a linked doctor's "Working hours" page: for each
+ * clinic day in the span, per centre they are linked at, the Zenoti shift —
+ * Working with its hours, Not scheduled, or a leave code the clinic set.
+ * Read-only; nothing is derived from local schedules and nothing is written.
+ *
+ * Zenoti's shift status: 0 = Working, -1 = NotScheduled (no shift written),
+ * anything else is a leave/absence code the clinic chose in Zenoti.
+ */
+async function rosterForDoctor(doctorId, from, to, options = {}) {
+  const doctor = await Doctor.findOne({ doctorId: norm(doctorId) })
+    .select('doctorId name availableCentres').lean();
+  if (!doctor) return { source: 'zenoti-live', from, to, centres: [], days: [] };
+  const branches = await candidateBranches(doctor, options.branchId, options.branchName);
+  const centres = [];
+  for (const branch of branches) {
+    let centerId;
+    let practitioner;
+    try {
+      centerId = centerForBranch(branch);
+      practitioner = await practitionerFor(doctor.doctorId, centerId);
+    } catch (error) {
+      if (!['ZENOTI_PRACTITIONER_UNMAPPED', 'AMBIGUOUS_ZENOTI_PRACTITIONER', 'ZENOTI_CENTER_UNMAPPED'].includes(error?.code)) throw error;
+      continue;
+    }
+    const rows = await centerSchedule(centerId, from, to);
+    const row = (rows || []).find((item) => norm(item.employeeId) === norm(practitioner.zenotiEmployeeId));
+    const byDate = new Map();
+    for (const shift of row?.shifts || []) {
+      const date = writtenDate(shift.date) || String(shift.date).slice(0, 10);
+      if (!date || date < from || date > to) continue;
+      if (!byDate.has(date)) byDate.set(date, []);
+      byDate.get(date).push({ status: Number(shift.status), start: clock(shift.start), end: clock(shift.end) });
+    }
+    centres.push({ branchId: String(branch._id), branchName: branch.name, zenotiCenterId: centerId, byDate });
+  }
+  const days = [];
+  for (let date = from; date && date <= to; date = addClinicDays(date, 1)) {
+    const entries = [];
+    for (const centre of centres) {
+      const shifts = centre.byDate.get(date) || [];
+      const working = shifts.filter((shift) => shift.status === 0
+        && parseClockMinutes(shift.start) !== null && parseClockMinutes(shift.end) !== null
+        && parseClockMinutes(shift.end) > parseClockMinutes(shift.start));
+      const leave = shifts.find((shift) => shift.status > 0);
+      entries.push({
+        branchId: centre.branchId,
+        branchName: centre.branchName,
+        state: working.length ? 'working' : leave ? 'leave' : 'not-scheduled',
+        ranges: working.map(({ start, end }) => ({ start, end })),
+        ...(leave ? { leaveCode: leave.status } : {}),
+      });
+    }
+    days.push({ date, entries });
+  }
+  return {
+    source: 'zenoti-live',
+    from,
+    to,
+    centres: centres.map(({ branchId, branchName, zenotiCenterId }) => ({ branchId, branchName, zenotiCenterId })),
+    days,
+  };
+}
+
 async function providerBlocks({ from, to = from, branchId = null, doctorId = null } = {}) {
   const branches = branchId
     ? [await branchById(branchId)]
@@ -812,6 +878,7 @@ module.exports = {
   dayShifts,
   isSlotBookable,
   providerBlocks,
+  rosterForDoctor,
   slotsForDate,
   whoIsFree,
   whoIsFreeWithBranches,
