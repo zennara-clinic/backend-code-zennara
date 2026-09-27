@@ -222,7 +222,9 @@ async function computeOrderPricing({ items, couponCode, city, userId = null, bra
       return {
         ok: false,
         status: 400,
-        message: `Insufficient stock for ${product.name}. Available: ${product.stock}`,
+        // The guest is told it cannot be supplied, not how many are on the shelf;
+        // `availableStock` lets the app trim the cart without showing a number.
+        message: product.stock > 0 ? `We cannot supply that many of ${product.name} right now. Please reduce the quantity.` : `${product.name} is out of stock right now.`,
         availableStock: product.stock,
       };
     }

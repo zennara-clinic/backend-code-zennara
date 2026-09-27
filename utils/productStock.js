@@ -6,6 +6,24 @@
 const Product = require('../models/Product');
 const ProductStockMovement = require('../models/ProductStockMovement');
 
+/**
+ * What a product starts with when nobody has entered a count. Without it a
+ * newly listed product reads "out of stock" until someone remembers to type a
+ * number. Set STORE_DEFAULT_STOCK to change it; the panel overrides it per
+ * product, and entering 0 there still means sold out.
+ */
+const DEFAULT_OPENING_STOCK = (() => {
+  const n = Number(process.env.STORE_DEFAULT_STOCK);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 100;
+})();
+
+/** The stock to store for what the panel sent: blank or missing = the default, a number = that number. */
+function openingStock(value) {
+  if (value === undefined || value === null || value === '') return DEFAULT_OPENING_STOCK;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_OPENING_STOCK;
+}
+
 async function moveStock({ productId, delta, source, refId = null, note = null, by = null, floorAtZero = true }) {
   const d = Number(delta);
   if (!productId || !Number.isFinite(d) || d === 0) return { applied: false, reason: 'nothing to move' };
@@ -38,4 +56,4 @@ async function setStock({ productId, stock, source, note = null, by = null }) {
   return { applied: true, before: current, after: next };
 }
 
-module.exports = { moveStock, setStock };
+module.exports = { moveStock, setStock, openingStock, DEFAULT_OPENING_STOCK };

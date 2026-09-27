@@ -46,6 +46,12 @@ const productSchema = new mongoose.Schema({
     default: ''
     // Not required to allow products without images
   },
+  /*
+   * Stock on hand. A product nobody has counted yet starts at the default
+   * opening stock (utils/productStock.DEFAULT_OPENING_STOCK), so it is on
+   * sale the moment it is listed; the panel sets the real figure. The app is
+   * told whether a product is in stock, never how many are left.
+   */
   stock: {
     type: Number,
     required: true,
@@ -227,6 +233,12 @@ const productSchema = new mongoose.Schema({
   // --- Shop taxonomy & product page (utils/productTaxonomy.js) --------------
   /** URL-safe name, unique when present. Stable across renames; used for links. */
   slug: { type: String, default: null, trim: true, lowercase: true },
+  /**
+   * Every photograph of the product, in the order the product page shows
+   * them. `image` above is the main one and is always the first of these;
+   * lists and the cart read `image` alone.
+   */
+  images: { type: [String], default: [] },
   /** One line for cards and search results. `description` stays the full text. */
   shortDescription: { type: String, default: '', trim: true },
   /**

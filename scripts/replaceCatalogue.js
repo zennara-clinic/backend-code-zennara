@@ -23,9 +23,9 @@
  *      shelf rows, and rebuilds the formulation register — steps 5 and 6 in
  *      one transaction, so a failure leaves the old catalogue in place
  *
- * `--sellable` loads the new products with no stock count, which puts them on
- * sale at once. Without it they are counted at zero: the app lists them with
- * their price and page, and sells one only after its stock is entered.
+ * A product nobody has counted starts at the default opening stock and is on
+ * sale at once. `--sellable` instead loads the new products with no stock
+ * count at all, so they never run out.
  *
  * NOTHING HERE TALKS TO ZENOTI. No Zenoti module is loaded and no request is
  * made; Zenoti's products, stock and sales are exactly as they were.
@@ -67,6 +67,7 @@ const BESTSELLER_MAX = 12;
   const { RX_NAME_RX } = require('../utils/rxClassifier');
   const taxonomy = require('../utils/productTaxonomy');
   const { syncFormulationsFromProducts } = require('../utils/formulations');
+  const { DEFAULT_OPENING_STOCK } = require('../utils/productStock');
 
   const rows = JSON.parse(fs.readFileSync(file, 'utf8'));
   const batch = rows[0]?.catalogueSource || path.basename(file, '.json');
@@ -108,6 +109,8 @@ const BESTSELLER_MAX = 12;
   for (const row of rows) {
     const { _rxText, ...doc } = row;
     doc.trackStock = !sellable;
+    // Nobody has counted these yet: they start at the default opening stock, on sale.
+    if (!(Number(doc.stock) > 0)) { doc.stock = DEFAULT_OPENING_STOCK; doc.stockSource = 'panel'; doc.stockUpdatedAt = new Date(); }
     const was = same.get(doc.slug);
     if (was) {
       for (const k of CARRIED) if (was[k] !== undefined && was[k] !== null && !(Array.isArray(was[k]) && !was[k].length) && was[k] !== '') doc[k] = was[k];
@@ -138,7 +141,7 @@ const BESTSELLER_MAX = 12;
   }
 
   const tally = (get) => { const m = new Map(); for (const d of docs) for (const k of [].concat(get(d))) m.set(k, (m.get(k) || 0) + 1); return [...m.entries()].sort((a, b) => b[1] - a[1]); };
-  console.log(`\nWILL CREATE ${docs.length} products — ${sellable ? 'ON SALE AT ONCE, no stock count' : 'counted at zero stock: listed, not sold until stock is entered'}`);
+  console.log(`\nWILL CREATE ${docs.length} products — ${sellable ? 'on sale, no stock count kept' : `on sale, counted from the default opening stock of ${DEFAULT_OPENING_STOCK}`}`);
   console.log(`  categories: ${tally((d) => d.categories).map(([k, n]) => `${k} ${n}`).join(' · ')}`);
   console.log(`  concerns: ${tally((d) => d.concerns).length} in use · ${docs.filter((d) => !d.concerns.length).length} products have none`);
   console.log(`  shelves: ${tally((d) => d.shopCollections).map(([k, n]) => `${k} ${n}`).join(' · ') || 'none'}`);

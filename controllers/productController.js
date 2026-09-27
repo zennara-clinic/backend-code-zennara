@@ -388,24 +388,24 @@ exports.checkStock = async (req, res) => {
         continue;
       }
       
-      if (product.stock < item.quantity) {
+      // A product whose stock is not counted is always available.
+      if (product.trackStock !== false && product.stock < item.quantity) {
         stockStatus.push({
           productId: item.productId,
           productName: product.name,
           available: false,
           reason: 'Insufficient stock',
-          availableStock: product.stock,
           requestedQuantity: item.quantity
         });
         allAvailable = false;
         continue;
       }
-      
+
+      // Whether, never how many: the count is the clinic's business.
       stockStatus.push({
         productId: item.productId,
         productName: product.name,
-        available: true,
-        availableStock: product.stock
+        available: true
       });
     }
     

@@ -10,6 +10,7 @@ const NotificationHelper = require('../utils/notificationHelper');
 const Branch = require('../models/Branch');
 const { normaliseListings, listingSummary, listingRow } = require('../utils/productCentre');
 const taxonomy = require('../utils/productTaxonomy');
+const { openingStock } = require('../utils/productStock');
 
 /**
  * The clinic centres a product can be listed at, keyed by id. Pharmacies and
@@ -96,6 +97,7 @@ function applyShopFields(product, body) {
   if (body.concerns !== undefined) product.concerns = taxonomy.normaliseConcerns(body.concerns);
   if (body.shopCollections !== undefined) product.shopCollections = taxonomy.normaliseCollections(body.shopCollections);
   if (body.shortDescription !== undefined) product.shortDescription = String(body.shortDescription ?? '').trim();
+  if (body.images !== undefined) product.images = [...new Set((Array.isArray(body.images) ? body.images : []).map((u) => String(u ?? '').trim()).filter(Boolean))];
   if (body.slug !== undefined) product.slug = taxonomy.slugify(body.slug) || null;
   if (body.details && typeof body.details === 'object') {
     const d = body.details;
@@ -107,6 +109,18 @@ function applyShopFields(product, body) {
     }
   }
   taxonomy.reconcile(product, touched);
+  syncPhotos(product);
+}
+
+/**
+ * `image` is the main photograph and the first of `images`. Whichever the
+ * panel changed, the two agree afterwards: a new main photograph moves to the
+ * front, and clearing the main one promotes the next.
+ */
+function syncPhotos(product) {
+  const rest = (product.images || []).filter(Boolean);
+  if (product.image) product.images = [product.image, ...rest.filter((u) => u !== product.image)];
+  else { product.images = rest; product.image = rest[0] || ''; }
 }
 
 /** A slug nobody else holds: the name, then the name with a short suffix. */
@@ -334,7 +348,7 @@ exports.createProduct = async (req, res) => {
       price,
       gstPercentage: gstPercentage || 18,
       image,
-      stock: stock || 0,
+      stock: openingStock(stock),
       isActive: isActive !== undefined ? isActive : true,
       isPopular: isPopular || false
     });
@@ -346,7 +360,7 @@ exports.createProduct = async (req, res) => {
     taxonomy.reconcile(product); // after the snap: the main category's final spelling is in `categories`
     await ensureSlug(product);
     await product.save();
-    if (Number(product.stock) > 0) await ProductStockMovement.create({ productId: product._id, source: 'panel', delta: product.stock, before: 0, after: product.stock, note: 'Created', by: req.admin?._id || null }).catch(() => {});
+    if (Number(product.stock) > 0) await ProductStockMovement.create({ productId: product._id, source: 'panel', delta: product.stock, before: 0, after: product.stock, note: stock === undefined || stock === null || stock === '' ? 'Created with the default opening stock' : 'Created', by: req.admin?._id || null }).catch(() => {});
 
     // Create notification for new product
     try {
