@@ -1,6 +1,39 @@
 const Product = require('../models/Product');
 const Branch = require('../models/Branch');
 const { visibleAtFilter, presentForCentre, resolveListing } = require('../utils/productCentre');
+const taxonomy = require('../utils/productTaxonomy');
+
+/*
+ * What a guest's phone is never sent. The shop used to return the whole
+ * document, which put the buying price and the supplier on a public endpoint.
+ * LIST_HIDDEN also leaves out the long-form product page: the shop loads the
+ * whole catalogue at once and only the product screen reads `details`.
+ */
+const PUBLIC_HIDDEN = [
+  'buyingPrice', 'vendorName', 'vendorId', 'reorderLevel', 'targetLevel', 'templateStatus',
+  'batchTracking', 'consumptionOrder', 'branchStock', 'centres', 'barcodes',
+  'zenotiProductId', 'zenotiCategoryId', 'zenotiSubCategoryId', 'zenotiSyncedAt',
+  'stockSource', 'stockUpdatedAt', 'priceSource', 'rxSource', 'catalogueSource', '__v',
+];
+const DETAIL_SELECT = PUBLIC_HIDDEN.map((f) => `-${f}`).join(' ');
+const LIST_SELECT = `${DETAIL_SELECT} -details`;
+
+/** The shop's own filters — collection, category, concern, brand — as a Mongo clause. */
+function shopFilters(q) {
+  const and = [];
+  const collection = taxonomy.normaliseCollections(q.collection)[0];
+  if (q.collection && q.collection !== 'all') and.push(collection ? { shopCollections: collection } : { _id: null });
+  if (q.category && q.category !== 'All') and.push(taxonomy.categoryFilter(q.category));
+  if (q.concern) {
+    const concern = taxonomy.normaliseConcerns(q.concern)[0];
+    and.push(concern ? { concerns: concern } : { _id: null });
+  }
+  if (q.brand) {
+    const rx = new RegExp(`^${String(q.brand).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+    and.push({ $or: [{ brand: rx }, { OrgName: rx }] });
+  }
+  return and;
+}
 
 /*
  * Which centre the guest is shopping at.
@@ -35,6 +68,8 @@ const forCentre = (products, centre) => products.map((p) => presentForCentre(p, 
 exports.getAllProducts = async (req, res) => {
   try {
     const { formulation, search, minPrice, maxPrice, sort, isPopular } = req.query;
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(200, Math.max(0, parseInt(req.query.limit, 10) || 0)); // 0 = the whole list, as before
 
     /*
      * The app shop sells RETAIL stock only. Consumables (needles, device
@@ -64,7 +99,10 @@ exports.getAllProducts = async (req, res) => {
     if (isPopular === 'true') {
       query.isPopular = true;
     }
-    
+
+    const shop = shopFilters(req.query);
+    if (shop.length) query.$and = [...(query.$and || []), ...shop];
+
     // Build sort
     let sortOption = {};
     switch (sort) {
@@ -78,18 +116,29 @@ exports.getAllProducts = async (req, res) => {
         sortOption = { rating: -1 };
         break;
       case 'popular':
-        sortOption = { reviews: -1 };
+        sortOption = { isPopular: -1, reviews: -1, name: 1 };
+        break;
+      case 'name':
+        sortOption = { name: 1 };
+        break;
+      case 'newest':
+        sortOption = { createdAt: -1, name: 1 };
         break;
       default:
-        sortOption = { createdAt: -1 };
+        // A whole catalogue loaded in one go shares a creation time, so "newest
+        // first" alone is no order at all: bestsellers lead, then A to Z.
+        sortOption = { isPopular: -1, name: 1 };
     }
-    
-    const products = await Product.find(query).sort(sortOption);
-    
+
+    let find = Product.find(query).select(LIST_SELECT).sort(sortOption).collation({ locale: 'en', strength: 2 });
+    if (limit) find = find.skip((page - 1) * limit).limit(limit);
+    const [products, total] = await Promise.all([find, limit ? Product.countDocuments(query) : null]);
+
     res.json({
       success: true,
       data: forCentre(products, centre),
       centre: centre ? { _id: centre._id, name: centre.name } : null,
+      ...(limit ? { pagination: { page, limit, total, pages: Math.ceil(total / limit) } } : {}),
     });
   } catch (error) {
     console.error('Get all products error:', error);
@@ -116,7 +165,7 @@ exports.getProductById = async (req, res) => {
       });
     }
     
-    const product = await Product.findById(id);
+    const product = await Product.findById(id).select(DETAIL_SELECT);
     
     if (!product) {
       return res.status(404).json({
@@ -132,9 +181,11 @@ exports.getProductById = async (req, res) => {
     const centre = await shoppingCentre(req);
     const presented = presentForCentre(product, centre ? centre._id : null);
     const listing = resolveListing(product, centre ? centre._id : null);
+    // Named, not slugged: the product screen prints these as chips.
+    const concernLabels = (presented.concerns || []).map((slug) => taxonomy.CONCERN_BY_SLUG.get(slug)).filter(Boolean).map((c) => ({ slug: c.slug, name: c.name }));
     res.json({
       success: true,
-      data: { ...presented, availableAtCentre: centre ? listing.visible : true },
+      data: { ...presented, concernLabels, availableAtCentre: centre ? listing.visible : true },
       centre: centre ? { _id: centre._id, name: centre.name } : null,
     });
   } catch (error) {
@@ -158,7 +209,7 @@ exports.getProductsByFormulation = async (req, res) => {
     const centre = await shoppingCentre(req);
     const query = { formulation, isActive: true, isAppProduct: true, ...visibleAtFilter(centre ? centre._id : null) };
     
-    let productsQuery = Product.find(query).sort({ createdAt: -1 });
+    let productsQuery = Product.find(query).select(LIST_SELECT).sort({ isPopular: -1, name: 1 });
     
     if (limit) {
       productsQuery = productsQuery.limit(parseInt(limit));
@@ -198,11 +249,15 @@ exports.searchProducts = async (req, res) => {
         { name: { $regex: query, $options: 'i' } },
         { description: { $regex: query, $options: 'i' } },
         { OrgName: { $regex: query, $options: 'i' } },
-        { formulation: { $regex: query, $options: 'i' } }
+        { formulation: { $regex: query, $options: 'i' } },
+        { brand: { $regex: query, $options: 'i' } },
+        { categories: { $regex: query, $options: 'i' } },
+        { shortDescription: { $regex: query, $options: 'i' } },
+        { 'details.keyIngredients': { $regex: query, $options: 'i' } }
       ]
     };
     
-    let productsQuery = Product.find(searchQuery).sort({ rating: -1, reviews: -1 });
+    let productsQuery = Product.find(searchQuery).select(LIST_SELECT).sort({ isPopular: -1, name: 1 });
     
     if (limit) {
       productsQuery = productsQuery.limit(parseInt(limit));
@@ -269,6 +324,33 @@ exports.getCategories = async (req, res) => {
   } catch (error) {
     console.error('Get categories error:', error);
     res.status(500).json({ success: false, message: 'Failed to fetch categories', error: error.message });
+  }
+};
+
+// @desc    The shop's landing page in one call: collections, categories and concerns, each with how many products it holds here
+// @route   GET /api/products/taxonomy?branchId=|centre=
+// @access  Public
+exports.getTaxonomy = async (req, res) => {
+  try {
+    const centre = await shoppingCentre(req);
+    const match = { isActive: true, isAppProduct: true, ...visibleAtFilter(centre ? centre._id : null) };
+    const [counts, brands] = await Promise.all([
+      taxonomy.countTaxonomy(Product, match),
+      Product.aggregate([
+        { $match: match },
+        { $group: { _id: { $ifNull: ['$brand', '$OrgName'] }, count: { $sum: 1 } } },
+        { $match: { _id: { $nin: [null, ''] } } },
+        { $sort: { count: -1, _id: 1 } },
+      ]),
+    ]);
+    res.json({
+      success: true,
+      data: { ...taxonomy.present(counts), brands: brands.map((b) => ({ name: b._id, count: b.count })) },
+      centre: centre ? { _id: centre._id, name: centre.name } : null,
+    });
+  } catch (error) {
+    console.error('Get taxonomy error:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch the shop menu', error: error.message });
   }
 };
 

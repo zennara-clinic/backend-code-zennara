@@ -9,6 +9,7 @@ const { s3Client, S3_BUCKET } = require('../config/s3');
 const NotificationHelper = require('../utils/notificationHelper');
 const Branch = require('../models/Branch');
 const { normaliseListings, listingSummary, listingRow } = require('../utils/productCentre');
+const taxonomy = require('../utils/productTaxonomy');
 
 /**
  * The clinic centres a product can be listed at, keyed by id. Pharmacies and
@@ -74,6 +75,50 @@ function applyProductExtras(product, body) {
   if (product.batchTracking && !['Batchable', 'Non Batchable'].includes(product.batchTracking)) product.batchTracking = /batch/i.test(product.batchTracking) && !/non/i.test(product.batchTracking) ? 'Batchable' : 'Non Batchable';
   if (product.consumptionOrder && !['FIFO', 'ByExpiry'].includes(product.consumptionOrder)) product.consumptionOrder = /exp/i.test(product.consumptionOrder) ? 'ByExpiry' : 'FIFO';
   if (body.stock !== undefined && Number.isFinite(Number(body.stock))) { product.stockSource = 'panel'; product.stockUpdatedAt = new Date(); }
+  applyShopFields(product, body);
+}
+
+/**
+ * Where the product sits in the shop and what its page says: categories,
+ * concerns, collections, the one-line summary and the long-form sections.
+ * An undefined key leaves the field alone; the taxonomy decides what is a
+ * valid concern or collection (utils/productTaxonomy.js).
+ */
+const lines = (v) => (Array.isArray(v) ? v : String(v ?? '').split(/\r?\n/)).map((x) => String(x ?? '').replace(/^\s*(?:[-•*]|\d+[.)])\s*/, '').trim()).filter(Boolean);
+function applyShopFields(product, body) {
+  const touched = {
+    productCategory: body.productCategory !== undefined,
+    categories: body.categories !== undefined,
+    shopCollections: body.shopCollections !== undefined,
+    isPopular: body.isPopular !== undefined,
+  };
+  if (body.categories !== undefined) product.categories = taxonomy.normaliseCategories(body.categories);
+  if (body.concerns !== undefined) product.concerns = taxonomy.normaliseConcerns(body.concerns);
+  if (body.shopCollections !== undefined) product.shopCollections = taxonomy.normaliseCollections(body.shopCollections);
+  if (body.shortDescription !== undefined) product.shortDescription = String(body.shortDescription ?? '').trim();
+  if (body.slug !== undefined) product.slug = taxonomy.slugify(body.slug) || null;
+  if (body.details && typeof body.details === 'object') {
+    const d = body.details;
+    for (const key of ['overview', 'ingredients', 'suitableFor', 'manufacturer', 'countryOfOrigin']) {
+      if (d[key] !== undefined) product.set(`details.${key}`, String(d[key] ?? '').trim());
+    }
+    for (const key of ['benefits', 'keyIngredients', 'howToUse']) {
+      if (d[key] !== undefined) product.set(`details.${key}`, lines(d[key]));
+    }
+  }
+  taxonomy.reconcile(product, touched);
+}
+
+/** A slug nobody else holds: the name, then the name with a short suffix. */
+async function ensureSlug(product) {
+  if (product.slug) {
+    const clash = await Product.exists({ slug: product.slug, _id: { $ne: product._id } });
+    if (!clash) return;
+  }
+  const base = taxonomy.slugify(product.name) || 'product';
+  let slug = base;
+  for (let i = 2; await Product.exists({ slug, _id: { $ne: product._id } }); i += 1) slug = `${base}-${i}`;
+  product.slug = slug;
 }
 
 // @desc    Get all products (Admin)
@@ -135,7 +180,14 @@ exports.getAllProducts = async (req, res) => {
     const { listedAt, hiddenAt } = req.query;
     if (listedAt && /^[0-9a-f]{24}$/i.test(listedAt)) query.centreListings = { $not: { $elemMatch: { branchId: listedAt, visible: false } } };
     if (hiddenAt && /^[0-9a-f]{24}$/i.test(hiddenAt)) query.centreListings = { $elemMatch: { branchId: hiddenAt, visible: false } };
-    if (category && category !== 'All') query.productCategory = category;
+    if (category && category !== 'All') query.$and = [...(query.$and || []), taxonomy.categoryFilter(category)];
+    // The shop's other two axes. An unknown value matches nothing rather than everything.
+    const { concern, collection } = req.query;
+    if (concern && concern !== 'All') {
+      if (concern === 'none') query.$and = [...(query.$and || []), { $or: [{ concerns: { $size: 0 } }, { concerns: { $exists: false } }] }];
+      else query.concerns = taxonomy.normaliseConcerns(concern)[0] || '__none__';
+    }
+    if (collection && collection !== 'All') query.shopCollections = taxonomy.normaliseCollections(collection)[0] || '__none__';
     
     if (isActive !== undefined) {
       query.isActive = isActive === 'true';
@@ -170,10 +222,13 @@ exports.getAllProducts = async (req, res) => {
         sortOption = { createdAt: -1 };
     }
     
-    const products = await Product.find(query).sort(sortOption);
+    // The long-form page is read by the editor (GET /:id), never by the list.
+    const products = await Product.find(query).select('-details.ingredients -details.overview -details.howToUse -details.benefits').sort(sortOption);
 
     // Tab counts, independent of the current filter, so the tabs never lie.
-    const [allCount, retailCount, consumableCount, rxCount, unpricedCount, appCount, facets] = await Promise.all([
+    const [shopCounts, allCount, retailCount, consumableCount, rxCount, unpricedCount, appCount, facets] = await Promise.all([
+      // The shop menu with counts, empty shelves included, so the editor can offer every concern and collection.
+      taxonomy.countTaxonomy(Product, catalogue === 'app' ? { isAppProduct: true } : {}),
       Product.countDocuments({}),
       Product.countDocuments({ isRetail: true }),
       Product.countDocuments({ isRetail: false }),
@@ -201,6 +256,7 @@ exports.getAllProducts = async (req, res) => {
       data: products,
       buckets: { all: allCount, retail: retailCount, consumable: consumableCount, rx: rxCount, unpriced: unpricedCount, app: appCount },
       facets: { categories: clean(f0.categories), subCategories: clean(f0.subCategories), vendors: clean(f0.vendors), statuses: clean(f0.statuses), hsn: clean(f0.hsn) },
+      taxonomy: taxonomy.present(shopCounts, { includeEmpty: true }),
       stats
     });
   } catch (error) {
@@ -287,6 +343,8 @@ exports.createProduct = async (req, res) => {
     // Category / sub-category / formulation snap to the catalogue's spelling.
     snapProduct(product, await loadCanon(Product));
     product.formulation = (await registerFormulation(product.formulation)) || product.formulation;
+    taxonomy.reconcile(product); // after the snap: the main category's final spelling is in `categories`
+    await ensureSlug(product);
     await product.save();
     if (Number(product.stock) > 0) await ProductStockMovement.create({ productId: product._id, source: 'panel', delta: product.stock, before: 0, after: product.stock, note: 'Created', by: req.admin?._id || null }).catch(() => {});
 
@@ -380,6 +438,8 @@ exports.updateProduct = async (req, res) => {
     
     snapProduct(product, await loadCanon(Product));
     if (product.formulation) product.formulation = (await registerFormulation(product.formulation)) || product.formulation;
+    taxonomy.reconcile(product);
+    if (!product.slug || product.isModified('slug')) await ensureSlug(product);
     const stockChanged = product.isModified('stock');
     const prev = stockChanged ? Number((await Product.findById(product._id).select('stock').lean())?.stock) || 0 : null;
     await product.save();
@@ -612,6 +672,30 @@ exports.bulkUpdateProducts = async (req, res) => {
         if (product.isModified('centreListings')) { await product.save({ validateModifiedOnly: true }); modified += 1; }
       }
       return res.json({ success: true, message: `${modified} products updated successfully`, modifiedCount: modified });
+    }
+
+    /*
+     * Shelves in bulk: "put these in New arrivals", "take these out of Kids".
+     * Added to or pulled from each product's own list — the other shelves a
+     * product is on are untouched. Bestsellers keeps `isPopular` in step.
+     */
+    if (updates.collection && updates.collection.slug) {
+      const slug = taxonomy.normaliseCollections([updates.collection.slug])[0];
+      if (!slug) return res.status(400).json({ success: false, message: 'Choose Bestsellers, New arrivals or Kids' });
+      const on = updates.collection.on !== false && updates.collection.on !== 'false';
+      const result = await Product.updateMany(
+        { _id: { $in: productIds } },
+        {
+          ...(on ? { $addToSet: { shopCollections: slug } } : { $pull: { shopCollections: slug } }),
+          ...(slug === 'bestseller' ? { $set: { isPopular: on } } : {}),
+        },
+      );
+      return res.json({ success: true, message: `${result.modifiedCount} products updated successfully`, modifiedCount: result.modifiedCount });
+    }
+    if (updates.isPopular !== undefined) {
+      // The older switch, kept in step with the Bestsellers shelf.
+      const on = updates.isPopular === true || updates.isPopular === 'true';
+      await Product.updateMany({ _id: { $in: productIds } }, on ? { $addToSet: { shopCollections: 'bestseller' } } : { $pull: { shopCollections: 'bestseller' } });
     }
 
     // Plain field sets stay limited to what the panel may edit in bulk.

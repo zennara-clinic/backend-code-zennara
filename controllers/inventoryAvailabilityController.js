@@ -11,10 +11,11 @@
  * number in the JSON, where anyone can read it in the network tab. Here the
  * price is never selected from Mongo in the first place.
  *
- * GET /api/inventory/availability?search=&branchId=&status=&limit=
+ * GET /api/inventory/availability?search=&branchId=&status=&concern=&category=&limit=
  */
 const Product = require('../models/Product');
 const Inventory = require('../models/Inventory');
+const taxonomy = require('../utils/productTaxonomy');
 
 /** Never widen this list to anything with a price in it. */
 const PRODUCT_FIELDS = [
@@ -22,6 +23,8 @@ const PRODUCT_FIELDS = [
   'brand', 'OrgName', 'image', 'stock', 'branchStock', 'lowStockThreshold',
   'isActive', 'zenotiProductId', 'zenotiSyncedAt', 'trackStock',
   'isRx', 'rxReason', 'packSize', 'productSubCategory',
+  // What a recommendation turns on: what it is for and what is in it.
+  'categories', 'concerns', 'shortDescription', 'details.keyIngredients', 'details.suitableFor',
 ].join(' ');
 
 const INVENTORY_FIELDS = [
@@ -51,8 +54,10 @@ function branchQuantity(rows, branchId) {
 
 exports.getAvailability = async (req, res) => {
   try {
-    const { search, branchId, status, limit = 200 } = req.query;
+    const { search, branchId, status, concern, category, limit = 200 } = req.query;
     const cap = Math.min(Number(limit) || 200, 500);
+    // A concern or a category narrows the catalogue; clinic consumables have neither.
+    const byShelf = Boolean((concern && String(concern).trim()) || (category && String(category).trim()));
 
     const filter = { isActive: true };
     // Which products this centre actually carries (Zenoti's per-centre range).
@@ -63,14 +68,26 @@ exports.getAvailability = async (req, res) => {
     }
     if (search && String(search).trim()) {
       const rx = new RegExp(String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-      filter.$or = [{ name: rx }, { sku: rx }, { code: rx }, { brand: rx }, { OrgName: rx }, { formulation: rx }];
+      // "pigmentation" or "niacinamide" is as likely a search as a product name.
+      const concernHits = taxonomy.CONCERNS.filter((c) => rx.test(c.name)).map((c) => c.slug);
+      filter.$or = [
+        { name: rx }, { sku: rx }, { code: rx }, { brand: rx }, { OrgName: rx }, { formulation: rx },
+        { categories: rx }, { productCategory: rx }, { 'details.keyIngredients': rx },
+        ...(concernHits.length ? [{ concerns: { $in: concernHits } }] : []),
+      ];
+    }
+    if (concern && String(concern).trim()) {
+      filter.concerns = taxonomy.normaliseConcerns(concern)[0] || '__none__';
+    }
+    if (category && String(category).trim()) {
+      filter.$and = [...(filter.$and || []), taxonomy.categoryFilter(category)];
     }
 
     const [products, consumables] = await Promise.all([
       Product.find(filter).select(PRODUCT_FIELDS).limit(cap).lean(),
       // Clinic consumables live in Inventory, not Product. A dermatologist
       // recommending an in-clinic item needs the same answer.
-      Inventory.find({
+      byShelf ? [] : Inventory.find({
         ...(search && String(search).trim()
           ? { $or: [
               { inventoryName: new RegExp(String(search).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') },
@@ -95,6 +112,11 @@ exports.getAvailability = async (req, res) => {
           productType: p.productType || null,
           formulation: p.formulation || null,
           packSize: p.packSize || null,
+          categories: (p.categories && p.categories.length ? p.categories : [p.productCategory]).filter(Boolean),
+          concerns: (p.concerns || []).map((slug) => taxonomy.CONCERN_BY_SLUG.get(slug)).filter(Boolean).map((c) => ({ slug: c.slug, name: c.name })),
+          summary: p.shortDescription || null,
+          keyIngredients: p.details?.keyIngredients || [],
+          suitableFor: p.details?.suitableFor || null,
           brand: p.brand || p.OrgName || null,
           image: p.image || '',
           /** Prescription-only: the doctor's prescription line must be Schedule H. */

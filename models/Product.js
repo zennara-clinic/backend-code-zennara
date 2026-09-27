@@ -223,6 +223,38 @@ const productSchema = new mongoose.Schema({
     type: Date,
     default: null,
   },
+
+  // --- Shop taxonomy & product page (utils/productTaxonomy.js) --------------
+  /** URL-safe name, unique when present. Stable across renames; used for links. */
+  slug: { type: String, default: null, trim: true, lowercase: true },
+  /** One line for cards and search results. `description` stays the full text. */
+  shortDescription: { type: String, default: '', trim: true },
+  /**
+   * Every category the product sits under. `productCategory` is the main one
+   * and is always among them; a hair supplement is in both Hair Care and
+   * Supplements and must be found under either.
+   */
+  categories: { type: [String], default: [] },
+  /** Concern slugs — what the guest wants help with (acne, pigmentation…). */
+  concerns: { type: [String], default: [] },
+  /** Hand-picked shelves: 'bestseller' | 'new-arrival' | 'kids'. `isPopular` mirrors bestseller. */
+  shopCollections: { type: [String], default: [] },
+  /**
+   * The long-form product page. Every part is optional; the app shows only
+   * what is filled. Ingredient lists are as printed on the pack.
+   */
+  details: {
+    overview: { type: String, default: '', trim: true },
+    benefits: { type: [String], default: [] },
+    keyIngredients: { type: [String], default: [] },
+    ingredients: { type: String, default: '', trim: true },
+    howToUse: { type: [String], default: [] },
+    suitableFor: { type: String, default: '', trim: true },
+    manufacturer: { type: String, default: '', trim: true },
+    countryOfOrigin: { type: String, default: '', trim: true },
+  },
+  /** Which catalogue load created the row ('catalogue-2026-09'); null = made in the panel. */
+  catalogueSource: { type: String, default: null, trim: true },
 }, {
   timestamps: true
 });
@@ -242,5 +274,14 @@ productSchema.index(
 );
 productSchema.index({ 'branchStock.branchId': 1 });
 productSchema.index({ 'centreListings.branchId': 1, 'centreListings.visible': 1 });
+// The three ways into the shop. Multikey, one array per index.
+productSchema.index({ categories: 1 });
+productSchema.index({ concerns: 1 });
+productSchema.index({ shopCollections: 1 });
+productSchema.index({ productCategory: 1 });
+productSchema.index(
+  { slug: 1 },
+  { unique: true, partialFilterExpression: { slug: { $type: 'string' } } },
+);
 
 module.exports = mongoose.model('Product', productSchema);

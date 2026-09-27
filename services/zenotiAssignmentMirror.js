@@ -19,6 +19,7 @@ const PackageAssignment = require('../models/PackageAssignment');
 const ProductOrder = require('../models/ProductOrder');
 const Package = require('../models/Package');
 const Product = require('../models/Product');
+const ArchivedProduct = require('../models/ArchivedProduct');
 const Consultation = require('../models/Consultation');
 const Branch = require('../models/Branch');
 const logger = require('../utils/logger');
@@ -40,11 +41,13 @@ let pools = null;
 let poolsAt = 0;
 async function getPools(force = false) {
   if (pools && !force && Date.now() - poolsAt < POOL_TTL_MS) return pools;
-  const [packages, consultations, products, branches] = await Promise.all([
+  const [packages, consultations, products, branches, retired] = await Promise.all([
     Package.find({}).select('_id id name price originalPrice services zenotiPackageId').lean(),
     Consultation.find({}).select('_id id name price zenotiServiceId').lean(),
     Product.find({}).select('_id name image price isRetail zenotiProductId').lean(),
     Branch.find({}).select('_id name address zenotiCenterId').lean(),
+    // What the clinic sold before the catalogue was replaced — and still sells at the desk.
+    ArchivedProduct.find({}).select('_id name image price isRetail zenotiProductId').lean().catch(() => []),
   ]);
   const idMap = (rows, key) => new Map(rows.filter((r) => r[key]).map((r) => [String(r[key]).toLowerCase(), r]));
   pools = {
@@ -56,6 +59,8 @@ async function getPools(force = false) {
     // Retail first; a same-named consumable is not what a customer bought.
     retailByName: buildMatcher(products.filter((p) => p.isRetail !== false)),
     productByName: buildMatcher(products),
+    retiredByZenotiId: idMap(retired, 'zenotiProductId'),
+    retiredByName: buildMatcher(retired),
     branchByZenotiId: idMap(branches, 'zenotiCenterId'),
     branchByName: buildMatcher(branches),
   };
@@ -255,7 +260,15 @@ async function mirrorGuestOrders(user, orders) {
     try {
       if (await ProductOrder.exists({ zenotiSaleId: saleId })) continue;
       const P = await getPools();
-      const product = (zo.productId && P.productByZenotiId.get(lower(zo.productId))) || P.retailByName(zo.name) || P.productByName(zo.name);
+      /*
+       * Zenoti's own product id first — in the catalogue, then among the
+       * products retired from it — because an id cannot be mistaken. Names
+       * come after, the live catalogue before the retired one. A sale of a
+       * retired product is recorded under that product's original id and
+       * name; it is a line in the guest's history, not a shop listing.
+       */
+      const product = (zo.productId && (P.productByZenotiId.get(lower(zo.productId)) || P.retiredByZenotiId.get(lower(zo.productId))))
+        || P.retailByName(zo.name) || P.productByName(zo.name) || P.retiredByName(zo.name);
       if (!product) { stats.skippedNoProduct += 1; stats.unmatched.set(zo.name, (stats.unmatched.get(zo.name) || 0) + 1); continue; }
 
       const qty = Math.max(1, Number(zo.quantity) || 1);
