@@ -57,7 +57,8 @@ const gstFrom = (v) => (v === undefined || v === null || v === '' || !Number.isF
  */
 function centrePriceAboveMrp(product) {
   const mrp = Number(product.price) || 0;
-  const over = (product.centreListings || []).find((r) => r.price !== null && r.price !== undefined && Number(r.price) > mrp);
+  // A hidden centre sells nothing, so only centres where the product is on sale are held to it.
+  const over = (product.centreListings || []).find((r) => r.visible !== false && r.price !== null && r.price !== undefined && Number(r.price) > mrp);
   if (!over) return null;
   return `The price at ${over.branchName || 'a centre'} (₹${Number(over.price).toLocaleString('en-IN')}) is above the MRP (₹${mrp.toLocaleString('en-IN')}). A centre can charge the MRP or less — clear its price to charge the MRP.`;
 }
