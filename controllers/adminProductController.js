@@ -289,6 +289,9 @@ exports.getAllProducts = async (req, res) => {
       buckets: { all: allCount, retail: retailCount, consumable: consumableCount, rx: rxCount, unpriced: unpricedCount, app: appCount },
       facets: { categories: clean(f0.categories), subCategories: clean(f0.subCategories), vendors: clean(f0.vendors), statuses: clean(f0.statuses), hsn: clean(f0.hsn) },
       taxonomy: taxonomy.present(shopCounts, { includeEmpty: true }),
+      // Tells the panel checkout charges the MRP as it stands (utils/orderPricing):
+      // GST is information only. A server without it still adds GST on top.
+      pricingModel: 'mrp-inclusive',
       stats
     });
   } catch (error) {
