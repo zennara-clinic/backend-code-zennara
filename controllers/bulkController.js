@@ -49,6 +49,10 @@ const num = (v, fallback = null) => {
   const n = Number(String(v ?? '').replace(/[₹,\s]/g, ''));
   return Number.isFinite(n) ? n : fallback;
 };
+/** A cell that holds something (a missing column reads as undefined, not ''). */
+const filled = (v) => v !== undefined && v !== null && String(v).trim() !== '';
+/** A product row's MRP: the `mrp` cell, else an older sheet's `price` cell; null when neither is a positive number. */
+const mrpOfRow = (row) => [row.mrp, row.price].filter(filled).map((v) => num(v)).find((n) => n !== null && n > 0) ?? null;
 
 /**
  * Entity definitions.
@@ -307,9 +311,15 @@ const ENTITIES = {
   products: {
     model: () => Product,
     label: 'products',
+    /*
+     * One price per product: `mrp`, final, every tax included (2026-09-28).
+     * A sheet from before that may carry `price` instead; it is read as the
+     * MRP when `mrp` is blank. `gstPercentage` is the rate the MRP includes —
+     * information only, 18 when blank.
+     */
     columns: [
       'zenotiProductId', 'sku', 'name', 'brand', 'formulation', 'category', 'subCategory',
-      'productType', 'packSize', 'hsn', 'mrp', 'quantity', 'price', 'gstPercentage',
+      'productType', 'packSize', 'hsn', 'mrp', 'quantity', 'gstPercentage',
       'isRx', 'isActive', 'appVisible', 'image',
     ],
     keyOf: (row) => String(row.sku || row.name || '').trim().toLowerCase(),
@@ -327,12 +337,12 @@ const ENTITIES = {
     validate(row) {
       const errors = [];
       if (!String(row.name || '').trim()) errors.push('name is required');
-      if (row.price !== '' && num(row.price) === null) errors.push(`price "${row.price}" is not a number`);
+      if (filled(row.price) && num(row.price) === null) errors.push(`price "${row.price}" is not a number`);
       if (row.quantity !== '' && num(row.quantity) === null) errors.push(`quantity "${row.quantity}" is not a number`);
-      if (row.mrp !== undefined && row.mrp !== '' && num(row.mrp) === null) errors.push(`mrp "${row.mrp}" is not a number`);
+      if (filled(row.mrp) && num(row.mrp) === null) errors.push(`mrp "${row.mrp}" is not a number`);
       if (row.isRx !== undefined && row.isRx !== '' && bool(row.isRx) === null) errors.push(`isRx "${row.isRx}" must be yes or no`);
       const gst = num(row.gstPercentage);
-      if (row.gstPercentage !== '' && (gst === null || gst < 0 || gst > 100)) errors.push(`gstPercentage "${row.gstPercentage}" must be 0-100`);
+      if (filled(row.gstPercentage) && (gst === null || gst < 0 || gst > 100)) errors.push(`gstPercentage "${row.gstPercentage}" must be 0-100`);
       return errors;
     },
     apply(doc, row, { creating }) {
@@ -340,8 +350,8 @@ const ENTITIES = {
         doc.description = row.description || row.name;
         doc.formulation = row.formulation || 'Not specified';
         doc.OrgName = row.brand || 'Zennara';
-        doc.price = num(row.price, 0);
-        doc.gstPercentage = num(row.gstPercentage, 18);
+        doc.price = mrpOfRow(row) ?? 0;
+        doc.gstPercentage = filled(row.gstPercentage) ? num(row.gstPercentage, 18) : 18;
         // A bulk-imported product is a stock record first. Publishing it is a
         // separate, deliberate act — the same rule the Zenoti sync follows.
         doc.isActive = false;
@@ -355,13 +365,14 @@ const ENTITIES = {
       if (row.productType !== undefined && row.productType !== '') { doc.productType = row.productType; doc.isRetail = !/consum/i.test(row.productType); }
       if (row.packSize !== undefined && row.packSize !== '') doc.packSize = row.packSize;
       if (row.hsn !== undefined && row.hsn !== '') doc.hsn = String(row.hsn).trim();
-      if (row.mrp !== undefined && row.mrp !== '') doc.mrp = num(row.mrp, doc.mrp);
+      // The MRP is the price; `mrp` follows it (models/Product.js).
+      const mrp = mrpOfRow(row);
+      if (mrp !== null) doc.price = mrp;
       // Rx/OTC from a sheet is a deliberate decision (the clinic's own list).
       const rx = bool(row.isRx); if (rx !== null) { doc.isRx = rx; doc.rxSource = 'import'; doc.rxReason = 'Bulk import'; }
       if (row.image !== '') doc.image = row.image;
       if (row.zenotiProductId !== '') doc.zenotiProductId = String(row.zenotiProductId);
-      if (row.price !== '') doc.price = num(row.price, doc.price);
-      if (row.gstPercentage !== '') doc.gstPercentage = num(row.gstPercentage, doc.gstPercentage);
+      if (filled(row.gstPercentage)) doc.gstPercentage = num(row.gstPercentage, doc.gstPercentage);
       if (row.quantity !== '') doc.stock = num(row.quantity, doc.stock);
       const visible = bool(row.appVisible); if (visible !== null) doc.isActive = visible;
       const active = bool(row.isActive); if (active !== null) doc.isActive = active;
@@ -378,9 +389,8 @@ const ENTITIES = {
       productType: d.productType || (d.isRetail === false ? 'Consumable' : d.isRetail === true ? 'Retail' : ''),
       packSize: d.packSize || '',
       hsn: d.hsn || '',
-      mrp: d.mrp ?? '',
+      mrp: d.price ?? '',
       quantity: d.stock ?? 0,
-      price: d.price ?? '',
       gstPercentage: d.gstPercentage ?? '',
       isRx: d.isRx === true ? 'yes' : d.isRx === false ? 'no' : '',
       isActive: d.isActive === false ? 'no' : 'yes',

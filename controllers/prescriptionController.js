@@ -23,7 +23,8 @@ const { guestCodeOf } = require('../utils/guestCode');
 exports.daysFromDuration = daysFromDuration;
 exports.refillDueAt = refillDueAt;
 
-const PRODUCT_FIELDS = '_id name description formulation OrgName price gstPercentage image stock trackStock isActive isPopular sku';
+// `price` is the MRP, taxes included; the GST rate is panel information and stays behind.
+const PRODUCT_FIELDS = '_id name description formulation OrgName price image stock trackStock isActive isPopular sku';
 
 function shape(note) {
   const booking = note.bookingId && typeof note.bookingId === 'object' ? note.bookingId : null;

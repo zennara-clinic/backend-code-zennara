@@ -4,11 +4,18 @@
  * Three sheet shapes are understood, all produced by the pharmacy team:
  *   template  "Stock_Import_Template": Item Name · Category · Code · Formulation ·
  *             Brand · Batch Tracking · Consumption Order · Opening Quantity ·
- *             Re-order Level · Target Level · Pack Name · Pack Size · Buying Price ₹ ·
- *             Selling Price ₹ · GST % · Vendor · Status   (two banner rows above the headers)
+ *             Re-order Level · Target Level · Pack Name · Pack Size · MRP ₹ ·
+ *             GST % · Vendor · Status · Sub Category · HSN Code
+ *             (two banner rows above the headers)
  *   otc       "OTC_Sell_Directly":  # · Product Code · Product Name · Category · Sub Category ·
  *             Stock Qty · MRP ₹ · HSN Code · Vendor · Reason   (category divider rows inside)
  *   rx        "Rx_Prescription_Required": same columns as otc
+ *
+ * A product has ONE price, its MRP, every tax included (2026-09-28): a parsed
+ * row's `price` is the MRP. Sheets made before that carry "Selling Price ₹"
+ * (the GST-inclusive price the guest paid), which is read as the MRP when the
+ * row has no MRP; their "Buying Price ₹" column is ignored. GST % is the rate
+ * the MRP includes — information only, never added on top.
  *
  * Export always writes the template shape, so what goes out can come back in.
  * Nothing here talks to Zenoti: products are matched to rows that already exist
@@ -18,9 +25,11 @@ const norm = (s) => String(s || '').toLowerCase().replace(/₹/g, '').replace(/[
 const num = (v) => { if (v === null || v === undefined || v === '') return null; const n = Number(String(v).replace(/[₹,\s]/g, '')); return Number.isFinite(n) ? n : null; };
 const str = (v) => { const s = v === null || v === undefined ? '' : String(v).trim(); return s && s !== '—' && s !== '-' ? s : null; };
 
-const TEMPLATE_HEADERS = ['Item Name', 'Category', 'Code', 'Formulation', 'Brand', 'Batch Tracking', 'Consumption Order', 'Opening Quantity', 'Re-order Level', 'Target Level', 'Pack Name', 'Pack Size', 'Buying Price ₹', 'Selling Price ₹', 'GST %', 'Vendor', 'Status', 'Sub Category', 'HSN Code', 'MRP ₹'];
+const TEMPLATE_HEADERS = ['Item Name', 'Category', 'Code', 'Formulation', 'Brand', 'Batch Tracking', 'Consumption Order', 'Opening Quantity', 'Re-order Level', 'Target Level', 'Pack Name', 'Pack Size', 'MRP ₹', 'GST %', 'Vendor', 'Status', 'Sub Category', 'HSN Code'];
 
-const TEMPLATE_MAP = { 'item name': 'name', category: 'category', code: 'code', formulation: 'formulation', brand: 'brand', 'batch tracking': 'batchTracking', 'consumption order': 'consumptionOrder', 'opening quantity': 'stock', 're order level': 'reorderLevel', 'target level': 'targetLevel', 'pack name': 'packName', 'pack size': 'packSize', 'buying price': 'buyingPrice', 'selling price': 'price', 'gst %': 'gst', gst: 'gst', vendor: 'vendorName', status: 'templateStatus', 'sub category': 'subCategory', 'hsn code': 'hsn', hsn: 'hsn', mrp: 'mrp' };
+// 'selling price' is the pre-2026-09-28 column, read as the MRP when a row has none.
+// 'buying price' is ignored: it maps to 'ignored', which parse drops.
+const TEMPLATE_MAP = { 'item name': 'name', category: 'category', code: 'code', formulation: 'formulation', brand: 'brand', 'batch tracking': 'batchTracking', 'consumption order': 'consumptionOrder', 'opening quantity': 'stock', 're order level': 'reorderLevel', 'target level': 'targetLevel', 'pack name': 'packName', 'pack size': 'packSize', 'buying price': 'ignored', 'selling price': 'legacyPrice', 'gst %': 'gst', gst: 'gst', vendor: 'vendorName', status: 'templateStatus', 'sub category': 'subCategory', 'hsn code': 'hsn', hsn: 'hsn', mrp: 'mrp' };
 const CLASS_MAP = { '#': 'n', 'product code': 'code', 'product name': 'name', category: 'category', 'sub category': 'subCategory', 'stock qty': 'stock', 'mrp': 'mrp', 'hsn code': 'hsn', vendor: 'vendorName', reason: 'reason' };
 
 /** Find the header row (banner rows precede it) and which shape the sheet is. */
@@ -61,7 +70,8 @@ function parseAppStockWorkbook(sheets) {
         batchTracking: str(r.batchTracking), consumptionOrder: str(r.consumptionOrder),
         stock: num(r.stock), reorderLevel: num(r.reorderLevel), targetLevel: num(r.targetLevel),
         packName: str(r.packName), packSize: str(r.packSize),
-        buyingPrice: num(r.buyingPrice), price: num(r.price), mrp: num(r.mrp), gst: num(r.gst),
+        // The MRP, taxes included; an older sheet's selling price stands in when the MRP is blank.
+        price: [num(r.mrp), num(r.legacyPrice)].find((n) => n !== null && n > 0) ?? null, gst: num(r.gst),
         hsn: str(r.hsn), vendorName: str(r.vendorName), templateStatus: str(r.templateStatus), reason: str(r.reason),
         classification: d.kind === 'classification' ? (rxSheet ? 'rx' : 'otc') : null,
       });
@@ -77,8 +87,8 @@ function toTemplateRows(products) {
     p.name || '', p.productCategory || '', p.code || p.sku || '', p.formulation || '', p.brand || p.OrgName || '',
     p.batchTracking || (p.trackStock === false ? '' : 'Non Batchable'), p.consumptionOrder || 'FIFO',
     Number.isFinite(Number(p.stock)) ? Number(p.stock) : '', p.reorderLevel ?? p.lowStockThreshold ?? '', p.targetLevel ?? '',
-    p.packName || '', p.packSize || '', p.buyingPrice ?? '', p.price ?? '', p.gstPercentage ?? '', p.vendorName || '', p.templateStatus || '',
-    p.productSubCategory || '', p.hsn || '', p.mrp ?? '',
+    p.packName || '', p.packSize || '', p.price ?? '', p.gstPercentage ?? '', p.vendorName || '', p.templateStatus || '',
+    p.productSubCategory || '', p.hsn || '',
   ]);
 }
 
@@ -106,19 +116,17 @@ function templateDiff(p, t) {
   check('target level', t.targetLevel, p.targetLevel);
   check('pack name', t.packName, p.packName);
   check('pack size', t.packSize, p.packSize);
-  check('buying price', t.buyingPrice, p.buyingPrice);
-  if (t.price !== null && t.price > 0) check('selling price', t.price, p.price);
+  if (t.price !== null && t.price > 0) check('MRP', t.price, p.price);
   check('GST', t.gst, p.gstPercentage);
   check('vendor', t.vendorName, p.vendorName);
   check('status', t.templateStatus, p.templateStatus);
   check('HSN', t.hsn, p.hsn);
-  check('MRP', t.mrp, p.mrp);
   if (t.code && !p.code) out.push('code');
   return out;
 }
 
 /** The fields templateDiff and the import read — select these when matching. */
-const TEMPLATE_SELECT = '_id name code sku isActive isAppProduct isRx image price stock productCategory productSubCategory formulation brand batchTracking consumptionOrder reorderLevel targetLevel packName packSize buyingPrice gstPercentage vendorName templateStatus hsn mrp';
+const TEMPLATE_SELECT = '_id name code sku isActive isAppProduct isRx image price stock productCategory productSubCategory formulation brand batchTracking consumptionOrder reorderLevel targetLevel packName packSize gstPercentage vendorName templateStatus hsn';
 
 const GUIDE = [
   ['Zennara product template — how to fill it in'],
@@ -136,14 +144,12 @@ const GUIDE = [
   ['Target Level', 'Optional', 'Level to top up to when re-ordering.', 'Whole number'],
   ['Pack Name', 'Optional', 'Pack unit.', 'e.g. btl, tube, ea, strip'],
   ['Pack Size', 'Optional', 'Quantity per pack.', 'e.g. 1, 50 g, 100 ml'],
-  ['Buying Price ₹', 'Optional', 'Purchase cost per unit.', 'Number only, no ₹ or commas'],
-  ['Selling Price ₹', 'Yes for new products', 'Price the guest pays, GST inclusive.', 'Number only, no ₹ or commas'],
-  ['GST %', 'Recommended', 'GST rate.', '0, 5, 12, 18 or 28'],
+  ['MRP ₹', 'Yes for new products', 'The final price the guest pays, every tax included. The app shows it and checkout charges it as it is — nothing is added on top.', 'Number only, no ₹ or commas'],
+  ['GST %', 'Optional', 'The GST rate the MRP already includes. For information only — never added to the price. Blank = 18.', '0, 5, 12, 18 or 28'],
   ['Vendor', 'Optional', 'Supplier name.', 'Free text'],
-  ['Status', 'Optional', 'How sure the selling price is.', 'VPA confirmed  /  estimated  /  needs price'],
+  ['Status', 'Optional', 'How sure the MRP is.', 'VPA confirmed  /  estimated  /  needs price'],
   ['Sub Category', 'Optional', 'Finer grouping inside the category.', 'Free text'],
   ['HSN Code', 'Optional', 'HSN code for GST invoices.', 'Digits'],
-  ['MRP ₹', 'Optional', 'Printed MRP.', 'Number only'],
   [''],
   ['Rules'],
   ['1. Keep the header row exactly as it is. Column order does not matter; the headings do.'],

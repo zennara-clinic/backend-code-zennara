@@ -8,9 +8,13 @@ const taxonomy = require('../utils/productTaxonomy');
  * document, which put the buying price and the supplier on a public endpoint.
  * LIST_HIDDEN also leaves out the long-form product page: the shop loads the
  * whole catalogue at once and only the product screen reads `details`.
+ *
+ * `gstPercentage` stays behind too: `price` is the MRP with every tax in it,
+ * and the rate is panel information. App builds that still add a product's
+ * GST on the phone read a missing rate as 0, so they stop adding it as well.
  */
 const PUBLIC_HIDDEN = [
-  'buyingPrice', 'vendorName', 'vendorId', 'reorderLevel', 'targetLevel', 'templateStatus',
+  'buyingPrice', 'gstPercentage', 'vendorName', 'vendorId', 'reorderLevel', 'targetLevel', 'templateStatus',
   'batchTracking', 'consumptionOrder', 'branchStock', 'centres', 'barcodes',
   'zenotiProductId', 'zenotiCategoryId', 'zenotiSubCategoryId', 'zenotiSyncedAt',
   'stockSource', 'stockUpdatedAt', 'priceSource', 'rxSource', 'catalogueSource', '__v',

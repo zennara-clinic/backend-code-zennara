@@ -29,11 +29,23 @@ const productSchema = new mongoose.Schema({
     sparse: true,
     unique: true
   },
+  /*
+   * The MRP: the one price a product has, final, every tax included (store
+   * policy, 2026-09-28). It is what the panel enters, what the app shows and
+   * what checkout charges — nothing is added on top. There is no separate
+   * selling or buying price any more; `mrp` below is kept equal to this.
+   */
   price: {
     type: Number,
-    required: [true, 'Product price is required'],
-    min: [0, 'Price cannot be negative']
+    required: [true, 'Product MRP is required'],
+    min: [0, 'MRP cannot be negative']
   },
+  /*
+   * The GST rate the MRP already includes. Information only: checkout never
+   * adds it (utils/orderPricing), the app never shows it, and a desk bill
+   * uses it to split the tax out of the MRP for the receipt. 18 unless the
+   * panel says otherwise.
+   */
   gstPercentage: {
     type: Number,
     required: [true, 'GST percentage is required'],
@@ -173,16 +185,26 @@ const productSchema = new mongoose.Schema({
   reorderLevel: { type: Number, default: null, min: 0 },
   targetLevel: { type: Number, default: null, min: 0 },
   packName: { type: String, default: null, trim: true },
+  /**
+   * Retired 2026-09-28: a product carries its MRP only. Nothing reads, edits,
+   * imports or exports this any more; the field stays so the few rows that
+   * held a purchase cost keep it on record.
+   */
   buyingPrice: { type: Number, default: null, min: 0 },
   vendorName: { type: String, default: null, trim: true },
-  /** Sheet status: 'VPA confirmed' | 'estimated' | 'needs price' — how trustworthy the buying price is. */
+  /** Sheet status: 'VPA confirmed' | 'estimated' | 'needs price' — how sure the MRP is. */
   templateStatus: { type: String, default: null, trim: true },
   /** Where `stock` last came from: 'template' import, 'panel' edit, or 'order' movement. */
   stockSource: { type: String, default: null },
   stockUpdatedAt: { type: Date, default: null },
-  /** Zenoti's MRP (max_retail_price). `price` is what we charge; it starts from the MRP. */
+  /**
+   * Always equal to `price`, which IS the MRP (the pre-validate hook below
+   * keeps the two together). Kept because the desk bill, the bulk sheet and
+   * app builds already installed read it; a writer that sets only `mrp`
+   * moves `price` with it.
+   */
   mrp: { type: Number, default: null },
-  /** Where `price` came from: adopted from Zenoti's MRP, or set in the panel. */
+  /** Where the MRP (`price`) came from: Zenoti, the panel, or a template import. */
   priceSource: { type: String, enum: ['zenoti-mrp', 'panel', 'template', null], default: null },
   /** Pack size as Zenoti records it, e.g. "1 ML", "30 GM". */
   packSize: { type: String, default: null, trim: true },
@@ -295,5 +317,20 @@ productSchema.index(
   { slug: 1 },
   { unique: true, partialFilterExpression: { slug: { $type: 'string' } } },
 );
+
+/*
+ * One price. `price` is the MRP and `mrp` mirrors it; whichever a writer
+ * changed, the two agree afterwards. A writer that set only `mrp` (an older
+ * sheet or panel build) moves `price` with it; anything else copies `price`.
+ */
+productSchema.pre('validate', function keepMrpAndPriceTogether(next) {
+  const mrp = Number(this.mrp);
+  const mrpOnly = this.isNew
+    ? this.price === null || this.price === undefined
+    : this.isModified('mrp') && !this.isModified('price');
+  if (mrpOnly && Number.isFinite(mrp) && mrp > 0) this.price = mrp;
+  else if (this.price !== null && this.price !== undefined && Number.isFinite(Number(this.price))) this.mrp = Number(this.price);
+  next();
+});
 
 module.exports = mongoose.model('Product', productSchema);

@@ -4,9 +4,15 @@
  * The mobile app sends a cart and its own idea of the totals, but the amount we
  * charge and store must NEVER come from the client — otherwise a tampered app
  * can pay ₹1 for a full-value cart or claim an arbitrary discount. Everything
- * here is recomputed from the database: product prices, per-product GST, the
- * delivery-fee rule, the minimum-order rule, and the coupon (validated, not
- * trusted).
+ * here is recomputed from the database: product prices, the delivery-fee rule,
+ * the minimum-order rule, and the coupon (validated, not trusted).
+ *
+ * A product's price is its MRP — the final price, every tax included (store
+ * policy, 2026-09-28). Nothing is added on top: `gstPercentage` on a product
+ * says which rate the MRP already contains and is never charged again, so
+ * `pricing.gst` is always 0 on a new order. The key stays in the result because
+ * orders placed before the change carry the GST they were charged, and the app
+ * and panel read the same shape for both.
  *
  * This does NOT mutate stock. Callers still do their own atomic stock decrement
  * after pricing succeeds, so validation and the actual reservation stay separate.
@@ -18,7 +24,7 @@ const { resolveListing } = require('./productCentre');
 /**
  * Commercial rules for the store (2026-09 policy).
  *
- *   • Minimum cart value is ₹1,000 on the SUBTOTAL — before GST, before the
+ *   • Minimum cart value is ₹1,000 on the SUBTOTAL (the MRPs) — before the
  *     delivery fee and before any coupon. Pricing a cart under that returns
  *     ok:false, so checkout, the Razorpay order and order creation all refuse
  *     it at the same place rather than each re-implementing the check.
@@ -85,7 +91,7 @@ function belowMinimumMessage(subtotal, fulfilment = 'delivery') {
  * its own discount), so every caller now has something honest to say.
  *
  * @param {string} code
- * @param {number} orderValue subtotal, before GST/delivery
+ * @param {number} orderValue subtotal (the MRPs), before delivery
  * @param {Array<string>} productIds
  * @param {{ userId?: any }} [options] when given, perUserLimit is enforced
  */
@@ -195,7 +201,6 @@ async function computeOrderPricing({ items, couponCode, city, userId = null, bra
   const centreName = branch?.name || 'this centre';
 
   let subtotal = 0;
-  let gst = 0;
   const productIds = [];
   const lineItems = [];
 
@@ -239,18 +244,15 @@ async function computeOrderPricing({ items, couponCode, city, userId = null, bra
       return { ok: false, status: 400, code: 'NO_PICKUP_AT_CENTRE', message: `${product.name} cannot be collected at ${centreName}. Choose another centre or home delivery.`, productId: String(product._id) };
     }
 
+    // The MRP (or the centre's own price), taxes included — charged as it stands.
     const unitPrice = listing.price;
-    const lineSubtotal = unitPrice * item.quantity;
-    subtotal += lineSubtotal;
-    gst += (lineSubtotal * (product.gstPercentage || 0)) / 100;
+    subtotal += unitPrice * item.quantity;
     productIds.push(product._id.toString());
     lineItems.push({ product, quantity: item.quantity, price: unitPrice, basePrice: listing.basePrice });
   }
 
-  gst = Math.round(gst);
-
-  // Minimum-order gate. Deliberately on the subtotal, so adding GST or paying a
-  // delivery fee can never lift an under-value cart over the line.
+  // Minimum-order gate. Deliberately on the subtotal, so paying a delivery fee
+  // can never lift an under-value cart over the line.
   const floor = minOrderValueFor(fulfilment);
   if (subtotal < floor) {
     return {
@@ -293,11 +295,12 @@ async function computeOrderPricing({ items, couponCode, city, userId = null, bra
     // Invalid coupon → no discount (never trust the client's claimed discount).
   }
 
-  const total = Math.max(0, subtotal + gst - discount + deliveryFee);
+  const total = Math.max(0, subtotal - discount + deliveryFee);
 
   return {
     ok: true,
-    pricing: { subtotal, gst, discount, deliveryFee, total },
+    // gst: 0 — the MRPs in `subtotal` already include it (see the header).
+    pricing: { subtotal, gst: 0, discount, deliveryFee, total },
     items: lineItems,
     coupon,
     couponOutcome,

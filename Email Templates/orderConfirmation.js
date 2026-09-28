@@ -230,10 +230,12 @@ const getOrderConfirmationTemplate = (customerName, orderData) => {
                 <span class="total-label">Subtotal</span>
                 <span class="total-value">Rs.${orderData.subtotal}</span>
               </div>
+              ${orderData.gst > 0 ? `
               <div class="total-row">
                 <span class="total-label">GST</span>
-                <span class="total-value">Rs.${orderData.gst || 0}</span>
+                <span class="total-value">Rs.${orderData.gst}</span>
               </div>
+              ` : ''}
               <div class="total-row">
                 <span class="total-label">Delivery Fee</span>
                 <span class="total-value">Rs.${orderData.deliveryFee}</span>
@@ -248,6 +250,9 @@ const getOrderConfirmationTemplate = (customerName, orderData) => {
                 <span class="total-label">Total Amount</span>
                 <span class="total-value">Rs.${orderData.total}</span>
               </div>
+              ${orderData.gst > 0 ? '' : `
+              <div style="font-size: 12px; color: #718096; text-align: right; margin-top: 6px;">Prices are MRPs, inclusive of all taxes.</div>
+              `}
             </div>
           </div>
 

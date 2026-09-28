@@ -43,17 +43,35 @@ async function applyCentreListings(product, body, clinics) {
   return false;
 }
 
+/*
+ * A product has one price: its MRP, every tax included (2026-09-28). The panel
+ * sends it as `price`; `mrp` is taken as the same number from older clients.
+ * There is no selling or buying price to set any more.
+ */
+const mrpFrom = (body) => (body.price !== undefined && body.price !== '' && body.price !== null ? body.price : body.mrp);
+/** The GST rate the MRP includes — information only. Blank means the default, 18. */
+const gstFrom = (v) => (v === undefined || v === null || v === '' || !Number.isFinite(Number(v)) ? 18 : Number(v));
+/**
+ * A centre may sell a product at its MRP or below, never above it. Returns
+ * the refusal to send, or null when every centre price is within the MRP.
+ */
+function centrePriceAboveMrp(product) {
+  const mrp = Number(product.price) || 0;
+  const over = (product.centreListings || []).find((r) => r.price !== null && r.price !== undefined && Number(r.price) > mrp);
+  if (!over) return null;
+  return `The price at ${over.branchName || 'a centre'} (₹${Number(over.price).toLocaleString('en-IN')}) is above the MRP (₹${mrp.toLocaleString('en-IN')}). A centre can charge the MRP or less — clear its price to charge the MRP.`;
+}
+
 /**
  * Catalogue attributes the panel may set beyond the original store fields.
- * Mirrors what Zenoti keeps per product (SKU, brand, category, MRP, pack
- * size, HSN, retail vs consumable) plus our own Rx/OTC decision and vendor.
+ * Mirrors what Zenoti keeps per product (SKU, brand, category, pack size,
+ * HSN, retail vs consumable) plus our own Rx/OTC decision and vendor.
  * Applied on create and update; an undefined key leaves the field alone.
  */
 const EXTRA_STRING = ['sku', 'brand', 'productType', 'productCategory', 'productSubCategory', 'packSize', 'hsn', 'rxReason', 'packName', 'vendorName', 'templateStatus', 'batchTracking', 'consumptionOrder'];
-const EXTRA_NUMBER = ['mrp', 'lowStockThreshold', 'reorderLevel', 'targetLevel', 'buyingPrice'];
+const EXTRA_NUMBER = ['lowStockThreshold', 'reorderLevel', 'targetLevel'];
 const EXTRA_BOOL = ['isRetail', 'trackStock', 'isAppProduct'];
 function applyProductExtras(product, body) {
-  if (body.price !== undefined && Number(body.price) !== Number(product.price)) product.priceSource = 'panel';
   for (const key of EXTRA_STRING) {
     if (body[key] !== undefined) product[key] = body[key] === '' || body[key] === null ? null : String(body[key]).trim();
   }
@@ -322,19 +340,19 @@ exports.createProduct = async (req, res) => {
       formulation,
       OrgName,
       code,
-      price,
       gstPercentage,
       image,
       stock,
       isActive,
       isPopular
     } = req.body;
+    const price = mrpFrom(req.body);
 
     // Validation
     if (!name || !description || !formulation || !OrgName || !price) {
       return res.status(400).json({
         success: false,
-        message: 'Please provide all required fields (name, description, formulation, OrgName, price)'
+        message: 'Please provide all required fields (name, description, formulation, OrgName, MRP)'
       });
     }
 
@@ -346,7 +364,9 @@ exports.createProduct = async (req, res) => {
       OrgName,
       code: code && code !== '' ? code : null, // Convert empty string to null
       price,
-      gstPercentage: gstPercentage || 18,
+      priceSource: 'panel',
+      // An explicit 0 (an exempt item) is kept; blank means the default 18.
+      gstPercentage: gstFrom(gstPercentage),
       image,
       stock: openingStock(stock),
       isActive: isActive !== undefined ? isActive : true,
@@ -354,6 +374,8 @@ exports.createProduct = async (req, res) => {
     });
     applyProductExtras(product, req.body);
     await applyCentreListings(product, req.body, await clinicMap());
+    const aboveMrp = centrePriceAboveMrp(product);
+    if (aboveMrp) return res.status(400).json({ success: false, message: aboveMrp });
     // Category / sub-category / formulation snap to the catalogue's spelling.
     snapProduct(product, await loadCanon(Product));
     product.formulation = (await registerFormulation(product.formulation)) || product.formulation;
@@ -412,13 +434,13 @@ exports.updateProduct = async (req, res) => {
       formulation,
       OrgName,
       code,
-      price,
       gstPercentage,
       image,
       stock,
       isActive,
       isPopular
     } = req.body;
+    const price = mrpFrom(req.body);
 
     // Update fields
     if (name) product.name = name;
@@ -430,14 +452,21 @@ exports.updateProduct = async (req, res) => {
       product.code = (code === '' || code === null) ? null : code;
       console.log('Setting product code to:', product.code);
     }
-    if (price !== undefined) product.price = price;
-    if (gstPercentage !== undefined) product.gstPercentage = gstPercentage;
+    // The MRP. `mrp` follows it (models/Product.js); a blank leaves it as it was.
+    if (price !== undefined && price !== null && price !== '') {
+      if (Number(price) !== Number(product.price)) product.priceSource = 'panel';
+      product.price = price;
+    }
+    // The GST rate the MRP includes, for information; cleared = the default 18.
+    if (gstPercentage !== undefined) product.gstPercentage = gstFrom(gstPercentage);
     if (image !== undefined) product.image = image; // Allow empty string to clear image
     if (stock !== undefined) product.stock = stock;
     if (isActive !== undefined) product.isActive = isActive;
     if (isPopular !== undefined) product.isPopular = isPopular;
     applyProductExtras(product, req.body);
     const listingsChanged = await applyCentreListings(product, req.body, await clinicMap());
+    const aboveMrp = centrePriceAboveMrp(product);
+    if (aboveMrp) return res.status(400).json({ success: false, message: aboveMrp });
 
     // Additional safety check: ensure code is null if empty string before saving
     if (product.code === '') {
@@ -680,9 +709,14 @@ exports.bulkUpdateProducts = async (req, res) => {
         return res.status(400).json({ success: false, message: 'Choose one of the clinic centres' });
       }
       const products = await Product.find({ _id: { $in: productIds } }).select('centreListings name price');
-      let modified = 0;
+      // A centre price above a product's MRP refuses the whole batch, before anything is saved.
       for (const product of products) {
         await applyCentreListings(product, { centreListing: updates.centreListing }, clinics);
+        const aboveMrp = centrePriceAboveMrp(product);
+        if (aboveMrp) return res.status(400).json({ success: false, message: `${product.name}: ${aboveMrp}` });
+      }
+      let modified = 0;
+      for (const product of products) {
         if (product.isModified('centreListings')) { await product.save({ validateModifiedOnly: true }); modified += 1; }
       }
       return res.json({ success: true, message: `${modified} products updated successfully`, modifiedCount: modified });
@@ -824,14 +858,14 @@ async function matchTemplateRows(sheets) {
   const plan = new Map(); // productId → { product, template?, otc?, rx? }
   const unmatched = [];
   // Template rows for products that do not exist yet. A row can create a
-  // product only with a name, a code and a selling price; the code is the key,
-  // so two rows with one new code create one product (the later row wins).
+  // product only with a name, a code and an MRP; the code is the key, so two
+  // rows with one new code create one product (the later row wins).
   const creates = new Map();
   for (const sheet of sheets) {
     for (const row of sheet.rows) {
       const hit = (row.code && byCode.get(row.code.toUpperCase())) || (row.name && byName.get(row.name.toLowerCase())) || null;
       if (!hit && sheet.kind === 'template') {
-        const missing = [!row.name && 'Item Name', !row.code && 'Code', !(row.price > 0) && 'Selling Price'].filter(Boolean);
+        const missing = [!row.name && 'Item Name', !row.code && 'Code', !(row.price > 0) && 'MRP'].filter(Boolean);
         if (missing.length) unmatched.push(`${row.code || row.name || 'Row'} (new product needs ${missing.join(', ')})`);
         else creates.set(row.code.toUpperCase(), row);
         continue;
@@ -858,10 +892,11 @@ function changesFor(entry) {
     if (c.hsn && String(c.hsn) !== String(p.hsn || '')) add('HSN');
     if (c.subCategory && c.subCategory !== p.productSubCategory) add('sub category');
     if (!t && c.stock !== null && Math.max(0, c.stock) !== (Number(p.stock) || 0)) add('stock');
-    if (c.mrp && Number(c.mrp) !== Number(p.mrp)) add('MRP');
+    // The classification sheet's MRP is the price, unless the template row sets one.
+    if (c.price > 0 && !(t && t.price > 0) && Number(c.price) !== Number(p.price)) add('MRP');
   }
   if (entry.otc && !p.isAppProduct) fields.push('→ commerce catalogue');
-  if (entry.otc && !p.isActive && (Number(p.price) > 0 || (t && t.price) || entry.otc.mrp)) fields.push('→ live in app');
+  if (entry.otc && !p.isActive && (Number(p.price) > 0 || (t && t.price) || entry.otc.price)) fields.push('→ live in app');
   if (entry.rx && p.isRx !== true) fields.push('→ Rx');
   if (entry.rx && (p.isAppProduct || p.isActive)) fields.push('→ off the app');
   return fields;
@@ -913,12 +948,13 @@ async function applyAppStockPlan(plan, { adminName = 'import', creates = [] } = 
         formulation: t.formulation || t.subCategory || 'Not specified',
         OrgName: t.brand || 'Zennara', brand: t.brand || null,
         productCategory: t.category || null, productSubCategory: t.subCategory || null,
-        price: t.price, priceSource: 'template', mrp: t.mrp ?? null,
+        // `t.price` is the sheet's MRP — the whole price, taxes included.
+        price: t.price, priceSource: 'template',
         gstPercentage: t.gst ?? 18, hsn: t.hsn || null,
         stock: Math.max(0, t.stock ?? 0), trackStock: true, stockSource: 'template', stockUpdatedAt: now,
         reorderLevel: t.reorderLevel ?? null, lowStockThreshold: t.reorderLevel ?? undefined, targetLevel: t.targetLevel ?? null,
         packName: t.packName || null, packSize: t.packSize ? String(t.packSize) : null,
-        buyingPrice: t.buyingPrice ?? null, vendorName: t.vendorName || null, templateStatus: t.templateStatus || null,
+        vendorName: t.vendorName || null, templateStatus: t.templateStatus || null,
         batchTracking: t.batchTracking ? (/non/i.test(t.batchTracking) ? 'Non Batchable' : 'Batchable') : null,
         consumptionOrder: t.consumptionOrder ? (/exp/i.test(t.consumptionOrder) ? 'ByExpiry' : 'FIFO') : null,
         isAppProduct: true, isRetail: true, isActive: false,
@@ -951,14 +987,13 @@ async function applyAppStockPlan(plan, { adminName = 'import', creates = [] } = 
       if (t.targetLevel !== null) product.targetLevel = t.targetLevel;
       if (t.packName) product.packName = t.packName;
       if (t.packSize) product.packSize = String(t.packSize);
-      if (t.buyingPrice !== null) product.buyingPrice = t.buyingPrice;
+      // The MRP; `mrp` follows it (models/Product.js).
       if (t.price !== null && t.price > 0) { product.price = t.price; product.priceSource = 'template'; }
       if (t.gst !== null) product.gstPercentage = t.gst;
       if (t.vendorName) product.vendorName = t.vendorName;
       if (t.templateStatus) product.templateStatus = t.templateStatus;
       if (t.subCategory) product.productSubCategory = t.subCategory;
       if (t.hsn) product.hsn = String(t.hsn);
-      if (t.mrp !== null && t.mrp > 0) product.mrp = t.mrp;
       if (t.code && !product.code) product.code = t.code;
     }
     if (c) {
@@ -966,9 +1001,9 @@ async function applyAppStockPlan(plan, { adminName = 'import', creates = [] } = 
       if (c.subCategory) product.productSubCategory = c.subCategory;
       if (c.hsn) product.hsn = c.hsn;
       if (c.vendorName && !product.vendorName) product.vendorName = c.vendorName;
-      if (c.mrp) product.mrp = c.mrp;
       if (!t && c.stock !== null) { product.stock = Math.max(0, c.stock); product.trackStock = true; product.stockSource = 'template'; product.stockUpdatedAt = now; }
-      if (!(Number(product.price) > 0) && c.mrp) { product.price = c.mrp; product.priceSource = 'template'; }
+      // The pharmacy sheet's MRP is the price, unless the template row set one.
+      if (c.price > 0 && !(t && t.price > 0)) { product.price = c.price; product.priceSource = 'template'; }
     }
     if (e.otc) {
       product.isAppProduct = true;

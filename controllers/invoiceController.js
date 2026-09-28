@@ -113,11 +113,11 @@ async function buildLine(body, branch) {
   if (body.productId) {
     const p = await Product.findById(body.productId);
     if (!p) throw Object.assign(new Error('Product not found'), { status: 404 });
-    // Store prices are tax-exclusive (utils/orderPricing adds GST on top); the
-    // MRP, when Zenoti gave us one, already includes tax.
-    const useMrp = body.useMrp && Number(p.mrp) > 0;
+    // A product's price is its MRP with every tax in it (2026-09-28), so the
+    // bill charges it as it stands and only splits the GST out for the
+    // receipt. `useMrp` from older panel builds names the same number.
     return { kind: 'product', refId: p._id, refModel: 'Product', name: p.name, code: p.sku || p.code || null, hsn: p.hsn || null, qty: qty || 1,
-      unitPrice: body.unitPrice !== undefined && body.unitPrice !== '' ? Number(body.unitPrice) : (useMrp ? p.mrp : p.price), priceIncludesTax: body.priceIncludesTax ?? !!useMrp, taxPercent: body.taxPercent ?? (p.gstPercentage || 0),
+      unitPrice: body.unitPrice !== undefined && body.unitPrice !== '' ? Number(body.unitPrice) : p.price, priceIncludesTax: body.priceIncludesTax ?? true, taxPercent: body.taxPercent ?? (p.gstPercentage ?? 18),
       batchNo: body.batchNo || null, expiryDate: body.expiryDate || null, ...disc, ...soldBy, notes: [p.isRx ? 'Rx' : '', body.notes || ''].filter(Boolean).join(' · ') };
   }
   if (body.packageId) {

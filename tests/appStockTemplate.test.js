@@ -8,7 +8,7 @@ const sheetsOf = (buf) => { const wb = XLSX.read(buf, { type: 'buffer' }); retur
 const stored = {
   name: 'Alopel Shampoo', code: 'ALOPSHA', productCategory: 'Haircare', formulation: 'Hair Fall & Growth', brand: 'Zennara',
   batchTracking: 'Non Batchable', consumptionOrder: 'FIFO', stock: 2, reorderLevel: 5, targetLevel: 20, packName: 'btl', packSize: '1',
-  buyingPrice: 2000, price: 3999, gstPercentage: 18, vendorName: null, templateStatus: 'estimated',
+  price: 3999, gstPercentage: 18, vendorName: null, templateStatus: 'estimated',
 };
 
 test('a row that restates the stored product changes nothing', () => {
@@ -20,7 +20,26 @@ test('a row that restates the stored product changes nothing', () => {
 
 test('only fields that really differ are reported', () => {
   const row = { ...parseAppStockWorkbook(sheetsOf(buildTemplateWorkbook({ title: 't', note: 'n', rows: toTemplateRows([stored]) })))[0].rows[0], stock: 9, price: 4200, vendorName: 'Sai Pharma' };
-  assert.deepEqual(templateDiff(stored, row), ['stock', 'selling price', 'vendor']);
+  assert.deepEqual(templateDiff(stored, row), ['stock', 'MRP', 'vendor']);
+});
+
+test('the template carries one price, the MRP — no buying or selling price column', () => {
+  assert.ok(TEMPLATE_HEADERS.includes('MRP ₹'));
+  assert.ok(!TEMPLATE_HEADERS.some((h) => /buying|selling/i.test(h)));
+  const [row] = toTemplateRows([stored]);
+  assert.equal(row[TEMPLATE_HEADERS.indexOf('MRP ₹')], 3999);
+  assert.equal(row[TEMPLATE_HEADERS.indexOf('GST %')], 18);
+});
+
+test('an older sheet: MRP wins, its selling price stands in for a blank MRP, the buying price is ignored', () => {
+  const old = ['Item Name', 'Code', 'Buying Price ₹', 'Selling Price ₹', 'GST %', 'MRP ₹'];
+  const ws = XLSX.utils.aoa_to_sheet([old, ['A', 'A1', 100, 450, 18, 499], ['B', 'B1', 100, 450, '', '']]);
+  const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+  const [sheet] = parseAppStockWorkbook(sheetsOf(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })));
+  assert.equal(sheet.rows[0].price, 499);
+  assert.equal(sheet.rows[1].price, 450);
+  assert.equal(sheet.rows[1].gst, null);
+  assert.ok(!('buyingPrice' in sheet.rows[0]));
 });
 
 test('blank template has headings and no products; the import one carries the guide', () => {
@@ -32,14 +51,14 @@ test('blank template has headings and no products; the import one carries the gu
 });
 
 test('headers-only sheet without banner rows (as the pharmacy sends it) still parses', () => {
-  const ws = XLSX.utils.aoa_to_sheet([TEMPLATE_HEADERS.slice(0, 17), ['New Serum', 'Skincare', 'NEW001', 'Serum', 'X', '', '', 4, '', '', '', '', 100, 499, 18, '', '']]);
+  const ws = XLSX.utils.aoa_to_sheet([TEMPLATE_HEADERS.slice(0, 16), ['New Serum', 'Skincare', 'NEW001', 'Serum', 'X', '', '', 4, '', '', '', '', 499, 18, '', '']]);
   const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
   const [sheet] = parseAppStockWorkbook(sheetsOf(XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })));
   assert.equal(sheet.rows[0].code, 'NEW001');
   assert.equal(sheet.rows[0].price, 499);
 });
 
-test('unknown codes become new products only with name, code and price', async () => {
+test('unknown codes become new products only with name, code and MRP', async () => {
   const Product = require('../models/Product');
   const orig = Product.find;
   Product.find = () => ({ select: () => ({ lean: async () => [{ _id: 'p1', ...stored }] }) });
@@ -56,6 +75,6 @@ test('unknown codes become new products only with name, code and price', async (
     assert.equal(creates.length, 1);
     assert.equal(creates[0].price, 520);
     assert.equal(unmatched.length, 1);
-    assert.match(unmatched[0], /NEW002 \(new product needs Selling Price\)/);
+    assert.match(unmatched[0], /NEW002 \(new product needs MRP\)/);
   } finally { Product.find = orig; }
 });
