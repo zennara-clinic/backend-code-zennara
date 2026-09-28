@@ -112,7 +112,9 @@ async function syncServices(stats) {
   for (const svc of rows) {
     seenIds.add(svc.id);
     try {
-      let doc = await Consultation.findOne({ zenotiServiceId: svc.id });
+      // The mirror of this Zenoti service, never an app-menu entry that books as it
+      // (inCatalog sorts false/unset first): Zenoti's price and duration belong to the mirror.
+      let doc = await Consultation.findOne({ zenotiServiceId: svc.id }).sort({ inCatalog: 1, isArchived: 1 });
       if (!doc) {
         // Normalised match against every UNLINKED service, so "Laser Hair
         // Removal (LHR)" meets Zenoti's "Laser Hair Removal".

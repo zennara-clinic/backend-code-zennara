@@ -13,7 +13,8 @@ const {
   deleteConsultation,
   toggleConsultationStatus,
   setCatalogMembership,
-  getConsultationStats
+  getConsultationStats,
+  getTaxonomy
 } = require('../controllers/consultationController');
 const { protectAdmin, identifyAdmin, requireRole, requirePermission } = require('../middleware/auth');
 const MANAGE = requirePermission('services.manage');
@@ -21,6 +22,8 @@ const MANAGE = requirePermission('services.manage');
 // Public routes
 router.get('/', identifyAdmin, getAllConsultations);
 router.get('/featured', getFeaturedConsultations);
+// The app's two treatment tabs (categories with icons, conditions). Before /:identifier.
+router.get('/taxonomy', identifyAdmin, getTaxonomy);
 // identifyAdmin so staff see the whole master while the app sees only the
 // published catalogue; ?type= and ?category= cascade the taxonomy.
 router.get('/categories/list', identifyAdmin, getCategories);

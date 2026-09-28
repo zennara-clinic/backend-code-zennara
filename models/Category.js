@@ -34,6 +34,12 @@ const categorySchema = new mongoose.Schema({
   },
   /** Zenoti category id, when this category mirrors one of Zenoti's 22. */
   zenotiCategoryId: { type: String, default: null, trim: true, lowercase: true, index: true },
+  /**
+   * Icon key drawn beside the category on the app's treatment tabs — one of
+   * utils/treatmentTaxonomy ICON_KEYS ('' = none). A key, not artwork: the app
+   * and the panel each draw the same set.
+   */
+  icon: { type: String, default: '', trim: true },
   isActive: {
     type: Boolean,
     default: true

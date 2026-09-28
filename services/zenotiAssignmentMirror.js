@@ -25,6 +25,7 @@ const Branch = require('../models/Branch');
 const logger = require('../utils/logger');
 
 const { buildMatcher } = require('../utils/catalogueMatch');
+const { preferMirror, zenotiLinkRank, RANK_FIELDS } = require('../utils/zenotiServiceLink');
 
 const escapeRx = (v) => String(v).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const exact = (v) => new RegExp(`^${escapeRx(String(v || '').trim())}$`, 'i');
@@ -43,7 +44,7 @@ async function getPools(force = false) {
   if (pools && !force && Date.now() - poolsAt < POOL_TTL_MS) return pools;
   const [packages, consultations, products, branches, retired] = await Promise.all([
     Package.find({}).select('_id id name price originalPrice services zenotiPackageId').lean(),
-    Consultation.find({}).select('_id id name price zenotiServiceId').lean(),
+    Consultation.find({}).select(`_id id name price zenotiServiceId ${RANK_FIELDS}`).lean(),
     Product.find({}).select('_id name image price isRetail zenotiProductId').lean(),
     Branch.find({}).select('_id name address zenotiCenterId').lean(),
     // What the clinic sold before the catalogue was replaced — and still sells at the desk.
@@ -53,8 +54,14 @@ async function getPools(force = false) {
   pools = {
     packageByZenotiId: idMap(packages, 'zenotiPackageId'),
     packageByName: buildMatcher(packages),
-    consultationByZenotiId: idMap(consultations, 'zenotiServiceId'),
-    consultationByName: buildMatcher(consultations),
+    // App-menu entries share Zenoti ids and names with the mirrored service; a Zenoti
+    // sale line is the mirror's, so it wins the id map and is matched by name first.
+    consultationByZenotiId: idMap(preferMirror(consultations), 'zenotiServiceId'),
+    consultationByName: (() => {
+      const byMirror = buildMatcher(consultations.filter((c) => zenotiLinkRank(c) > 0));
+      const byMenu = buildMatcher(consultations.filter((c) => zenotiLinkRank(c) === 0));
+      return (name) => byMirror(name) || byMenu(name);
+    })(),
     productByZenotiId: idMap(products, 'zenotiProductId'),
     // Retail first; a same-named consumable is not what a customer bought.
     retailByName: buildMatcher(products.filter((p) => p.isRetail !== false)),

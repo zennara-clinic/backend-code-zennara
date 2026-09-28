@@ -25,6 +25,7 @@ const NOT_ARCHIVED = { isArchived: { $ne: true } };
 const CONSULTATION_FLOW_SLUGS = ['senior-dermatologist-consultation', 'dermatologist-consultation'];
 const NOT_CONSULTATION_FLOW = { slug: { $nin: CONSULTATION_FLOW_SLUGS } };
 const { clinicDateKey, clinicDayStart } = require('../utils/bookingTime');
+const { buildTaxonomy, normaliseConditions } = require('../utils/treatmentTaxonomy');
 const Booking = require('../models/Booking');
 const Category = require('../models/Category');
 const mongoose = require('mongoose');
@@ -76,7 +77,8 @@ exports.createConsultation = async (req, res) => {
       type,
       media,
       isActive,
-      displayOrder
+      displayOrder,
+      conditions
     } = req.body;
 
     // Validate required fields. Image is optional (the app shows a placeholder
@@ -114,6 +116,7 @@ exports.createConsultation = async (req, res) => {
       media,
       rating,
       displayOrder,
+      conditions: normaliseConditions(conditions),
       isActive: isActive !== undefined ? isActive : true,
       showPriceInApp: showPriceInApp !== undefined ? showPriceInApp : false,
       chargeOnlineBooking: chargeOnlineBooking !== undefined ? chargeOnlineBooking : true,
@@ -179,6 +182,8 @@ exports.updateConsultation = async (req, res) => {
     // (that broke every existing link and could collide on the unique index).
     delete updateData.slug;
     delete updateData.id;
+    // Only known condition keys are stored, whatever spelling the panel sends.
+    if (updateData.conditions !== undefined) updateData.conditions = normaliseConditions(updateData.conditions);
 
     const consultation = await Consultation.findOneAndUpdate(
       { $or: [{ _id: mongoose.Types.ObjectId.isValid(id) ? id : null }, { id: id }, { slug: id }] },
@@ -476,6 +481,12 @@ exports.getAllConsultations = async (req, res) => {
       query.category = category;
     }
 
+    // "By condition": treatments that list this condition key (utils/treatmentTaxonomy).
+    if (req.query.condition) {
+      const [key] = normaliseConditions([req.query.condition]);
+      query.conditions = key || '__none__';
+    }
+
     // Search by name, summary, or about
     if (search) {
       query.$or = [
@@ -655,6 +666,25 @@ exports.getFeaturedConsultations = async (req, res) => {
       success: false,
       message: 'Failed to fetch featured consultations'
     });
+  }
+};
+
+// @desc    The treatment menu: categories (ordered, with icons) and conditions, with counts
+// @route   GET /api/consultations/taxonomy        ?includeEmpty=true (staff) lists empty ones too
+// @access  Public
+exports.getTaxonomy = async (req, res) => {
+  try {
+    // What the app lists as treatments: the published catalogue without the two
+    // consultation-flow rows (booked through their own flow, never off the menu).
+    const [treatments, categoryDocs] = await Promise.all([
+      Consultation.find({ ...APP_VISIBLE, ...NOT_CONSULTATION_FLOW }).select('category conditions').lean(),
+      Category.find({}).select('name slug icon displayOrder isActive type').lean(),
+    ]);
+    const includeEmpty = !!req.admin && req.query.includeEmpty === 'true';
+    res.status(200).json({ success: true, data: buildTaxonomy(treatments, categoryDocs, { includeEmpty }) });
+  } catch (error) {
+    console.error('❌ Treatment taxonomy error:', error);
+    res.status(500).json({ success: false, message: 'Failed to load the treatment menu' });
   }
 };
 

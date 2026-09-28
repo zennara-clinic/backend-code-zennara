@@ -666,7 +666,8 @@ exports.priceList = async (req, res) => {
     const Package = require('../models/Package');
     const Branch = require('../models/Branch');
     const branch = req.query.branchId && /^[0-9a-f]{24}$/i.test(req.query.branchId) ? await Branch.findById(req.query.branchId).lean() : null;
-    const services = await Consultation.find({ isActive: { $ne: false } }).sort({ category: 1, name: 1 });
+    // Archived rows exist only so old bookings resolve; they are not on sale.
+    const services = await Consultation.find({ isActive: { $ne: false }, isArchived: { $ne: true } }).sort({ category: 1, name: 1 });
     const packages = await Package.find({ isActive: true }).sort({ name: 1 });
     const inr = (n) => Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 0 });
     const svcRows = services.map((s) => { const p = typeof s.priceAt === 'function' ? s.priceAt(branch?._id) : { total: s.price, taxPercent: 0, available: true }; return { kind: 'Service', category: s.category || '', name: s.name, code: s.code || '', duration: s.duration_minutes || '', price: p.total, tax: p.taxPercent, available: p.available !== false }; }).filter((r) => r.available);

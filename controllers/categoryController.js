@@ -1,4 +1,5 @@
 const Category = require('../models/Category');
+const { normaliseIcon } = require('../utils/treatmentTaxonomy');
 const Consultation = require('../models/Consultation');
 
 // @desc    Get all categories with statistics
@@ -64,7 +65,7 @@ exports.getCategoryById = async (req, res) => {
 // @access  Private/Admin
 exports.createCategory = async (req, res) => {
   try {
-    const { name, description, type, displayOrder } = req.body;
+    const { name, description, type, displayOrder, icon } = req.body;
 
     // Validation
     if (!name || name.trim() === '') {
@@ -98,6 +99,7 @@ exports.createCategory = async (req, res) => {
       description: description || '',
       type: type || undefined,
       displayOrder: typeof displayOrder === 'number' ? displayOrder : undefined,
+      icon: normaliseIcon(icon),
       consultationCount
     });
 
@@ -121,7 +123,7 @@ exports.createCategory = async (req, res) => {
 // @access  Private/Admin
 exports.updateCategory = async (req, res) => {
   try {
-    const { name, description, isActive, type, displayOrder } = req.body;
+    const { name, description, isActive, type, displayOrder, icon } = req.body;
 
     const category = await Category.findById(req.params.id);
     
@@ -154,6 +156,8 @@ exports.updateCategory = async (req, res) => {
     if (isActive !== undefined) category.isActive = isActive;
     if (type !== undefined) category.type = type || undefined;
     if (displayOrder !== undefined && displayOrder !== null) category.displayOrder = Number(displayOrder);
+    // Icon beside the category on the app's treatment tabs; unknown keys are refused as none.
+    if (icon !== undefined) category.icon = normaliseIcon(icon);
 
     // Services reference the category by name — carry a rename through.
     if (name && name.trim() !== oldName) {

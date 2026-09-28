@@ -22,6 +22,7 @@ const { buildDoctorMatcher, canonicalName, tierTitle } = require('../utils/derma
 const { isPseudoGuest } = require('../utils/zenotiPseudoGuest');
 const ProviderBlock = require('../models/ProviderBlock');
 const logger = require('../utils/logger');
+const { preferMirror, RANK_FIELDS } = require('../utils/zenotiServiceLink');
 
 let appointmentSyncRunning = false;
 /**
@@ -283,15 +284,18 @@ async function retireVanishedAppointments({ centerId, from, to, seenIds, runStar
 
 async function lookupContext() {
   const [consultations, branches, doctors, practitioners] = await Promise.all([
-    Consultation.find({}).select('_id name slug zenotiServiceId').lean(),
+    Consultation.find({}).select(`_id name slug zenotiServiceId ${RANK_FIELDS}`).lean(),
     Branch.find({}).select('_id name').lean(),
     Doctor.find({}).select('doctorId name tier').lean(),
     ZenotiPractitioner.find({ active: true }).lean(),
   ]);
-  const consultationByName = new Map(consultations.map((c) => [norm(c.name), c]));
+  // App-menu entries share Zenoti ids (and some names) with the mirrored service; a
+  // Zenoti visit belongs to the mirror, so it is last in, and wins, in both maps.
+  const ranked = preferMirror(consultations);
+  const consultationByName = new Map(ranked.map((c) => [norm(c.name), c]));
   // Zenoti's own service id is the reliable link; the name is the fallback for
   // services not yet mirrored.
-  const consultationByZenotiId = new Map(consultations.filter((c) => c.zenotiServiceId).map((c) => [String(c.zenotiServiceId).toLowerCase(), c]));
+  const consultationByZenotiId = new Map(ranked.filter((c) => c.zenotiServiceId).map((c) => [String(c.zenotiServiceId).toLowerCase(), c]));
   const branchByName = new Map(branches.map((b) => [norm(b.name), b]));
   const doctorById = new Map(doctors.map((doctor) => [String(doctor.doctorId), doctor]));
   const practitionerById = new Map(practitioners.map((row) => [String(row.zenotiEmployeeId).toLowerCase(), row]));

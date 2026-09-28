@@ -197,6 +197,13 @@ const consultationSchema = new mongoose.Schema({
     name: { type: String, trim: true },
   }],
 
+  /**
+   * Conditions this treatment helps with — keys from utils/treatmentTaxonomy CONDITIONS
+   * ("acne-scar", "hair-loss"…). They make the app's "By condition" tab; write them through
+   * normaliseConditions so a name or a stray key never lands here.
+   */
+  conditions: { type: [String], default: [], index: true },
+
   /* ---- Zenoti service-master columns (its own export format) ---- */
   /** Second level of the clinic's taxonomy, e.g. Category "Laser" → Sub "Spa". */
   subCategory: { type: String, default: null, trim: true, index: true },
