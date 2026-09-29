@@ -19,3 +19,6 @@ backups/
 
 # Throwaway one-off scripts run against the DB — never part of the repo.
 .zrun*.tmp.js
+
+# Treatment cover photos dropped in for scripts/watchTreatmentImages.js; they live in S3 once applied.
+treatment_images_2026_sep/
