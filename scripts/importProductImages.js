@@ -1,7 +1,7 @@
 /**
  * Put product photographs on our own storage and attach them to the products.
  *
- *   node scripts/importProductImages.js prepare --manifest <manifest.json> --out <dir>
+ *   node scripts/importProductImages.js prepare --manifest <manifest.json> --out <dir> [--long-edge 1200] [--quality 80]
  *   node scripts/importProductImages.js upload  --manifest <manifest.json> --out <dir> --ocr <final-ocr.json> [--apply] [--force]
  *
  * THE GATE. A photograph is published only if it passed all three checks, and
@@ -33,10 +33,23 @@ const mongoose = require('mongoose');
 const arg = (n, d) => { const i = process.argv.indexOf(`--${n}`); return i > -1 ? (process.argv[i + 1] && !process.argv[i + 1].startsWith('--') ? process.argv[i + 1] : true) : d; };
 const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
 
-/** Any spelling of the other shop's name, spaced or hyphenated, as OCR may return it. */
-const OTHER_SHOP = /a\s*g\s*e\s*[-\s]?\s*l\s*e\s*s\s*s|agel[e3]ss|age1ess|ageiess|geless\b/i;
+/**
+ * Any spelling of another shop's name, spaced or hyphenated, as OCR may
+ * return it: AgeLess first, then the retailers the 10 October photo package
+ * was collected from. Kept narrow on purpose — "1mg" alone is a dose, so only
+ * the watermark forms count, and "Dermatica" (a brand) is not "Dermatics".
+ */
+const OTHER_SHOP = new RegExp([
+  String.raw`a\s*g\s*e\s*[-\s]?\s*l\s*e\s*s\s*s|agel[e3]ss|age1ess|ageiess|geless\b`,
+  String.raw`c\s*l\s*i\s*n\s*i\s*k\s*a\s*l\s*l\s*y|clinikal|linikally`,
+  String.raw`©\s*1\s*mg|tata\s*1\s*mg|1mg\.com`,
+  String.raw`pharm\s*easy|netmeds|truemeds|apollo\s*(24|pharmacy)|medcube|platinum\s*rx|blinkit|nykaa|purplle`,
+  String.raw`click\s*on\s*care|\bdermatics\b|skin\s*by\s*dr\s*g|dermaw\b|cosmoshine|dermavue|beandcare|shop-apotheke|skinpharmacy`,
+].join('|'), 'i');
 const MAX_PER_PRODUCT = 4;
-const LONG_EDGE = 1600;
+/** Long edge and JPEG quality of the published file: ~30–70 KB a photo, sharp on a 3× phone screen. */
+const LONG_EDGE = Number(arg('long-edge', 1200)) || 1200;
+const QUALITY = Number(arg('quality', 80)) || 80;
 
 /** Checks 1 and 2, and that the file is the one that was checked. Returns the reason it fails, or null. */
 function refuse(entry, buf) {
@@ -63,7 +76,7 @@ async function prepare(manifest, out) {
       // No .withMetadata(): EXIF, XMP and any embedded author or copyright note are dropped.
       await sharp(buf).rotate().flatten({ background: '#ffffff' })
         .resize(LONG_EDGE, LONG_EDGE, { fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: 86, progressive: true, mozjpeg: true })
+        .jpeg({ quality: QUALITY, progressive: true, mozjpeg: true })
         .toFile(target);
       written += 1;
     }

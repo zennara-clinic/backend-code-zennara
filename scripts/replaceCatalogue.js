@@ -12,7 +12,9 @@
  *   2. carries the clinic's own record across for a product that is in both
  *      catalogues (same product, matched strictly by name): its Zenoti id and
  *      code, so the shelf rows stay attached, and its price, GST, HSN, stock,
- *      vendor, photo and centre listings, which are the clinic's own figures
+ *      vendor, photo and centre listings, which are the clinic's own figures.
+ *      A row that already names its Zenoti item was built from the clinic's
+ *      own system, so its figures stand and only its blanks are filled.
  *   3. seeds the Bestsellers shelf from what the clinic has actually sold
  *   4. backs up products, formulations, brands and the Inventory links to
  *      data/backups/catalogue-<time>/ (JSON, git-ignored)
@@ -26,6 +28,11 @@
  * A product nobody has counted starts at the default opening stock and is on
  * sale at once. `--sellable` instead loads the new products with no stock
  * count at all, so they never run out.
+ *
+ * Every product on sale needs a price. A row the file loads switched off
+ * (`isActive: false`) may come without one: it waits in the panel for its MRP.
+ * A product stocked under more than one Zenoti code lists the other items in
+ * `_alsoZenotiIds`, so every one of its shelf rows points at it.
  *
  * NOTHING HERE TALKS TO ZENOTI. No Zenoti module is loaded and no request is
  * made; Zenoti's products, stock and sales are exactly as they were.
@@ -43,7 +50,7 @@ const CARRIED = [
   'code', 'sku', 'zenotiProductId', 'zenotiCategoryId', 'zenotiSubCategoryId', 'zenotiSyncedAt', 'barcodes', 'centres', 'branchStock',
   'price', 'mrp', 'priceSource', 'gstPercentage', 'hsn', 'buyingPrice', 'vendorName', 'vendorId',
   'stock', 'trackStock', 'stockSource', 'stockUpdatedAt', 'reorderLevel', 'targetLevel', 'lowStockThreshold',
-  'packName', 'batchTracking', 'consumptionOrder', 'templateStatus', 'centreListings', 'image', 'isRx', 'rxSource', 'rxReason',
+  'packName', 'batchTracking', 'consumptionOrder', 'templateStatus', 'centreListings', 'image', 'images', 'isRx', 'rxSource', 'rxReason',
 ];
 /** Schedule H actives, as whole words, for reading an ingredient list. */
 const RX_INGREDIENT_RX = /\b(minoxidil|finasteride|isotretinoin|tretinoin|adapalene|clindamycin|ketoconazole|luliconazole|terbinafine|itraconazole|mometasone|clobetasol|betamethasone|tacrolimus|hydroquinone|benzoyl\s*peroxide|spironolactone)\b/i;
@@ -106,14 +113,18 @@ const BESTSELLER_MAX = 12;
   const problems = [];
   const rx = [];
   const carried = [];
+  const blank = (v) => v === undefined || v === null || v === '' || (Array.isArray(v) && !v.length);
+  const alsoZenoti = new Map(); // slug → the product's other Zenoti item ids
   for (const row of rows) {
-    const { _rxText, ...doc } = row;
+    const { _rxText, _alsoZenotiIds, ...doc } = row;
+    if (Array.isArray(_alsoZenotiIds) && _alsoZenotiIds.length) alsoZenoti.set(doc.slug, _alsoZenotiIds);
     doc.trackStock = !sellable;
     // Nobody has counted these yet: they start at the default opening stock, on sale.
     if (!(Number(doc.stock) > 0)) { doc.stock = DEFAULT_OPENING_STOCK; doc.stockSource = 'panel'; doc.stockUpdatedAt = new Date(); }
     const was = same.get(doc.slug);
     if (was) {
-      for (const k of CARRIED) if (was[k] !== undefined && was[k] !== null && !(Array.isArray(was[k]) && !was[k].length) && was[k] !== '') doc[k] = was[k];
+      const fromClinic = !!doc.zenotiProductId;
+      for (const k of CARRIED) if (!blank(was[k]) && (!fromClinic || blank(doc[k]))) doc[k] = was[k];
       carried.push(`${was.name} [${was.code || '—'}] → ${doc.name} · ₹${doc.price} · stock ${doc.stock}`);
     }
     /*
@@ -128,11 +139,12 @@ const BESTSELLER_MAX = 12;
       const topicalTxa = hit && /tranexamic/i.test(hit[0]) && !oral;
       if (hit && !topicalTxa) { doc.isRx = true; doc.rxSource = 'heuristic'; doc.rxReason = `Names a Schedule H ingredient (${hit[0].trim()})`; rx.push(`${doc.name} — ${hit[0].trim()}`); }
     }
-    if (best.has(doc.slug)) doc.shopCollections = [...new Set(['bestseller', ...(doc.shopCollections || [])])];
+    // A prescription medicine is shown as clinic-only, never promoted on a shelf.
+    if (best.has(doc.slug) && doc.isRx !== true) doc.shopCollections = [...new Set(['bestseller', ...(doc.shopCollections || [])])];
     taxonomy.reconcile(doc);
     const invalid = new Product(doc).validateSync();
     if (invalid) problems.push(`${doc.name}: ${Object.values(invalid.errors).map((e) => e.message).join('; ')}`);
-    if (!(doc.price > 0)) problems.push(`${doc.name}: no price`);
+    if (!(doc.price > 0) && doc.isActive !== false) problems.push(`${doc.name}: no price`);
     docs.push(doc);
   }
   for (const key of ['slug', 'code', 'zenotiProductId']) {
@@ -180,8 +192,9 @@ const BESTSELLER_MAX = 12;
       // Shelf rows: only a product carried across still has its shelves; the rest point nowhere.
       await Inventory.updateMany({ productId: { $ne: null } }, { $set: { productId: null } }, { session });
       for (const p of inserted) {
-        if (!p.zenotiProductId) continue;
-        await Inventory.updateMany({ zenotiProductId: p.zenotiProductId }, { $set: { productId: p._id } }, { session });
+        const ids = [p.zenotiProductId, ...(alsoZenoti.get(p.slug) || [])].filter(Boolean);
+        if (!ids.length) continue;
+        await Inventory.updateMany({ zenotiProductId: { $in: ids } }, { $set: { productId: p._id } }, { session });
       }
       await Formulation.deleteMany({}, { session });
     });
